@@ -1,0 +1,51 @@
+name: Release (macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (blank = v<version> from package.json)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write # allow creating the Release + uploading assets via GITHUB_TOKEN
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # LTS; Forge 7 / Electron 43 are fine on 20/22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build macOS distributable
+        run: npm run make
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="${{ inputs.tag }}"
+          [ -z "$TAG" ] && TAG="v$VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Stage asset with a stable name
+        run: |
+          ZIP=$(find out/make/zip/darwin -name '*.zip' | head -n1)
+          [ -z "$ZIP" ] && { echo "No macOS zip produced under out/make/zip/darwin"; exit 1; }
+          cp "$ZIP" "GitLeviathan-macOS.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: GitLeviathan ${{ steps.meta.outputs.version }}
+          files: GitLeviathan-macOS.zip
+          fail_on_unmatched_files: true
