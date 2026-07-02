@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
+  AppChannels,
   ThemeChannels,
   type ExposedApi,
   type ThemeSource,
@@ -7,6 +8,10 @@ import {
 } from './types/ipc';
 
 const api: ExposedApi = {
+  platform: process.platform,
+  app: {
+    signalReady: () => ipcRenderer.send(AppChannels.ready),
+  },
   theme: {
     get: () => ipcRenderer.invoke(ThemeChannels.get) as Promise<ThemeState>,
     set: (source: ThemeSource) =>

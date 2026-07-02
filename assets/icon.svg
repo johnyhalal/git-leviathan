@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="18" y1="10" x2="102" y2="112" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2b2542" />
+      <stop offset="1" stop-color="#141320" />
+    </linearGradient>
+    <linearGradient id="lev" x1="22" y1="18" x2="98" y2="104" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff5edf" />
+      <stop offset="1" stop-color="#7a5cff" />
+    </linearGradient>
+  </defs>
+
+  <!-- App squircle. -->
+  <rect x="8" y="8" width="104" height="104" rx="24" fill="url(#bg)" />
+  <rect
+    x="8.5"
+    y="8.5"
+    width="103"
+    height="103"
+    rx="23.5"
+    stroke="#ffffff"
+    stroke-opacity="0.06"
+  />
+
+  <!-- The leviathan, inset and centered. -->
+  <g transform="translate(9 9.6) scale(0.85)">
+    <g fill="url(#lev)">
+      <path d="M62 14 l5 -10 l4 11 z" />
+      <path d="M78 17 l9 -7 l1 12 z" />
+      <path d="M93 27 l11 -3 l-3 12 z" />
+    </g>
+    <path
+      d="M59 20
+         C 85 19, 103 40, 99 65
+         C 95 89, 74 102, 54 97
+         C 31 92, 20 70, 28 51
+         C 35 35, 53 31, 64 40
+         C 74 48, 71 62, 60 64"
+      stroke="url(#lev)"
+      stroke-width="13"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <circle cx="57" cy="24" r="3.4" fill="#141221" />
+  </g>
+</svg>

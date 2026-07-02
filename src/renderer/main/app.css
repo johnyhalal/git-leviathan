@@ -46,12 +46,138 @@ body {
   height: 100%;
 }
 
-/* Draggable strip so the frameless (hiddenInset) window can be moved. */
-.titlebar {
+/* ---- Top bar (menu bar) -------------------------------------------------- */
+
+/* Draggable strip holding the repository tabs (left) and actions (right).
+   Interactive children opt back out with `-webkit-app-region: no-drag`. */
+.topbar {
   flex: 0 0 auto;
-  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 8px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
 }
+
+/* Leave room for the macOS traffic lights in the hiddenInset title bar. */
+.app.is-mac .topbar {
+  padding-left: 78px;
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  cursor: default;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+.tab:hover {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+.tab.active {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.tab-close:hover {
+  opacity: 1;
+  background: var(--control-bg);
+}
+
+.tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.tab-add:hover {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.icon-button:hover {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+/* ---- Content ------------------------------------------------------------- */
 
 .content {
   flex: 1 1 auto;
@@ -71,10 +197,62 @@ h1 {
 }
 
 .subtitle {
-  margin: 0 0 30px;
+  margin: 0;
   color: var(--fg-muted);
   font-size: 15px;
 }
+
+/* ---- Settings dialog ----------------------------------------------------- */
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.settings-panel {
+  width: min(440px, 100%);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 16px;
+}
+
+.settings-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* ---- Theme switch (lives inside Settings) -------------------------------- */
 
 .theme-switch {
   display: inline-flex;
@@ -107,7 +285,7 @@ h1 {
 }
 
 .theme-switch button.active {
-  background: var(--bg-elev);
+  background: var(--bg);
   color: var(--fg);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
 }

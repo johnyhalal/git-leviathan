@@ -10,6 +10,9 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    // Base path — Packager appends .icns (macOS) / .ico (Windows) per platform.
+    // Generate those from assets/icon.svg; assets/icon.png is a placeholder.
+    icon: './assets/icon',
   },
   rebuildConfig: {},
   makers: [

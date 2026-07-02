@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 240" fill="none">
+  <defs>
+    <linearGradient id="lev" x1="30" y1="20" x2="92" y2="222" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff5edf" />
+      <stop offset="1" stop-color="#7a5cff" />
+    </linearGradient>
+  </defs>
+
+  <!-- Bubbles rising through the deep. -->
+  <g fill="#ffffff" opacity="0.12">
+    <circle cx="80" cy="116" r="3" />
+    <circle cx="86" cy="150" r="4" />
+    <circle cx="30" cy="176" r="2.5" />
+  </g>
+
+  <!-- Dorsal crest, fanning off the raised head. -->
+  <g fill="url(#lev)">
+    <path d="M64 30 l7 -11 l4 11 z" />
+    <path d="M76 34 l9 -6 l1 12 z" />
+    <path d="M84 48 l11 0 l-5 11 z" />
+  </g>
+
+  <!-- Serpent body: head raised at the top, diving in coils to a finned tail. -->
+  <path
+    d="M58 30
+       C 86 42, 86 70, 62 84
+       C 40 96, 38 124, 60 138
+       C 82 152, 82 180, 58 194
+       C 48 202, 46 208, 48 214"
+    stroke="url(#lev)"
+    stroke-width="12"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Forked tail fin. -->
+  <g fill="url(#lev)">
+    <path d="M48 214 l-12 11 l8 -2 l-2 11 l11 -13 z" />
+  </g>
+
+  <!-- Eye. -->
+  <circle cx="61" cy="34" r="3.2" fill="#141221" />
+</svg>

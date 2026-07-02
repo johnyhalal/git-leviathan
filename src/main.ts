@@ -1,8 +1,20 @@
-import { app, BrowserWindow, ipcMain, nativeTheme } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  nativeImage,
+  nativeTheme,
+  screen,
+} from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import started from 'electron-squirrel-startup';
-import { ThemeChannels, type ThemeSource, type ThemeState } from './types/ipc';
+import {
+  AppChannels,
+  ThemeChannels,
+  type ThemeSource,
+  type ThemeState,
+} from './types/ipc';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -10,33 +22,66 @@ if (started) {
 }
 
 /** Minimum time the splash stays visible so it never just flashes. */
-const MIN_SPLASH_MS = 1800;
+const MIN_SPLASH_MS = 4000;
 const THEME_SOURCES: ThemeSource[] = ['system', 'light', 'dark'];
 const preloadPath = path.join(__dirname, 'preload.js');
 
 // ---- Tiny settings persistence -------------------------------------------
 
+interface WindowBounds {
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+}
+
 interface Settings {
   themeSource: ThemeSource;
+  windowBounds?: WindowBounds;
+  windowMaximized?: boolean;
 }
+
+const DEFAULT_WINDOW = { width: 1100, height: 720 } as const;
 
 const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
 
-function readSettings(): Settings {
+// In-memory cache, loaded once at startup and persisted whole so independent
+// writers (theme, window bounds) never clobber each other's fields.
+const settings: Settings = { themeSource: 'system' };
+
+function isWindowBounds(value: unknown): value is WindowBounds {
+  if (!value || typeof value !== 'object') return false;
+  const b = value as Record<string, unknown>;
+  const optionalNumber = (v: unknown) =>
+    v === undefined || typeof v === 'number';
+  return (
+    typeof b.width === 'number' &&
+    b.width > 0 &&
+    typeof b.height === 'number' &&
+    b.height > 0 &&
+    optionalNumber(b.x) &&
+    optionalNumber(b.y)
+  );
+}
+
+function loadSettings(): void {
   try {
     const parsed = JSON.parse(
       fs.readFileSync(settingsPath(), 'utf-8'),
     ) as Partial<Settings>;
     if (parsed.themeSource && THEME_SOURCES.includes(parsed.themeSource)) {
-      return { themeSource: parsed.themeSource };
+      settings.themeSource = parsed.themeSource;
     }
+    if (isWindowBounds(parsed.windowBounds)) {
+      settings.windowBounds = parsed.windowBounds;
+    }
+    settings.windowMaximized = parsed.windowMaximized === true;
   } catch {
     // No settings file yet or it is unreadable — fall back to defaults.
   }
-  return { themeSource: 'system' };
 }
 
-function writeSettings(settings: Settings): void {
+function saveSettings(): void {
   try {
     fs.writeFileSync(
       settingsPath(),
@@ -46,6 +91,25 @@ function writeSettings(settings: Settings): void {
   } catch (err) {
     console.error('Failed to persist settings:', err);
   }
+}
+
+/**
+ * Whether a saved position still lands on a connected display. Guards against
+ * restoring a window off-screen after a monitor is unplugged or rearranged.
+ */
+function isPositionVisible(bounds: WindowBounds): boolean {
+  if (bounds.x === undefined || bounds.y === undefined) return false;
+  const { x, y, width, height } = bounds;
+  return screen.getAllDisplays().some(({ workArea }) => {
+    const overlapX =
+      Math.min(x + width, workArea.x + workArea.width) - Math.max(x, workArea.x);
+    const overlapY =
+      Math.min(y + height, workArea.y + workArea.height) -
+      Math.max(y, workArea.y);
+    // Require a usable slice of the window — including its draggable top bar —
+    // to remain reachable on some display.
+    return overlapX > 120 && overlapY > 48;
+  });
 }
 
 // ---- Theme ----------------------------------------------------------------
@@ -65,7 +129,8 @@ function registerThemeIpc(): void {
       throw new Error(`Invalid theme source: ${String(source)}`);
     }
     nativeTheme.themeSource = source;
-    writeSettings({ themeSource: source });
+    settings.themeSource = source;
+    saveSettings();
     return themeState();
   });
 
@@ -79,12 +144,29 @@ function registerThemeIpc(): void {
   });
 }
 
+// ---- Dock icon ------------------------------------------------------------
+
+/**
+ * Show the app icon in the macOS dock during development. Packaged builds get
+ * their icon from `packagerConfig.icon`, so this is only needed under
+ * `electron-forge start`, where the source lives at `assets/icon.png`.
+ * (Currently a white placeholder — replace with a PNG rendered from
+ * `assets/icon.svg`.)
+ */
+function applyDockIcon(): void {
+  if (process.platform !== 'darwin' || app.isPackaged || !app.dock) return;
+  const icon = nativeImage.createFromPath(
+    path.join(process.cwd(), 'assets', 'icon.png'),
+  );
+  if (!icon.isEmpty()) app.dock.setIcon(icon);
+}
+
 // ---- Windows --------------------------------------------------------------
 
 function createSplashWindow(): BrowserWindow {
   const splash = new BrowserWindow({
     width: 200,
-    height: 300,
+    height: 400,
     frame: false,
     transparent: true,
     resizable: false,
@@ -107,15 +189,33 @@ function createSplashWindow(): BrowserWindow {
 }
 
 function createMainWindow(): BrowserWindow {
+  const saved = settings.windowBounds;
+  const keepPosition = saved !== undefined && isPositionVisible(saved);
+
   const win = new BrowserWindow({
-    width: 1100,
-    height: 720,
+    width: saved?.width ?? DEFAULT_WINDOW.width,
+    height: saved?.height ?? DEFAULT_WINDOW.height,
+    x: keepPosition ? saved.x : undefined,
+    y: keepPosition ? saved.y : undefined,
+    center: !keepPosition,
     minWidth: 760,
     minHeight: 480,
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e24' : '#f5f5f7',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: { preload: preloadPath },
+  });
+
+  if (settings.windowMaximized) {
+    win.maximize();
+  }
+
+  // Persist size/position (and maximized state) as they were on close.
+  // getNormalBounds() returns the un-maximized bounds so a restore lands right.
+  win.on('close', () => {
+    settings.windowBounds = win.getNormalBounds();
+    settings.windowMaximized = win.isMaximized();
+    saveSettings();
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -129,26 +229,53 @@ function createMainWindow(): BrowserWindow {
   return win;
 }
 
+/**
+ * Hard cap on how long we wait for the renderer's ready signal before showing
+ * the window anyway. Guards against the signal never arriving (e.g. a broken
+ * renderer) so the app can't get stuck on the splash forever.
+ */
+const REVEAL_FALLBACK_MS = 10_000;
+
 /** Show the splash, load the main window behind it, then hand off. */
 function boot(): void {
   const splash = createSplashWindow();
   const shownAt = Date.now();
   const mainWindow = createMainWindow();
 
-  mainWindow.once('ready-to-show', () => {
+  let revealed = false;
+  const reveal = (): void => {
+    if (revealed || mainWindow.isDestroyed()) return;
+    revealed = true;
+    // Keep the splash up for at least MIN_SPLASH_MS so it never just flashes.
     const remaining = Math.max(0, MIN_SPLASH_MS - (Date.now() - shownAt));
     setTimeout(() => {
+      if (mainWindow.isDestroyed()) return;
       if (!splash.isDestroyed()) {
         splash.close();
       }
       mainWindow.show();
       mainWindow.focus();
     }, remaining);
+  };
+
+  // Reveal only once the renderer has actually mounted and painted. Gating on
+  // the React app — rather than `ready-to-show`, which fires on the empty HTML
+  // shell — prevents revealing a blank window when the Vite dev server reloads
+  // (e.g. after dependency pre-bundling) mid-boot.
+  ipcMain.once(AppChannels.ready, (event) => {
+    if (event.sender === mainWindow.webContents) {
+      reveal();
+    }
   });
+
+  // Safety net: never leave the window stuck hidden if the signal is missed.
+  setTimeout(reveal, REVEAL_FALLBACK_MS);
 }
 
 app.on('ready', () => {
-  nativeTheme.themeSource = readSettings().themeSource;
+  loadSettings();
+  applyDockIcon();
+  nativeTheme.themeSource = settings.themeSource;
   registerThemeIpc();
   console.log(
     `[main] ready — theme "${nativeTheme.themeSource}" (dark=${nativeTheme.shouldUseDarkColors})`,

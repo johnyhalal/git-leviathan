@@ -7,9 +7,7 @@ body {
 }
 
 body {
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
-    sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -25,7 +23,9 @@ body {
   justify-content: center;
   gap: 22px;
   border-radius: 16px;
-  background: linear-gradient(160deg, #2a2440 0%, #1c1b2e 55%, #141320 100%);
+  background:
+    url(../../../assets/splash_bg.jpg) center / cover no-repeat,
+    linear-gradient(160deg, #2a2440 0%, #1c1b2e 55%, #141320 100%);
   color: #f4f2ff;
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
@@ -33,21 +33,11 @@ body {
   user-select: none;
 }
 
-.logo-wrap {
-  width: 108px;
-  height: 108px;
-  display: grid;
-  place-items: center;
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-}
-
 .logo {
-  width: 68px;
-  height: 68px;
+  width: 112px;
+  height: 224px;
   display: block;
+  filter: drop-shadow(0 10px 24px rgba(122, 92, 255, 0.35));
 }
 
 .title {

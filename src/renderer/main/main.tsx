@@ -13,3 +13,9 @@ createRoot(container).render(
     <App />
   </StrictMode>,
 );
+
+// Tell the main process to reveal the window only after we've painted a frame,
+// so a slow or reloading dev server never surfaces a blank window.
+requestAnimationFrame(() =>
+  requestAnimationFrame(() => window.api.app.signalReady()),
+);
