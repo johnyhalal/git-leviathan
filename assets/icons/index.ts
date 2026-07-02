@@ -1,0 +1,8 @@
+export type { IconProps } from './types';
+export { GearIcon } from './GearIcon';
+export { CloseIcon } from './CloseIcon';
+export { PlusIcon } from './PlusIcon';
+export { FolderIcon } from './FolderIcon';
+export { CloneIcon } from './CloneIcon';
+export { FolderPlusIcon } from './FolderPlusIcon';
+export { SearchIcon } from './SearchIcon';

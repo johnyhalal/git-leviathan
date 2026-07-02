@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   nativeImage,
   nativeTheme,
@@ -11,7 +12,9 @@ import fs from 'node:fs';
 import started from 'electron-squirrel-startup';
 import {
   AppChannels,
+  RepoChannels,
   ThemeChannels,
+  type OpenRepoResult,
   type ThemeSource,
   type ThemeState,
 } from './types/ipc';
@@ -22,7 +25,7 @@ if (started) {
 }
 
 /** Minimum time the splash stays visible so it never just flashes. */
-const MIN_SPLASH_MS = 4000;
+const MIN_SPLASH_MS = 2000;
 const THEME_SOURCES: ThemeSource[] = ['system', 'light', 'dark'];
 const preloadPath = path.join(__dirname, 'preload.js');
 
@@ -39,6 +42,8 @@ interface Settings {
   themeSource: ThemeSource;
   windowBounds?: WindowBounds;
   windowMaximized?: boolean;
+  /** Directory last browsed in the "open repository" picker. */
+  lastRepoDir?: string;
 }
 
 const DEFAULT_WINDOW = { width: 1100, height: 720 } as const;
@@ -76,6 +81,9 @@ function loadSettings(): void {
       settings.windowBounds = parsed.windowBounds;
     }
     settings.windowMaximized = parsed.windowMaximized === true;
+    if (typeof parsed.lastRepoDir === 'string') {
+      settings.lastRepoDir = parsed.lastRepoDir;
+    }
   } catch {
     // No settings file yet or it is unreadable — fall back to defaults.
   }
@@ -142,6 +150,58 @@ function registerThemeIpc(): void {
       win.webContents.send(ThemeChannels.changed, state);
     }
   });
+}
+
+// ---- Repositories ---------------------------------------------------------
+
+/**
+ * A directory is a git repository root when it contains a `.git` entry — a
+ * directory for a normal clone, or a file for worktrees and submodules.
+ */
+function isGitRepo(dir: string): boolean {
+  try {
+    return fs.existsSync(path.join(dir, '.git'));
+  } catch {
+    return false;
+  }
+}
+
+function registerRepoIpc(): void {
+  ipcMain.handle(
+    RepoChannels.open,
+    async (event): Promise<OpenRepoResult> => {
+      // Anchor the picker to the requesting window so it opens as a sheet on
+      // macOS rather than a detached, unowned dialog.
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options: Electron.OpenDialogOptions = {
+        title: 'Open Repository',
+        properties: ['openDirectory'],
+      };
+      // Reopen where the user last browsed (e.g. after a wrong pick) instead of
+      // the OS default. Skip a stale path that no longer exists on disk.
+      if (settings.lastRepoDir && fs.existsSync(settings.lastRepoDir)) {
+        options.defaultPath = settings.lastRepoDir;
+      }
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { status: 'canceled' };
+      }
+
+      const dir = result.filePaths[0];
+      // Remember the containing folder so a retry lands on the same listing,
+      // regardless of whether this pick turned out to be a repository.
+      settings.lastRepoDir = path.dirname(dir);
+      saveSettings();
+
+      if (!isGitRepo(dir)) {
+        return { status: 'not-a-repo', path: dir };
+      }
+      return { status: 'opened', repo: { name: path.basename(dir), path: dir } };
+    },
+  );
 }
 
 // ---- Dock icon ------------------------------------------------------------
@@ -277,6 +337,7 @@ app.on('ready', () => {
   applyDockIcon();
   nativeTheme.themeSource = settings.themeSource;
   registerThemeIpc();
+  registerRepoIpc();
   console.log(
     `[main] ready — theme "${nativeTheme.themeSource}" (dark=${nativeTheme.shouldUseDarkColors})`,
   );

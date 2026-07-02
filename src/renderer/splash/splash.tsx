@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import './splash.css';
-import leviathan from './brand/leviathan-splash.svg?url';
+import leviathan from '../../../assets/leviathan_transparent.png?url';
 
 function Splash() {
   return (

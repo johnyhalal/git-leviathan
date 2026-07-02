@@ -1,3 +1,27 @@
+/* ---- Fonts (self-hosted variable woff2, bundled into ASAR) --------------- */
+/* Weight axis 100-900 in one file per subset; the browser only fetches
+   latin-ext when a glyph in that range is used. */
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../../../assets/fonts/Roboto-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../../../assets/fonts/Roboto-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
   --bg: #f5f5f7;
   --bg-elev: #ffffff;
@@ -5,6 +29,7 @@
   --fg-muted: #6e6e73;
   --border: rgba(0, 0, 0, 0.1);
   --control-bg: rgba(0, 0, 0, 0.05);
+  --danger: #d92d20;
   color-scheme: light;
 }
 
@@ -16,6 +41,7 @@
     --fg-muted: #a1a1aa;
     --border: rgba(255, 255, 255, 0.12);
     --control-bg: rgba(255, 255, 255, 0.08);
+    --danger: #f97066;
     color-scheme: dark;
   }
 }
@@ -32,9 +58,7 @@ body,
 
 body {
   margin: 0;
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
-    sans-serif;
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
@@ -112,13 +136,12 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   border: none;
-  border-radius: 4px;
+  border-radius: 5px;
   background: transparent;
   color: inherit;
-  font-size: 15px;
   line-height: 1;
   cursor: pointer;
   opacity: 0.55;
@@ -191,6 +214,7 @@ body {
 
 h1 {
   margin: 0;
+  font-family: 'Roboto', sans-serif;
   font-size: 44px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -200,6 +224,253 @@ h1 {
   margin: 0;
   color: var(--fg-muted);
   font-size: 15px;
+}
+
+/* ---- Repo start (empty tab: open / clone / create + recents) ------------- */
+
+.repo-start {
+  align-self: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  overflow-y: auto;
+}
+
+.repo-start-inner {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding-bottom: 24px;
+}
+
+.repo-start-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.repo-start-title {
+  margin: 0;
+  font-family: 'Roboto', sans-serif;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.repo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.repo-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.repo-action:hover {
+  background: var(--bg-elev);
+  border-color: var(--fg-muted);
+}
+
+.repo-recent {
+  display: flex;
+  flex-direction: column;
+}
+
+.repo-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  transition: border-color 0.15s ease;
+}
+
+.repo-search:focus-within {
+  border-color: var(--fg-muted);
+}
+
+.repo-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.repo-search-input::placeholder {
+  color: var(--fg-muted);
+}
+
+.repo-recent-title {
+  margin: 20px 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.repo-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.repo-recent-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.repo-recent-item:hover {
+  background: var(--control-bg);
+}
+
+.repo-recent-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.repo-recent-path {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-recent-empty {
+  margin: 0;
+  padding: 20px 12px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* ---- Toasts (bottom-left transient notifications) ------------------------ */
+
+.toast-stack {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(380px, calc(100% - 32px));
+  -webkit-app-region: no-drag;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 12px 12px 14px;
+  border: 1px solid var(--border);
+  border-left-width: 10px;
+  border-radius: 5px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  animation: toast-in 0.18s ease;
+}
+
+.toast-error {
+  border-left-color: var(--danger);
+}
+
+.toast-info {
+  border-left-color: var(--fg-muted);
+}
+
+.toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.toast-title {
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.toast-message {
+  line-height: 1.4;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.toast-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-top: -1px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.toast-close:hover {
+  opacity: 1;
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ---- Settings dialog ----------------------------------------------------- */
@@ -216,7 +487,10 @@ h1 {
 }
 
 .settings-panel {
-  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  max-height: min(70vh, 560px);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -228,6 +502,7 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex: 0 0 auto;
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
 }
@@ -238,18 +513,120 @@ h1 {
   font-weight: 700;
 }
 
+/* ---- Settings body: category rail (left) + active panel (right) ---------- */
+
+.settings-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 180px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.settings-nav button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.settings-nav button:hover {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+.settings-nav button.active {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+.settings-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+
+/* ---- Settings sections & rows -------------------------------------------- */
+
+.settings-section + .settings-section {
+  margin-top: 24px;
+}
+
+.settings-section-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.settings-group {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
 .settings-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 16px;
+  padding: 14px 16px;
+}
+
+.settings-row:not(:last-child) {
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .settings-label {
   font-size: 14px;
   font-weight: 600;
   color: var(--fg);
+}
+
+.settings-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.settings-control {
+  flex: 0 0 auto;
+}
+
+.settings-empty {
+  margin: 0;
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--fg-muted);
 }
 
 /* ---- Theme switch (lives inside Settings) -------------------------------- */

@@ -1,9 +1,11 @@
-import { CloseIcon, PlusIcon } from '../assets/icons';
+import { CloseIcon, PlusIcon } from '../../../../assets/icons';
 
 export interface Tab {
   id: string;
   /** Repository name shown on the tab. */
   title: string;
+  /** Absolute path of the open repository, or undefined for an empty tab. */
+  repoPath?: string;
 }
 
 interface TabBarProps {
@@ -27,7 +29,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd }: TabBarProps
           onClick={() => onSelect(tab.id)}
         >
           <span className="tab-title">{tab.title}</span>
-          {tabs.length > 1 && (
+          {(tabs.length > 1 || tab.repoPath) && (
             <button
               type="button"
               className="tab-close"
@@ -37,7 +39,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd }: TabBarProps
                 onClose(tab.id);
               }}
             >
-              <CloseIcon />
+              <CloseIcon size={12} />
             </button>
           )}
         </div>
