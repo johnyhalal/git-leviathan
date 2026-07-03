@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { TabBar, type Tab } from './components/TabBar';
 import { RepoStart, type RecentRepo } from './components/RepoStart';
 import { ToastStack, type ToastData, type ToastVariant } from './components/Toast';
 import { Settings } from './components/Settings';
 import { CloneDialog } from './components/CloneDialog';
+import { RepoView } from './components/repo/RepoView';
 import { GearIcon } from '../../../assets/icons';
 import type { RepoInfo } from '../../types/ipc';
 
@@ -24,6 +25,9 @@ export function App() {
   const [cloneOpen, setCloneOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
+  // Gate tab persistence until the initial restore has run, so the default
+  // empty tab can't overwrite the saved list before it's loaded.
+  const tabsHydrated = useRef(false);
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
 
@@ -37,6 +41,37 @@ export function App() {
       active = false;
     };
   }, []);
+
+  // Restore the repositories that were open as tabs last session (paths only;
+  // titles are derived from the folder name).
+  useEffect(() => {
+    let active = true;
+    void window.api.repo.openTabs().then((paths) => {
+      if (!active) return;
+      if (paths.length > 0) {
+        const restored: Tab[] = paths.map((path) => ({
+          id: `tab-${nextTabId++}`,
+          title: folderName(path),
+          repoPath: path,
+        }));
+        setTabs(restored);
+        setActiveId(restored[0].id);
+      }
+      tabsHydrated.current = true;
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Persist the open repo tabs (paths, in order) whenever they change.
+  useEffect(() => {
+    if (!tabsHydrated.current) return;
+    const paths = tabs
+      .map((tab) => tab.repoPath)
+      .filter((path): path is string => typeof path === 'string');
+    void window.api.repo.saveOpenTabs(paths);
+  }, [tabs]);
 
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
@@ -152,12 +187,13 @@ export function App() {
         </div>
       </header>
 
-      <main className="content">
+      <main className={activeTab.repoPath ? 'content content-repo' : 'content'}>
         {activeTab.repoPath ? (
-          <>
-            <h1>{activeTab.title}</h1>
-            <p className="subtitle">{activeTab.repoPath}</p>
-          </>
+          <RepoView
+            title={activeTab.title}
+            repoPath={activeTab.repoPath}
+            onError={(title, message) => showToast(title, message, 'error')}
+          />
         ) : (
           <RepoStart
             recent={recentRepos}

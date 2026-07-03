@@ -11,7 +11,9 @@ import {
 } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 import started from 'electron-squirrel-startup';
 import {
   AppChannels,
@@ -24,11 +26,25 @@ import {
   type DeviceCodePrompt,
   type IntegrationConnection,
   type IntegrationProvider,
+  type CheckoutResult,
+  type RefsMutationResult,
+  type GitflowKind,
+  type StashInfo,
+  type CommitLogEntry,
+  type CommitRefDecoration,
+  type CommitResult,
+  type FileChange,
+  type FileStatus,
+  type WorkingStatus,
   type IntegrationsState,
+  type LocalBranchInfo,
   type OpenRepoResult,
   type RecentRepo,
+  type RemoteBranchInfo,
   type RemoteRepo,
   type RepoInfo,
+  type RepoRefs,
+  type TagInfo,
   type ThemeSource,
   type ThemeState,
 } from './types/ipc';
@@ -68,7 +84,7 @@ interface ProviderClient {
   scope: string;
   requestDeviceAuthorization: typeof github.requestDeviceAuthorization;
   pollForAccessToken: typeof github.pollForAccessToken;
-  fetchUserLogin: typeof github.fetchUserLogin;
+  fetchAccount: typeof github.fetchAccount;
   fetchUserRepos: typeof github.fetchUserRepos;
 }
 
@@ -79,7 +95,7 @@ const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
     scope: 'repo read:user',
     requestDeviceAuthorization: github.requestDeviceAuthorization,
     pollForAccessToken: github.pollForAccessToken,
-    fetchUserLogin: github.fetchUserLogin,
+    fetchAccount: github.fetchAccount,
     fetchUserRepos: github.fetchUserRepos,
   },
   gitlab: {
@@ -87,7 +103,7 @@ const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
     scope: 'read_api read_repository',
     requestDeviceAuthorization: gitlab.requestDeviceAuthorization,
     pollForAccessToken: gitlab.pollForAccessToken,
-    fetchUserLogin: gitlab.fetchUserLogin,
+    fetchAccount: gitlab.fetchAccount,
     fetchUserRepos: gitlab.fetchUserRepos,
   },
 };
@@ -111,6 +127,10 @@ interface Settings {
   lastCloneDir?: string;
   /** Recently opened repositories, most-recently-opened first. */
   recentRepos?: RecentRepo[];
+  /** Repository paths open as tabs last session, in tab order. */
+  openTabs?: string[];
+  /** Repo sidebar collapsible sections' open/closed state, keyed by section id. */
+  sidebarSections?: Record<string, boolean>;
   /** Connected Git host accounts, keyed by provider id. */
   integrations?: Partial<Record<IntegrationProvider, IntegrationConnection>>;
 }
@@ -168,7 +188,9 @@ function isIntegrationConnection(
     (c.status === 'disconnected' ||
       c.status === 'connecting' ||
       c.status === 'connected') &&
-    (c.account === undefined || typeof c.account === 'string')
+    (c.account === undefined || typeof c.account === 'string') &&
+    (c.name === undefined || typeof c.name === 'string') &&
+    (c.avatarUrl === undefined || typeof c.avatarUrl === 'string')
   );
 }
 
@@ -192,6 +214,19 @@ function loadSettings(): void {
     }
     if (Array.isArray(parsed.recentRepos)) {
       settings.recentRepos = parsed.recentRepos.filter(isRecentRepo);
+    }
+    if (Array.isArray(parsed.openTabs)) {
+      settings.openTabs = parsed.openTabs.filter(
+        (p): p is string => typeof p === 'string',
+      );
+    }
+    if (parsed.sidebarSections && typeof parsed.sidebarSections === 'object') {
+      const raw = parsed.sidebarSections as Record<string, unknown>;
+      const valid: Record<string, boolean> = {};
+      for (const [key, value] of Object.entries(raw)) {
+        if (typeof value === 'boolean') valid[key] = value;
+      }
+      settings.sidebarSections = valid;
     }
     if (parsed.integrations && typeof parsed.integrations === 'object') {
       const raw = parsed.integrations as Record<string, unknown>;
@@ -355,7 +390,547 @@ interface RunningClone {
 // UI is modal, so at most one runs per window — cancel targets that one.
 const runningClones = new Map<number, RunningClone>();
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Run a read-only git command in `cwd` and return its stdout. Failures (git
+ * missing, not a repo, bad ref) resolve to an empty string so callers degrade
+ * to empty lists rather than throwing across the IPC boundary.
+ */
+async function runGit(cwd: string, args: string[]): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout;
+  } catch {
+    return '';
+  }
+}
+
+/** Whether a local branch named `branch` already exists in the repo at `cwd`. */
+async function localBranchExists(cwd: string, branch: string): Promise<boolean> {
+  const out = await runGit(cwd, [
+    'rev-parse',
+    '--verify',
+    '--quiet',
+    `refs/heads/${branch}`,
+  ]);
+  return out.trim().length > 0;
+}
+
+/** The checked-out branch's short name, or '' when detached / on error. */
+async function currentBranchName(cwd: string): Promise<string> {
+  const out = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const name = out.trim();
+  return name === 'HEAD' ? '' : name;
+}
+
+/** The first of `candidates` that exists as a local branch, or null. */
+async function firstExistingBranch(
+  cwd: string,
+  candidates: string[],
+): Promise<string | null> {
+  for (const candidate of candidates) {
+    if (await localBranchExists(cwd, candidate)) return candidate;
+  }
+  return null;
+}
+
+const nonEmptyLines = (text: string): string[] =>
+  text.split('\n').filter((line) => line.length > 0);
+
+async function readLocalBranches(cwd: string): Promise<LocalBranchInfo[]> {
+  // %(HEAD) is "*" for the current branch; %(upstream:track) yields text like
+  // "[ahead 2, behind 1]", "[ahead 2]", "[gone]" or empty.
+  const out = await runGit(cwd, [
+    'for-each-ref',
+    '--format=%(HEAD)\t%(refname:short)\t%(upstream:track)',
+    'refs/heads',
+  ]);
+  return nonEmptyLines(out).map((line) => {
+    const [head, name, track = ''] = line.split('\t');
+    const ahead = /ahead (\d+)/.exec(track);
+    const behind = /behind (\d+)/.exec(track);
+    return {
+      name,
+      current: head === '*',
+      ahead: ahead ? Number(ahead[1]) : 0,
+      behind: behind ? Number(behind[1]) : 0,
+    };
+  });
+}
+
+async function readRemoteBranches(cwd: string): Promise<RemoteBranchInfo[]> {
+  const out = await runGit(cwd, [
+    'for-each-ref',
+    '--format=%(refname:short)',
+    'refs/remotes',
+  ]);
+  return nonEmptyLines(out).flatMap((short) => {
+    // "origin/main" -> { remote: "origin", name: "main" }; skip the symbolic
+    // "origin/HEAD" pointer.
+    const slash = short.indexOf('/');
+    if (slash === -1) return [];
+    const name = short.slice(slash + 1);
+    if (name === 'HEAD') return [];
+    return [{ remote: short.slice(0, slash), name }];
+  });
+}
+
+async function readTags(cwd: string): Promise<TagInfo[]> {
+  const out = await runGit(cwd, [
+    'for-each-ref',
+    '--sort=-creatordate',
+    '--format=%(refname:short)\t%(objectname:short)',
+    'refs/tags',
+  ]);
+  return nonEmptyLines(out).map((line) => {
+    const [name, hash = ''] = line.split('\t');
+    return { name, hash };
+  });
+}
+
+async function readStashes(cwd: string): Promise<StashInfo[]> {
+  // %gd = the "stash@{N}" selector, %gs = the stash subject; \t (%x09) between.
+  const out = await runGit(cwd, ['stash', 'list', '--format=%gd%x09%gs']);
+  return nonEmptyLines(out).flatMap((line) => {
+    const [selector, message = ''] = line.split('\t');
+    const match = /stash@\{(\d+)\}/.exec(selector);
+    if (!match) return [];
+    // Subjects read "WIP on <branch>: …" or "On <branch>: …".
+    const branch = /^(?:WIP on|On) ([^:]+):/.exec(message)?.[1];
+    return [{ index: Number(match[1]), message, branch }];
+  });
+}
+
+async function readRefs(cwd: string): Promise<RepoRefs> {
+  const [localBranches, remoteBranches, tags, stashes] = await Promise.all([
+    readLocalBranches(cwd),
+    readRemoteBranches(cwd),
+    readTags(cwd),
+    readStashes(cwd),
+  ]);
+  return { localBranches, remoteBranches, tags, stashes };
+}
+
+/** Pull a concise message out of a failed git exec (its last stderr line). */
+function gitErrorMessage(err: unknown, fallback: string): string {
+  if (err && typeof err === 'object' && 'stderr' in err) {
+    const stderr = String((err as { stderr: unknown }).stderr ?? '').trim();
+    const lines = stderr.split('\n').map((line) => line.trim()).filter(Boolean);
+    if (lines.length > 0) return lines[lines.length - 1];
+  }
+  return fallback;
+}
+
+const GITFLOW_KINDS: GitflowKind[] = ['feature', 'release', 'hotfix'];
+
+/**
+ * Run a sequence of git commands in `cwd`, stopping at the first failure, then
+ * resolve with the repo's fresh refs (or a friendly error message on failure).
+ */
+async function mutateRepo(
+  cwd: string,
+  steps: string[][],
+  fallback: string,
+): Promise<RefsMutationResult> {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  try {
+    for (const args of steps) {
+      await execFileAsync('git', args, { cwd, env });
+    }
+  } catch (err) {
+    return { status: 'error', message: gitErrorMessage(err, fallback) };
+  }
+  return { status: 'ok', refs: await readRefs(cwd) };
+}
+
+/** Parse git's %D decoration string into structured refs. */
+function parseDecorations(raw: string): CommitRefDecoration[] {
+  return raw
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean)
+    // Drop symbolic "origin/HEAD" style pointers — they're noise, not a branch.
+    .filter((token) => !token.endsWith('/HEAD'))
+    .map((token): CommitRefDecoration => {
+      if (token.startsWith('HEAD -> ')) {
+        return { kind: 'head', label: token.slice('HEAD -> '.length) };
+      }
+      if (token === 'HEAD') return { kind: 'head', label: 'HEAD' };
+      if (token.startsWith('tag: ')) {
+        return { kind: 'tag', label: token.slice('tag: '.length) };
+      }
+      // A remote-tracking ref is qualified by its remote, e.g. "origin/main".
+      if (token.includes('/')) return { kind: 'remote', label: token };
+      return { kind: 'branch', label: token };
+    });
+}
+
+// Field/record separators unlikely to appear in commit metadata.
+const LOG_FS = '\x1f';
+const LOG_FORMAT = ['%H', '%h', '%P', '%an', '%ae', '%aI', '%s', '%D'].join(LOG_FS);
+const DEFAULT_LOG_LIMIT = 500;
+
+/**
+ * Gravatar URL for an email, with a per-address `identicon` so authors without
+ * a Gravatar still get a stable, unique image for the commit-graph node.
+ */
+function gravatarUrl(email: string): string {
+  const hash = createHash('md5')
+    .update(email.trim().toLowerCase())
+    .digest('hex');
+  return `https://www.gravatar.com/avatar/${hash}?s=48&d=identicon`;
+}
+
+async function readLog(cwd: string, limit: number): Promise<CommitLogEntry[]> {
+  // --topo-order guarantees children are listed before their parents, which the
+  // renderer's lane layout relies on.
+  const out = await runGit(cwd, [
+    'log',
+    '--topo-order',
+    `--max-count=${limit}`,
+    `--pretty=format:${LOG_FORMAT}`,
+  ]);
+  return nonEmptyLines(out).map((line) => {
+    const [
+      hash,
+      shortHash,
+      parents,
+      author,
+      authorEmail,
+      date,
+      subject,
+      decorations = '',
+    ] = line.split(LOG_FS);
+    return {
+      hash,
+      shortHash,
+      parents: parents ? parents.split(' ').filter(Boolean) : [],
+      author,
+      authorAvatarUrl: gravatarUrl(authorEmail),
+      date,
+      subject,
+      refs: parseDecorations(decorations),
+    };
+  });
+}
+
+function mapFileStatus(code: string): FileStatus {
+  switch (code) {
+    case 'A':
+      return 'added';
+    case 'D':
+      return 'deleted';
+    case 'R':
+      return 'renamed';
+    default:
+      // M, C, T, and anything else fall back to "modified".
+      return 'modified';
+  }
+}
+
+async function readCommitFiles(cwd: string, hash: string): Promise<FileChange[]> {
+  // Diff a commit against its first parent; --root makes the initial commit list
+  // all its files as added. --name-status yields "M\tpath" (rename: "R100\told\tnew").
+  const out = await runGit(cwd, [
+    'diff-tree',
+    '--no-commit-id',
+    '--name-status',
+    '-r',
+    '--root',
+    hash,
+  ]);
+  return nonEmptyLines(out).flatMap((line) => {
+    const parts = line.split('\t');
+    if (parts.length < 2) return [];
+    // For renames/copies the new path is the last field.
+    const path = parts[parts.length - 1];
+    return [{ path, status: mapFileStatus(parts[0][0] ?? '') }];
+  });
+}
+
+/** Map a porcelain status letter (untracked '?' included) to a FileStatus. */
+function mapPorcelainStatus(code: string): FileStatus {
+  switch (code) {
+    case 'A':
+    case '?':
+      return 'added';
+    case 'D':
+      return 'deleted';
+    case 'R':
+    case 'C':
+      return 'renamed';
+    default:
+      return 'modified';
+  }
+}
+
+async function readStatus(cwd: string): Promise<WorkingStatus> {
+  // -z: NUL-separated entries; each is "XY <path>", X=index (staged), Y=worktree.
+  // Renames/copies append an extra NUL-separated original path we must consume.
+  const out = await runGit(cwd, [
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--untracked-files=all',
+  ]);
+  const parts = out.split('\0');
+  const staged: FileChange[] = [];
+  const unstaged: FileChange[] = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i];
+    if (entry.length < 4) continue; // "XY p" is the shortest valid entry
+    const x = entry[0];
+    const y = entry[1];
+    const path = entry.slice(3);
+    // A rename/copy carries its source path in the following field.
+    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') i++;
+
+    if (x !== ' ' && x !== '?') staged.push({ path, status: mapPorcelainStatus(x) });
+    if (y !== ' ') unstaged.push({ path, status: mapPorcelainStatus(y) });
+  }
+
+  return { staged, unstaged };
+}
+
 function registerRepoIpc(): void {
+  ipcMain.handle(
+    RepoChannels.listRefs,
+    async (_event, repoPath: unknown): Promise<RepoRefs> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { localBranches: [], remoteBranches: [], tags: [], stashes: [] };
+      }
+      return readRefs(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.log,
+    async (_event, repoPath: unknown, limit: unknown): Promise<CommitLogEntry[]> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return [];
+      const max =
+        typeof limit === 'number' && limit > 0 ? Math.floor(limit) : DEFAULT_LOG_LIMIT;
+      return readLog(repoPath, max);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.commitFiles,
+    async (_event, repoPath: unknown, hash: unknown): Promise<FileChange[]> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return [];
+      if (typeof hash !== 'string' || hash.length === 0) return [];
+      return readCommitFiles(repoPath, hash);
+    },
+  );
+
+  const emptyStatus: WorkingStatus = { staged: [], unstaged: [] };
+
+  ipcMain.handle(
+    RepoChannels.status,
+    async (_event, repoPath: unknown): Promise<WorkingStatus> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
+      return readStatus(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.stage,
+    async (_event, repoPath: unknown, file: unknown): Promise<WorkingStatus> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
+      // A specific path stages just that file (incl. deletions); null stages all.
+      const args =
+        typeof file === 'string' && file.length > 0
+          ? ['add', '-A', '--', file]
+          : ['add', '-A'];
+      await runGit(repoPath, args);
+      return readStatus(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.unstage,
+    async (_event, repoPath: unknown, file: unknown): Promise<WorkingStatus> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
+      // `reset` works whether or not HEAD exists yet (unlike `restore --staged`).
+      const args =
+        typeof file === 'string' && file.length > 0
+          ? ['reset', '-q', '--', file]
+          : ['reset', '-q'];
+      await runGit(repoPath, args);
+      return readStatus(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.commit,
+    async (_event, repoPath: unknown, message: unknown): Promise<CommitResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const text = typeof message === 'string' ? message.trim() : '';
+      if (!text) return { status: 'error', message: 'Enter a commit message.' };
+      try {
+        await execFileAsync('git', ['commit', '-m', text], {
+          cwd: repoPath,
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        });
+      } catch (err) {
+        return { status: 'error', message: gitErrorMessage(err, 'Commit failed.') };
+      }
+      return { status: 'ok' };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.checkout,
+    async (
+      _event,
+      repoPath: unknown,
+      branch: unknown,
+      remote: unknown,
+    ): Promise<CheckoutResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof branch !== 'string' || branch.length === 0) {
+        return { status: 'error', message: 'No branch was specified.' };
+      }
+      const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+      try {
+        // A remote was named and no local branch of this name exists yet: create
+        // a tracking branch off that specific remote. This disambiguates the case
+        // where several remotes share the branch name, which a bare
+        // `git checkout <branch>` refuses to guess. If the local branch already
+        // exists we fall through and just switch to it.
+        const args =
+          typeof remote === 'string' &&
+          remote.length > 0 &&
+          !(await localBranchExists(repoPath, branch))
+            ? ['checkout', '-b', branch, '--track', `${remote}/${branch}`]
+            : ['checkout', branch];
+        // Array args (no shell) avoid injection; branch/remote come from the
+        // repo's own ref list. GIT_TERMINAL_PROMPT=0 fails fast instead of prompting.
+        await execFileAsync('git', args, { cwd: repoPath, env: gitEnv });
+      } catch (err) {
+        return {
+          status: 'error',
+          message: gitErrorMessage(err, `Could not check out “${branch}”.`),
+        };
+      }
+      return { status: 'ok', refs: await readRefs(repoPath) };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.stashPop,
+    async (_event, repoPath: unknown, index: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+        return { status: 'error', message: 'Invalid stash.' };
+      }
+      return mutateRepo(
+        repoPath,
+        [['stash', 'pop', `stash@{${index}}`]],
+        'Could not apply the stash.',
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.stashDrop,
+    async (_event, repoPath: unknown, index: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+        return { status: 'error', message: 'Invalid stash.' };
+      }
+      return mutateRepo(
+        repoPath,
+        [['stash', 'drop', `stash@{${index}}`]],
+        'Could not drop the stash.',
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.gitflowStart,
+    async (
+      _event,
+      repoPath: unknown,
+      kind: unknown,
+      name: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (kind !== 'feature' && kind !== 'release' && kind !== 'hotfix') {
+        return { status: 'error', message: 'Unknown gitflow branch kind.' };
+      }
+      // Keep the name to a safe, ref-legal slug so it can't inject flags/paths.
+      const slug = typeof name === 'string' ? name.trim() : '';
+      if (!slug || !/^[A-Za-z0-9._/-]+$/.test(slug) || slug.startsWith('-')) {
+        return { status: 'error', message: 'Enter a valid branch name.' };
+      }
+      const branch = `${kind}/${slug}`;
+      if (await localBranchExists(repoPath, branch)) {
+        return { status: 'error', message: `Branch “${branch}” already exists.` };
+      }
+      // feature/release branch off develop; hotfix off main. Fall back to the
+      // current HEAD when the conventional base branch isn't present.
+      const bases =
+        kind === 'hotfix' ? ['main', 'master'] : ['develop'];
+      const base = await firstExistingBranch(repoPath, bases);
+      const args = base
+        ? ['checkout', '-b', branch, base]
+        : ['checkout', '-b', branch];
+      return mutateRepo(repoPath, [args], `Could not start “${branch}”.`);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.gitflowFinish,
+    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const branch = await currentBranchName(repoPath);
+      const kind = GITFLOW_KINDS.find((k) => branch.startsWith(`${k}/`));
+      if (!kind) {
+        return {
+          status: 'error',
+          message: 'Not on a gitflow branch (feature/…, release/…, hotfix/…).',
+        };
+      }
+      const bases = kind === 'hotfix' ? ['main', 'master'] : ['develop'];
+      const base = await firstExistingBranch(repoPath, bases);
+      if (!base) {
+        return {
+          status: 'error',
+          message: `No base branch (${bases.join('/')}) to finish “${branch}” into.`,
+        };
+      }
+      // Switch to the base, merge the topic branch with a merge commit, then
+      // delete it. A conflicting merge aborts and surfaces git's message.
+      return mutateRepo(
+        repoPath,
+        [
+          ['checkout', base],
+          ['merge', '--no-ff', branch],
+          ['branch', '-d', branch],
+        ],
+        `Could not finish “${branch}”.`,
+      );
+    },
+  );
+
   ipcMain.handle(
     RepoChannels.open,
     async (event): Promise<OpenRepoResult> => {
@@ -479,6 +1054,33 @@ function registerRepoIpc(): void {
       return [...settings.recentRepos].sort(
         (a, b) => b.lastOpenedAt - a.lastOpenedAt,
       );
+    },
+  );
+
+  ipcMain.handle(RepoChannels.openTabs, (): string[] => {
+    // Prune paths that are gone / no longer git repos so a stale tab can't
+    // reopen into a broken view, and persist the pruning.
+    const stored = settings.openTabs ?? [];
+    const existing = stored.filter(
+      (p) => fs.existsSync(p) && isGitRepo(p),
+    );
+    if (existing.length !== stored.length) {
+      settings.openTabs = existing;
+      saveSettings();
+    }
+    return [...existing];
+  });
+
+  ipcMain.handle(
+    RepoChannels.saveOpenTabs,
+    (_event, paths: unknown): void => {
+      if (!Array.isArray(paths)) {
+        throw new Error('Invalid open-tabs payload');
+      }
+      settings.openTabs = paths.filter(
+        (p): p is string => typeof p === 'string',
+      );
+      saveSettings();
     },
   );
 
@@ -682,7 +1284,13 @@ function connectionOf(provider: IntegrationProvider): IntegrationConnection {
   }
   const persisted = settings.integrations?.[provider];
   if (persisted?.status === 'connected') {
-    return { provider, status: 'connected', account: persisted.account };
+    return {
+      provider,
+      status: 'connected',
+      account: persisted.account,
+      name: persisted.name,
+      avatarUrl: persisted.avatarUrl,
+    };
   }
   const error = connectErrors.get(provider);
   return { provider, status: 'disconnected', ...(error ? { error } : {}) };
@@ -805,11 +1413,17 @@ async function completeConnect(
       auth,
       controller.signal,
     );
-    const account = await client.fetchUserLogin(token, controller.signal);
+    const account = await client.fetchAccount(token, controller.signal);
     storeToken(provider, token);
     settings.integrations = {
       ...settings.integrations,
-      [provider]: { provider, status: 'connected', account },
+      [provider]: {
+        provider,
+        status: 'connected',
+        account: account.username,
+        name: account.name,
+        avatarUrl: account.avatarUrl,
+      },
     };
     saveSettings();
   } catch (err) {
@@ -1011,6 +1625,27 @@ function boot(): void {
   setTimeout(reveal, REVEAL_FALLBACK_MS);
 }
 
+function registerAppIpc(): void {
+  ipcMain.handle(
+    AppChannels.getSidebarSections,
+    (): Record<string, boolean> => ({ ...(settings.sidebarSections ?? {}) }),
+  );
+
+  ipcMain.handle(
+    AppChannels.setSidebarSection,
+    (_event, key: unknown, open: unknown): void => {
+      if (typeof key !== 'string' || typeof open !== 'boolean') {
+        throw new Error('Invalid sidebar section payload');
+      }
+      settings.sidebarSections = {
+        ...(settings.sidebarSections ?? {}),
+        [key]: open,
+      };
+      saveSettings();
+    },
+  );
+}
+
 app.on('ready', () => {
   loadSettings();
   reconcileIntegrations();
@@ -1019,6 +1654,7 @@ app.on('ready', () => {
   registerThemeIpc();
   registerRepoIpc();
   registerIntegrationsIpc();
+  registerAppIpc();
   console.log(
     `[main] ready — theme "${nativeTheme.themeSource}" (dark=${nativeTheme.shouldUseDarkColors})`,
   );

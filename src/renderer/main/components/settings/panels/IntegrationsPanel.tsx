@@ -66,24 +66,38 @@ function ConnectSection({
   }
 
   const connected = connection.status === 'connected';
-  let status: string;
+
+  // Connected: identify the person (avatar + display name + @handle). Otherwise
+  // show the provider mark with a blurb, or the last connect error.
+  let label: string;
+  let detail: string;
   if (connected) {
-    status = connection.account ? `Connected as ${connection.account}` : 'Connected';
-  } else if (connection.error) {
-    status = connection.error;
+    label = connection.name || connection.account || name;
+    detail = connection.account ? `@${connection.account}` : 'Connected';
   } else {
-    status = blurb;
+    label = name;
+    detail = connection.error ?? blurb;
   }
 
   return (
     <SettingsSection title={name}>
       <div className="settings-row">
         <div className="integration-identity">
-          <span className="integration-icon">
-            <Icon size={22} />
-          </span>
+          {connected && connection.avatarUrl ? (
+            <img
+              className="integration-avatar"
+              src={connection.avatarUrl}
+              alt=""
+              width={36}
+              height={36}
+            />
+          ) : (
+            <span className="integration-icon">
+              <Icon size={22} />
+            </span>
+          )}
           <div className="settings-row-text">
-            <span className="settings-label">{name}</span>
+            <span className="settings-label">{label}</span>
             <span
               className={
                 connection.error && !connected
@@ -91,7 +105,7 @@ function ConnectSection({
                   : 'settings-desc'
               }
             >
-              {status}
+              {detail}
             </span>
           </div>
         </div>

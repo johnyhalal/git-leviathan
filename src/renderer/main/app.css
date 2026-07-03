@@ -33,6 +33,9 @@
   --border: rgba(0, 0, 0, 0.1);
   --control-bg: rgba(0, 0, 0, 0.05);
   --danger: #d92d20;
+  /* Light-blue accent for list selection; green for the checked-out branch. */
+  --selection: #3b82f6;
+  --current: #16a34a;
   color-scheme: light;
 }
 
@@ -46,6 +49,8 @@
     --border: rgba(255, 255, 255, 0.12);
     --control-bg: rgba(255, 255, 255, 0.08);
     --danger: #f97066;
+    --selection: #60a5fa;
+    --current: #4ade80;
     color-scheme: dark;
   }
 }
@@ -686,6 +691,16 @@ h1 {
   color: var(--fg);
 }
 
+.integration-avatar {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+}
+
 .settings-connect {
   height: 34px;
   padding: 0 16px;
@@ -1230,4 +1245,1063 @@ h1 {
   background: var(--bg);
   color: var(--fg);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+/* ---- Repository view ----------------------------------------------------- */
+
+/* When a repo is open the content area fills instead of centering its child. */
+.content-repo {
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.repo-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+/* Repo toolbar: branch pill (left), sync actions (centered). */
+.repo-toolbar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 88px;
+  padding: 0 12px;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.repo-toolbar-left {
+  flex: 1;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.repo-toolbar-center {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+.repo-toolbar-right {
+  flex: 1;
+}
+
+.repo-branch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.repo-branch-pill:hover {
+  border-color: var(--primary);
+}
+
+.repo-branch-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* Sync actions: label stacked over icon, centered. */
+.repo-action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 60px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.repo-action:hover {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+.repo-action-label {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Designed tooltip: an elevated bubble shown below the host on hover/focus.
+   Reusable — put `tooltip-host` + `data-tooltip="…"` on any element. */
+.tooltip-host {
+  position: relative;
+}
+
+.tooltip-host::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  z-index: 60;
+  padding: 5px 9px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(4px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition-delay: 0s;
+}
+
+/* Little arrow, filled to match the bubble so it reads as one shape. */
+.tooltip-host::before {
+  content: '';
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 50%;
+  z-index: 61;
+  border: 5px solid transparent;
+  border-bottom-color: var(--bg-elev);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+  transition: opacity 0.12s ease;
+}
+
+.tooltip-host:hover::after,
+.tooltip-host:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  transition-delay: 0.35s;
+}
+
+.tooltip-host:hover::before,
+.tooltip-host:focus-visible::before {
+  opacity: 1;
+  transition-delay: 0.35s;
+}
+
+/* Branch selector dropdown. */
+.branch-select {
+  position: relative;
+}
+
+.branch-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 260px;
+  max-height: 340px;
+  padding: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.branch-select-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.branch-select-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.branch-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+}
+
+.branch-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.branch-select-option > svg {
+  color: var(--fg-muted);
+  flex: 0 0 auto;
+}
+
+.branch-select-option:hover {
+  background: var(--control-bg);
+}
+
+.branch-select-option.is-current {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.branch-select-option.is-current > svg {
+  color: var(--primary);
+}
+
+.branch-select-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* Pull split button (main action + caret menu). */
+.pull-action {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.pull-action-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+}
+
+.pull-action-main .repo-action-label {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pull-action-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.pull-action-caret:hover {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+.pull-action-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 240px;
+  padding: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.pull-action-option {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pull-action-option:hover {
+  background: var(--control-bg);
+}
+
+.pull-action-option.is-current {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* Three-column body. */
+.repo-columns {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.repo-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.repo-column-left {
+  flex: 0 0 auto;
+}
+
+.repo-column-center {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+}
+
+.repo-column-right {
+  flex: 0 0 auto;
+}
+
+/* A 5px hit area whose visible 1px line is drawn via content-box clipping. */
+.repo-resize-handle {
+  flex: 0 0 5px;
+  padding: 0 2px;
+  background: var(--border);
+  background-clip: content-box;
+  cursor: col-resize;
+}
+
+.repo-resize-handle:hover {
+  background-color: var(--primary);
+}
+
+body.is-col-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Sidebar collapsible sections. */
+.repo-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: 100%;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.repo-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.repo-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-section-header:hover {
+  background: var(--control-bg);
+}
+
+.repo-section-chevron {
+  display: inline-flex;
+  color: var(--fg-muted);
+  transition: transform 0.15s ease;
+}
+
+.repo-section-chevron.is-collapsed {
+  transform: rotate(-90deg);
+}
+
+.repo-section-icon {
+  display: inline-flex;
+  color: var(--fg-muted);
+}
+
+.repo-section-label {
+  flex: 1;
+}
+
+.repo-section-count {
+  color: var(--recent-item-fg);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.repo-section-body {
+  padding: 2px 4px 8px 8px;
+}
+
+.repo-section-empty {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* Sidebar list rows (branches / remotes / PRs / tags). */
+.repo-list-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-list-item > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.repo-list-item:hover {
+  background: var(--control-bg);
+}
+
+.repo-list-item.is-active {
+  background: color-mix(in srgb, var(--selection) 18%, transparent);
+}
+
+/* The checked-out branch keeps a green highlight at all times — and stays green
+   even when it's also the selected row (green wins over the blue selection). */
+.repo-list-item.is-current,
+.repo-list-item.is-current.is-active {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--current) 18%, transparent);
+}
+
+.repo-list-item.is-current > svg,
+.repo-branch-check {
+  color: var(--current);
+}
+
+/* Pulled out of the flex flow and placed in the padding gutter just left of the
+   branch icon, so every branch icon stays in the same column whether or not the
+   row is the checked-out one. Its `left` is set inline to track the row's indent. */
+.repo-branch-check {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 4px;
+  display: inline-flex;
+}
+
+.repo-list-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-branch-track {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Gitflow action panel. */
+.repo-gitflow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 8px 6px;
+}
+
+.repo-gitflow-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-gitflow-action > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.repo-gitflow-action:hover:not(:disabled),
+.repo-gitflow-action.is-open {
+  background: var(--control-bg);
+}
+
+.repo-gitflow-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.repo-gitflow-action > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-gitflow-input {
+  display: block;
+  box-sizing: border-box;
+  width: auto;
+  margin: 2px 8px 4px 24px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.repo-gitflow-input:focus {
+  border-color: var(--selection);
+}
+
+/* Stash rows: a clickable label with pop/drop actions that appear on hover. */
+.repo-stash-item {
+  gap: 4px;
+}
+
+.repo-stash-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-stash-main > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.repo-stash-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.repo-stash-item:hover .repo-stash-action {
+  opacity: 0.7;
+}
+
+.repo-stash-action:hover {
+  opacity: 1;
+  background: var(--control-bg);
+  color: var(--fg);
+}
+
+/* Collapsible folder rows in the branch tree. */
+.repo-tree-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-tree-folder-header:hover {
+  background: var(--control-bg);
+}
+
+.repo-tree-folder-header > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.repo-tree-folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pull requests. */
+.repo-pr-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+.repo-pr-number {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.repo-pr-state {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.pr-state-open {
+  color: #2ea043;
+}
+
+.pr-state-draft {
+  color: var(--fg-muted);
+}
+
+.pr-state-merged {
+  color: #8b5cf6;
+}
+
+.pr-state-closed {
+  color: var(--danger);
+}
+
+/* Tags. */
+.repo-tag-hash {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Commit table (middle column). Fixed layout so columns line up row-to-row
+   and long cells clip with an ellipsis instead of pushing their neighbours. */
+.commit-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.commit-col-refs {
+  width: 160px;
+}
+
+.commit-col-date {
+  width: 150px;
+}
+
+.commit-col-author {
+  width: 150px;
+}
+
+/* The message column carries no fixed width, so it absorbs the leftover space. */
+
+.commit-table th,
+.commit-table td {
+  padding: 0 12px;
+  text-align: left;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-head th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 32px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.commit-row {
+  cursor: pointer;
+}
+
+.commit-row td {
+  border-bottom: 1px solid var(--border);
+}
+
+.commit-row:hover td {
+  background: var(--control-bg);
+}
+
+.commit-row.is-selected td {
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.commit-refs-inner {
+  display: flex;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.commit-ref-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.commit-ref-head {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.commit-ref-remote {
+  color: var(--fg-muted);
+}
+
+.commit-ref-tag {
+  color: #e0823d;
+  border-color: #e0823d;
+}
+
+/* The graph SVG is exactly the graph column's width; drop the cell padding so
+   the lanes align with the fixed column and connect between rows. */
+.commit-graph-cell {
+  padding: 0;
+}
+
+.commit-graph {
+  display: block;
+}
+
+.commit-date,
+.commit-author {
+  color: var(--fg-muted);
+}
+
+.commit-empty {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+
+/* Commit panel (right column): commit detail or working-tree staging. */
+.commit-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.commit-panel-header {
+  flex: 0 0 auto;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.commit-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.commit-panel-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+/* --- Commit detail (selected historical commit) --- */
+.commit-detail-message {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+.commit-detail-meta {
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.commit-detail-line {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.commit-detail-line dt {
+  flex: 0 0 56px;
+  color: var(--fg-muted);
+}
+
+.commit-detail-line dd {
+  margin: 0;
+  color: var(--fg);
+}
+
+.commit-detail-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* --- File lists (shared by detail + staging) --- */
+.commit-files {
+  margin-bottom: 16px;
+}
+
+.commit-files-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.commit-files-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.commit-files-bulk {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--primary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.commit-files-bulk:hover {
+  text-decoration: underline;
+}
+
+.commit-files-empty {
+  margin: 0;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.commit-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.commit-file:hover {
+  background: var(--control-bg);
+}
+
+.commit-file-status {
+  flex: 0 0 auto;
+  width: 16px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.status-modified {
+  color: #e0823d;
+}
+
+.status-added {
+  color: #2ea043;
+}
+
+.status-deleted {
+  color: var(--danger);
+}
+
+.status-renamed {
+  color: var(--primary);
+}
+
+.commit-file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-file-dir {
+  margin-left: 6px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.commit-file-action {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.commit-file:hover .commit-file-action {
+  opacity: 1;
+}
+
+.commit-file-action:hover {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+/* --- Commit message box (working-tree view) --- */
+.commit-message-box {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.commit-message-input {
+  resize: none;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  outline: none;
+}
+
+.commit-message-input:focus {
+  border-color: var(--primary);
+}
+
+.commit-submit {
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #08312c;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.commit-submit:disabled {
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  cursor: default;
 }

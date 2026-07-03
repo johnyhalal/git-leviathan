@@ -26,6 +26,10 @@ export const AppChannels = {
    * slow or reloading dev server can never surface a blank window.
    */
   ready: 'app:ready',
+  /** Renderer -> main (invoke): read persisted sidebar section open/closed map. */
+  getSidebarSections: 'app:get-sidebar-sections',
+  /** Renderer -> main (invoke): persist one sidebar section's open/closed state. */
+  setSidebarSection: 'app:set-sidebar-section',
 } as const;
 
 // ---- Repositories ---------------------------------------------------------
@@ -76,9 +80,134 @@ export type CloneResult =
   | { status: 'canceled' }
   | { status: 'error'; message: string };
 
+/** A local branch and its tracking status against its upstream. */
+export interface LocalBranchInfo {
+  /** Full short name, e.g. "feature/sidebar". */
+  name: string;
+  /** Whether this is the checked-out branch. */
+  current: boolean;
+  /** Commits ahead of its upstream (0 when none or no upstream). */
+  ahead: number;
+  /** Commits behind its upstream (0 when none or no upstream). */
+  behind: number;
+}
+
+/** A remote-tracking branch, split into its remote and branch name. */
+export interface RemoteBranchInfo {
+  /** Remote name, e.g. "origin". */
+  remote: string;
+  /** Branch name under the remote, e.g. "main" or "feature/graph". */
+  name: string;
+}
+
+/** A tag and the short hash of the object it points at. */
+export interface TagInfo {
+  name: string;
+  hash: string;
+}
+
+/** A stash entry from `git stash list`. */
+export interface StashInfo {
+  /** Stash index, e.g. 0 for `stash@{0}` (0 is the most recent). */
+  index: number;
+  /** The stash subject, e.g. "WIP on main: 1a2b3c Some commit". */
+  message: string;
+  /** The branch the stash was taken on, when parseable from the subject. */
+  branch?: string;
+}
+
+/** The refs of an open repository, for the sidebar. */
+export interface RepoRefs {
+  localBranches: LocalBranchInfo[];
+  remoteBranches: RemoteBranchInfo[];
+  tags: TagInfo[];
+  stashes: StashInfo[];
+}
+
+/**
+ * Outcome of an operation that mutates the repo and hands back its fresh refs
+ * (checkout, stash pop/drop, gitflow start/finish).
+ */
+export type RefsMutationResult =
+  | { status: 'ok'; refs: RepoRefs }
+  | { status: 'error'; message: string };
+
+/** Outcome of a branch checkout. On success it carries the repo's fresh refs. */
+export type CheckoutResult = RefsMutationResult;
+
+/** The three gitflow topic-branch kinds the sidebar can start/finish. */
+export type GitflowKind = 'feature' | 'release' | 'hotfix';
+
+/** A ref decoration attached to a commit (branch tip, tag, HEAD, …). */
+export type RefKind = 'head' | 'branch' | 'remote' | 'tag';
+
+export interface CommitRefDecoration {
+  label: string;
+  kind: RefKind;
+}
+
+/** One commit in the history, with the parent links the graph is drawn from. */
+export interface CommitLogEntry {
+  /** Full 40-char hash. */
+  hash: string;
+  /** Abbreviated hash for display. */
+  shortHash: string;
+  /** Full parent hashes (2+ means a merge). */
+  parents: string[];
+  author: string;
+  /** Gravatar URL for the author's email (identicon fallback), for the graph node. */
+  authorAvatarUrl: string;
+  /** ISO 8601 author date. */
+  date: string;
+  /** First line of the commit message. */
+  subject: string;
+  refs: CommitRefDecoration[];
+}
+
+/** Status of a file within a commit or the working tree. */
+export type FileStatus = 'modified' | 'added' | 'deleted' | 'renamed';
+
+export interface FileChange {
+  path: string;
+  status: FileStatus;
+}
+
+/** The working tree split into staged (index) and unstaged changes. */
+export interface WorkingStatus {
+  staged: FileChange[];
+  unstaged: FileChange[];
+}
+
+/** Outcome of a commit. */
+export type CommitResult = { status: 'ok' } | { status: 'error'; message: string };
+
 export const RepoChannels = {
   /** Renderer -> main (invoke): pick a folder and open it as a repository. */
   open: 'repo:open',
+  /** Renderer -> main (invoke): list a repository's branches and tags. */
+  listRefs: 'repo:list-refs',
+  /** Renderer -> main (invoke): read commit history (newest first). */
+  log: 'repo:log',
+  /** Renderer -> main (invoke): read the files changed by a single commit. */
+  commitFiles: 'repo:commit-files',
+  /** Renderer -> main (invoke): read the working-tree status (staged/unstaged). */
+  status: 'repo:status',
+  /** Renderer -> main (invoke): stage a file (or all); returns fresh status. */
+  stage: 'repo:stage',
+  /** Renderer -> main (invoke): unstage a file (or all); returns fresh status. */
+  unstage: 'repo:unstage',
+  /** Renderer -> main (invoke): commit the staged changes. */
+  commit: 'repo:commit',
+  /** Renderer -> main (invoke): check out a branch; returns fresh refs. */
+  checkout: 'repo:checkout',
+  /** Renderer -> main (invoke): apply & drop a stash (`git stash pop`). */
+  stashPop: 'repo:stash-pop',
+  /** Renderer -> main (invoke): discard a stash (`git stash drop`). */
+  stashDrop: 'repo:stash-drop',
+  /** Renderer -> main (invoke): start a gitflow topic branch. */
+  gitflowStart: 'repo:gitflow-start',
+  /** Renderer -> main (invoke): finish the current gitflow topic branch. */
+  gitflowFinish: 'repo:gitflow-finish',
   /** Renderer -> main (invoke): pick a destination folder; returns path or null. */
   chooseDir: 'repo:choose-dir',
   /** Renderer -> main (invoke): read the last-used clone destination, if any. */
@@ -89,6 +218,10 @@ export const RepoChannels = {
   record: 'repo:record',
   /** Renderer -> main (invoke): drop a repo from the recent list; returns it. */
   forget: 'repo:forget',
+  /** Renderer -> main (invoke): read the persisted open-tab repo paths. */
+  openTabs: 'repo:open-tabs',
+  /** Renderer -> main (invoke): persist the open-tab repo paths (in order). */
+  saveOpenTabs: 'repo:save-open-tabs',
   /** Renderer -> main (invoke): clone a repository; resolves with the outcome. */
   clone: 'repo:clone',
   /** Main -> renderer (send): a progress update for the in-flight clone. */
@@ -111,12 +244,26 @@ export type IntegrationProvider = 'github' | 'gitlab';
  */
 export type IntegrationStatus = 'disconnected' | 'connecting' | 'connected';
 
+/** The authenticated user's profile, as read from a provider's `/user`. */
+export interface IntegrationAccount {
+  /** The account handle / username (e.g. GitHub login). */
+  username: string;
+  /** Display name, when the provider supplies one. */
+  name?: string;
+  /** Avatar image URL, when available. */
+  avatarUrl?: string;
+}
+
 /** Connection state for a single provider. */
 export interface IntegrationConnection {
   provider: IntegrationProvider;
   status: IntegrationStatus;
   /** The connected account's handle, once known (status `connected`). */
   account?: string;
+  /** The connected account's display name, when the provider supplies one. */
+  name?: string;
+  /** The connected account's avatar image URL, when available. */
+  avatarUrl?: string;
   /** Transient message from the most recent failed connect attempt. */
   error?: string;
 }
@@ -185,6 +332,14 @@ export interface AppApi {
    * main window and dismiss the splash. Safe to call once per load.
    */
   signalReady(): void;
+  /**
+   * Read the persisted open/closed state of the repo sidebar's collapsible
+   * sections, keyed by section id. Missing keys default to closed, so a repo
+   * opened for the first time shows every section collapsed.
+   */
+  getSidebarSections(): Promise<Record<string, boolean>>;
+  /** Persist one sidebar section's open/closed state (keyed by section id). */
+  setSidebarSection(key: string, open: boolean): Promise<void>;
 }
 
 export interface RepoApi {
@@ -193,6 +348,61 @@ export interface RepoApi {
    * repository. Resolves with the outcome (opened / canceled / not-a-repo).
    */
   open(): Promise<OpenRepoResult>;
+  /**
+   * Read the branches (local + remote-tracking) and tags of the repository at
+   * `path`. Resolves with empty lists if the path isn't a git repository.
+   */
+  listRefs(path: string): Promise<RepoRefs>;
+  /**
+   * Read commit history for the repository at `path`, newest first, capped at
+   * `limit` commits (default applied by the main process).
+   */
+  log(path: string, limit?: number): Promise<CommitLogEntry[]>;
+  /** Read the files changed by the commit `hash` (vs its first parent). */
+  commitFiles(path: string, hash: string): Promise<FileChange[]>;
+  /** Read the working-tree status (staged + unstaged changes). */
+  status(path: string): Promise<WorkingStatus>;
+  /**
+   * Stage `file` (a path), or everything when `file` is null. Resolves with the
+   * refreshed working-tree status.
+   */
+  stage(path: string, file: string | null): Promise<WorkingStatus>;
+  /** Unstage `file` (a path), or everything when null. Returns fresh status. */
+  unstage(path: string, file: string | null): Promise<WorkingStatus>;
+  /** Commit the currently staged changes with `message`. */
+  commit(path: string, message: string): Promise<CommitResult>;
+  /**
+   * Check out `branch` in the repository at `path` (`git checkout`). Resolves
+   * with the repo's fresh refs on success, or an error message (e.g. when the
+   * working tree has conflicting local changes).
+   *
+   * Pass `remote` (e.g. "origin") when checking out a remote branch to force a
+   * local tracking branch off that specific remote — this disambiguates the
+   * case where several remotes share the branch name, which a bare
+   * `git checkout <branch>` cannot resolve. Ignored if a local branch of that
+   * name already exists (that local branch is simply switched to).
+   */
+  checkout(path: string, branch: string, remote?: string): Promise<CheckoutResult>;
+  /**
+   * Apply the stash at `index` and remove it from the stash list
+   * (`git stash pop stash@{index}`). Resolves with fresh refs, or an error
+   * (e.g. when applying would conflict with local changes).
+   */
+  stashPop(path: string, index: number): Promise<RefsMutationResult>;
+  /** Discard the stash at `index` (`git stash drop`). Returns fresh refs. */
+  stashDrop(path: string, index: number): Promise<RefsMutationResult>;
+  /**
+   * Start a gitflow topic branch: create and check out `<kind>/<name>` off the
+   * appropriate base (develop for feature/release, main for hotfix — falling
+   * back to the current branch when the base doesn't exist). Returns fresh refs.
+   */
+  gitflowStart(path: string, kind: GitflowKind, name: string): Promise<RefsMutationResult>;
+  /**
+   * Finish the current gitflow topic branch: merge it (no-ff) into its base
+   * branch, delete the topic branch, and leave the base checked out. Errors if
+   * HEAD isn't on a gitflow branch or the merge can't complete cleanly.
+   */
+  gitflowFinish(path: string): Promise<RefsMutationResult>;
   /**
    * Show the native folder picker to choose a destination directory (e.g. where
    * to clone into). Resolves with the chosen absolute path, or null if canceled.
@@ -212,6 +422,14 @@ export interface RepoApi {
   recordOpened(repo: RepoInfo): Promise<RecentRepo[]>;
   /** Remove a repository (by path) from the recent list; returns the rest. */
   forget(path: string): Promise<RecentRepo[]>;
+  /**
+   * The repository paths for the tabs that were open last session, in order.
+   * Paths that no longer exist on disk are pruned. Restored on startup so the
+   * same repositories reopen as tabs.
+   */
+  openTabs(): Promise<string[]>;
+  /** Persist the open-tab repository paths (in tab order). */
+  saveOpenTabs(paths: string[]): Promise<void>;
   /**
    * Clone a repository into a new subfolder of `destination`, running
    * `git clone`. Resolves with the opened repo or an error message. Progress

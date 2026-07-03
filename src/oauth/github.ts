@@ -2,7 +2,7 @@
 // ./deviceFlow; this module just supplies GitHub's endpoints and REST mapping.
 // https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow
 
-import type { RemoteRepo } from '../types/ipc';
+import type { IntegrationAccount, RemoteRepo } from '../types/ipc';
 import {
   nextPageUrl,
   pollForAccessToken as pollDeviceToken,
@@ -47,13 +47,15 @@ function apiHeaders(accessToken: string): HeadersInit {
 
 interface GithubUser {
   login?: string;
+  name?: string | null;
+  avatar_url?: string;
 }
 
-/** Read the authenticated user's handle, for display and verification. */
-export async function fetchUserLogin(
+/** Read the authenticated user's profile, for display and verification. */
+export async function fetchAccount(
   accessToken: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<IntegrationAccount> {
   const res = await fetch(`${API_BASE}/user`, {
     headers: apiHeaders(accessToken),
     signal,
@@ -65,7 +67,11 @@ export async function fetchUserLogin(
   if (!user.login) {
     throw new Error('GitHub did not return an account name.');
   }
-  return user.login;
+  return {
+    username: user.login,
+    name: user.name ?? undefined,
+    avatarUrl: user.avatar_url,
+  };
 }
 
 interface GithubRepo {

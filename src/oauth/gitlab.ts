@@ -3,7 +3,7 @@
 // GitLab's device grant is GA since 17.9 and needs only a public client id.
 // https://docs.gitlab.com/api/oauth2/#device-authorization-grant-flow
 
-import type { RemoteRepo } from '../types/ipc';
+import type { IntegrationAccount, RemoteRepo } from '../types/ipc';
 import {
   nextPageUrl,
   pollForAccessToken as pollDeviceToken,
@@ -47,13 +47,15 @@ function apiHeaders(accessToken: string): HeadersInit {
 
 interface GitlabUser {
   username?: string;
+  name?: string | null;
+  avatar_url?: string | null;
 }
 
-/** Read the authenticated user's handle, for display and verification. */
-export async function fetchUserLogin(
+/** Read the authenticated user's profile, for display and verification. */
+export async function fetchAccount(
   accessToken: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<IntegrationAccount> {
   const res = await fetch(`${API_BASE}/user`, {
     headers: apiHeaders(accessToken),
     signal,
@@ -65,7 +67,11 @@ export async function fetchUserLogin(
   if (!user.username) {
     throw new Error('GitLab did not return an account name.');
   }
-  return user.username;
+  return {
+    username: user.username,
+    name: user.name ?? undefined,
+    avatarUrl: user.avatar_url ?? undefined,
+  };
 }
 
 interface GitlabProject {
