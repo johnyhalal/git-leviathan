@@ -1,9 +1,11 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { TabBar, type Tab } from './components/TabBar';
 import { RepoStart, type RecentRepo } from './components/RepoStart';
 import { ToastStack, type ToastData, type ToastVariant } from './components/Toast';
 import { Settings } from './components/Settings';
+import { CloneDialog } from './components/CloneDialog';
 import { GearIcon } from '../../../assets/icons';
+import type { RepoInfo } from '../../types/ipc';
 
 let nextTabId = 2;
 let nextToastId = 1;
@@ -12,10 +14,6 @@ let nextToastId = 1;
 const folderName = (fullPath: string) =>
   fullPath.split(/[\\/]/).filter(Boolean).pop() ?? fullPath;
 
-// TODO: replace with repositories persisted by the main process (needs an IPC
-// channel in src/types/ipc.ts). Placeholder data until that lands.
-const RECENT_REPOS: RecentRepo[] = [];
-
 export function App() {
   const isMac = window.api.platform === 'darwin';
   const [tabs, setTabs] = useState<Tab[]>([
@@ -23,9 +21,22 @@ export function App() {
   ]);
   const [activeId, setActiveId] = useState('tab-1');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastData[]>([]);
+  const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
+
+  // Hydrate the recent list from the main process' persisted store on mount.
+  useEffect(() => {
+    let active = true;
+    void window.api.repo.recent().then((repos) => {
+      if (active) setRecentRepos(repos);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
@@ -71,7 +82,7 @@ export function App() {
   };
 
   /** Bind a repository to the active tab, turning it into an open-repo tab. */
-  const openRepo = (repo: RecentRepo) => {
+  const openRepo = (repo: RepoInfo) => {
     setTabs((prev) =>
       prev.map((tab) =>
         tab.id === activeId
@@ -79,6 +90,14 @@ export function App() {
           : tab,
       ),
     );
+    // Let the main process record recency (stamp the time, de-dupe, persist)
+    // and drive the list off the authoritative result it returns.
+    void window.api.repo.recordOpened(repo).then(setRecentRepos);
+  };
+
+  /** Drop a repository from the persisted recent list. */
+  const removeRecent = (repo: RecentRepo) => {
+    void window.api.repo.forget(repo.path).then(setRecentRepos);
   };
 
   /** Pick a folder on disk and open it as a git repository in the active tab. */
@@ -100,6 +119,14 @@ export function App() {
   // wired through window.api once their IPC channels exist.
   const notImplemented = (action: string) => {
     console.warn(`Repository "${action}" is not wired up yet.`);
+  };
+
+  // The CloneDialog runs the clone and reports the finished repo; open it in
+  // the active tab (recording recency), same as opening from disk.
+  const handleCloned = (repo: RepoInfo) => {
+    setCloneOpen(false);
+    openRepo(repo);
+    showToast('Repository cloned', `“${repo.name}” is ready.`, 'info');
   };
 
   return (
@@ -133,16 +160,24 @@ export function App() {
           </>
         ) : (
           <RepoStart
-            recent={RECENT_REPOS}
+            recent={recentRepos}
             onOpen={() => void handleOpen()}
-            onClone={() => notImplemented('clone')}
+            onClone={() => setCloneOpen(true)}
             onCreate={() => notImplemented('create')}
             onSelectRecent={openRepo}
+            onRemoveRecent={removeRecent}
           />
         )}
       </main>
 
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+
+      {cloneOpen && (
+        <CloneDialog
+          onCloned={handleCloned}
+          onClose={() => setCloneOpen(false)}
+        />
+      )}
 
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>

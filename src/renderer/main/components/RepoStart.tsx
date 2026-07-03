@@ -1,14 +1,15 @@
 import { useMemo, useState } from 'react';
 import {
   CloneIcon,
+  CloseIcon,
   FolderIcon,
   FolderPlusIcon,
   SearchIcon,
 } from '../../../../assets/icons';
-import type { RepoInfo } from '../../../types/ipc';
+import type { RecentRepo } from '../../../types/ipc';
 
 /** A previously opened repository, surfaced in the "Recent" list. */
-export type RecentRepo = RepoInfo;
+export type { RecentRepo };
 
 interface RepoStartProps {
   recent: RecentRepo[];
@@ -16,6 +17,7 @@ interface RepoStartProps {
   onClone: () => void;
   onCreate: () => void;
   onSelectRecent: (repo: RecentRepo) => void;
+  onRemoveRecent: (repo: RecentRepo) => void;
 }
 
 /**
@@ -28,6 +30,7 @@ export function RepoStart({
   onClone,
   onCreate,
   onSelectRecent,
+  onRemoveRecent,
 }: RepoStartProps) {
   const [query, setQuery] = useState('');
 
@@ -62,34 +65,55 @@ export function RepoStart({
           </div>
         </header>
 
-        <section className="repo-recent" aria-label="Recent repositories">
+        <section className="repo-recent" aria-label="Recently opened repositories">
+          <h2 className="repo-recent-title">Recently opened repositories</h2>
+
           <div className="repo-search">
             <SearchIcon />
             <input
-              type="search"
-              className="repo-search-input"
-              placeholder="Search recent repositories"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              aria-label="Search recent repositories"
+                type="search"
+                className="repo-search-input"
+                placeholder="Search recent repositories"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                aria-label="Search recent repositories"
             />
           </div>
-
-          <h2 className="repo-recent-title">Recent</h2>
 
           {filtered.length > 0 ? (
             <ul className="repo-recent-list">
               {filtered.map((repo) => (
                 <li key={repo.path}>
-                  <button
-                    type="button"
+                  {/* A div (not a button) so a real remove <button> can nest
+                      inside it — nesting <button> in <button> is invalid HTML. */}
+                  <div
                     className="repo-recent-item"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => onSelectRecent(repo)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onSelectRecent(repo);
+                      }
+                    }}
                     title={repo.path}
                   >
                     <span className="repo-recent-name">{repo.name}</span>
                     <span className="repo-recent-path">{repo.path}</span>
-                  </button>
+                    <button
+                      type="button"
+                      className="repo-recent-remove"
+                      aria-label={`Remove ${repo.name} from recent`}
+                      title="Remove from recent"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onRemoveRecent(repo);
+                      }}
+                    >
+                      <CloseIcon size={14} />
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>

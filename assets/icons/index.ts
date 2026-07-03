@@ -6,3 +6,6 @@ export { FolderIcon } from './FolderIcon';
 export { CloneIcon } from './CloneIcon';
 export { FolderPlusIcon } from './FolderPlusIcon';
 export { SearchIcon } from './SearchIcon';
+export { GithubIcon } from './GithubIcon';
+export { GitlabIcon } from './GitlabIcon';
+export { ChevronDownIcon } from './ChevronDownIcon';
