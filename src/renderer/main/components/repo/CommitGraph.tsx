@@ -3,6 +3,8 @@ import { GRAPH_COLORS, type GraphNode } from './graph';
 const LANE_GAP = 20;
 const PAD_X = 12;
 const NODE_R = 4.5;
+/** Dash pattern for stash lines (dot-dot). */
+const DASH = '2 3';
 /** Radius of the author-avatar node (larger than the plain dot). */
 const AVATAR_R = 10;
 /** Corner radius where an elbow connector turns from vertical to horizontal. */
@@ -88,6 +90,7 @@ export function CommitGraph({
           y2={rowHeight}
           stroke={color(v.color)}
           strokeWidth={1.5}
+          strokeDasharray={v.dashed ? DASH : undefined}
         />
       ))}
 
@@ -100,6 +103,7 @@ export function CommitGraph({
           y2={mid}
           stroke={nodeColor}
           strokeWidth={1.5}
+          strokeDasharray={graph.dashed ? DASH : undefined}
         />
       )}
       {!graph.endBottom && (
@@ -110,6 +114,7 @@ export function CommitGraph({
           y2={rowHeight}
           stroke={nodeColor}
           strokeWidth={1.5}
+          strokeDasharray={graph.dashed ? DASH : undefined}
         />
       )}
 
@@ -121,6 +126,7 @@ export function CommitGraph({
           fill="none"
           stroke={color(c.color)}
           strokeWidth={1.5}
+          strokeDasharray={c.dashed ? DASH : undefined}
         />
       ))}
 
@@ -135,9 +141,20 @@ export function CommitGraph({
         />
       ))}
 
-      {/* The node itself: the author's avatar clipped to a circle with a
-          lane-colored ring, or a plain dot when no avatar is available. */}
-      {avatarUrl ? (
+      {/* The node itself. A stash is a hollow, dotted-ring dot to set it apart
+          from real commits; otherwise the author's avatar clipped to a circle
+          with a lane-colored ring, or a plain dot when no avatar is available. */}
+      {graph.dashed ? (
+        <circle
+          cx={nodeX}
+          cy={mid}
+          r={NODE_R}
+          fill="var(--bg-elev)"
+          stroke={nodeColor}
+          strokeWidth={1.5}
+          strokeDasharray={DASH}
+        />
+      ) : avatarUrl ? (
         <>
           <clipPath id={clipId}>
             <circle cx={nodeX} cy={mid} r={AVATAR_R} />

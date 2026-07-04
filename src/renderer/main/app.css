@@ -2050,6 +2050,17 @@ body.is-col-resizing {
   border-color: #e0823d;
 }
 
+.commit-ref-stash {
+  color: var(--fg-muted);
+  border-style: dashed;
+}
+
+/* Stash rows read as secondary to real commits. */
+.commit-row.is-stash .commit-message {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
 /* The graph SVG is exactly the graph column's width; drop the cell padding so
    the lanes align with the fixed column and connect between rows. */
 .commit-graph-cell {
@@ -2071,6 +2082,13 @@ body.is-col-resizing {
   align-items: center;
   justify-content: center;
   color: var(--fg-muted);
+}
+
+.commit-loading-row td {
+  padding: 8px 12px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12px;
 }
 
 /* Commit panel (right column): commit detail or working-tree staging. */

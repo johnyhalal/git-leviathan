@@ -586,11 +586,14 @@ function gravatarUrl(email: string): string {
   return `https://www.gravatar.com/avatar/${hash}?s=48&d=identicon`;
 }
 
-async function readLog(cwd: string, limit: number): Promise<CommitLogEntry[]> {
+async function readLogCommits(cwd: string, limit: number): Promise<CommitLogEntry[]> {
   // --topo-order guarantees children are listed before their parents, which the
-  // renderer's lane layout relies on.
+  // renderer's lane layout relies on. --all walks every ref (all branches, tags
+  // and remotes) rather than just HEAD's history, so the graph shows every
+  // branch and each branch's tip commit is present to be selected.
   const out = await runGit(cwd, [
     'log',
+    '--all',
     '--topo-order',
     `--max-count=${limit}`,
     `--pretty=format:${LOG_FORMAT}`,
@@ -617,6 +620,63 @@ async function readLog(cwd: string, limit: number): Promise<CommitLogEntry[]> {
       refs: parseDecorations(decorations),
     };
   });
+}
+
+/**
+ * Read local stashes as commit entries. A stash is a commit whose first parent
+ * is the commit it was taken from; we keep only that first parent (dropping the
+ * synthetic index/untracked parents) so the graph draws one clean line from the
+ * stash down to its base. Stashes are ordered `stash@{0}` first, so the array
+ * index is the stash index.
+ */
+async function readStashCommits(cwd: string): Promise<CommitLogEntry[]> {
+  const out = await runGit(cwd, ['stash', 'list', `--format=${LOG_FORMAT}`]);
+  return nonEmptyLines(out).map((line, index) => {
+    const [hash, shortHash, parents, author, authorEmail, date, subject] =
+      line.split(LOG_FS);
+    const base = parents ? parents.split(' ').filter(Boolean)[0] : undefined;
+    return {
+      hash,
+      shortHash,
+      parents: base ? [base] : [],
+      author,
+      authorAvatarUrl: gravatarUrl(authorEmail),
+      date,
+      subject,
+      refs: [],
+      stashIndex: index,
+    };
+  });
+}
+
+/**
+ * Weave stash entries into a topo-ordered commit list. Each stash is a tip
+ * (nothing points at it), so it can sit anywhere before its base commit; we
+ * splice it in immediately above that base, which keeps topo order valid and
+ * places the dotted connector right next to where the stash branched. When the
+ * base isn't within this page, the stash is shown standalone at the top.
+ */
+function mergeStashes(
+  commits: CommitLogEntry[],
+  stashes: CommitLogEntry[],
+): CommitLogEntry[] {
+  if (stashes.length === 0) return commits;
+  const result = commits.slice();
+  for (const stash of stashes) {
+    const base = stash.parents[0];
+    const at = base ? result.findIndex((commit) => commit.hash === base) : -1;
+    if (at === -1) result.unshift({ ...stash, parents: [] });
+    else result.splice(at, 0, stash);
+  }
+  return result;
+}
+
+async function readLog(cwd: string, limit: number): Promise<CommitLogEntry[]> {
+  const [commits, stashes] = await Promise.all([
+    readLogCommits(cwd, limit),
+    readStashCommits(cwd),
+  ]);
+  return mergeStashes(commits, stashes);
 }
 
 function mapFileStatus(code: string): FileStatus {

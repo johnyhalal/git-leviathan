@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type { CommitLogEntry, CommitRefDecoration } from '../../../../types/ipc';
 import { CommitGraph, graphCellWidth } from './CommitGraph';
 import { computeGraph, type GraphNode } from './graph';
@@ -46,12 +46,28 @@ interface CommitListProps {
   /** Commits newest-first, or null while loading. */
   commits: CommitLogEntry[] | null;
   selectedHash: string | null;
+  /** Whether another page of history is being fetched (shows a footer note). */
+  loadingMore?: boolean;
   onSelect: (hash: string) => void;
 }
 
-export function CommitList({ commits, selectedHash, onSelect }: CommitListProps) {
+export function CommitList({
+  commits,
+  selectedHash,
+  loadingMore = false,
+  onSelect,
+}: CommitListProps) {
   const graph = useMemo(() => computeGraph(commits ?? []), [commits]);
   const maxLane = useMemo(() => maxLaneOf(graph), [graph]);
+
+  // Scroll the selected row to the middle of the viewport when the selection
+  // changes (e.g. picking a branch in the sidebar).
+  const selectedRowRef = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (selectedHash) {
+      selectedRowRef.current?.scrollIntoView({ block: 'center' });
+    }
+  }, [selectedHash]);
 
   if (commits === null) {
     return (
@@ -91,18 +107,27 @@ export function CommitList({ commits, selectedHash, onSelect }: CommitListProps)
         </tr>
       </thead>
       <tbody>
-        {commits.map((commit, index) => (
+        {commits.map((commit, index) => {
+          const isStash = commit.stashIndex !== undefined;
+          const classes = ['commit-row'];
+          if (commit.hash === selectedHash) classes.push('is-selected');
+          if (isStash) classes.push('is-stash');
+          return (
           <tr
             key={commit.hash}
-            className={
-              commit.hash === selectedHash ? 'commit-row is-selected' : 'commit-row'
-            }
+            ref={commit.hash === selectedHash ? selectedRowRef : undefined}
+            className={classes.join(' ')}
             style={{ height: ROW_HEIGHT }}
             aria-selected={commit.hash === selectedHash}
             onClick={() => onSelect(commit.hash)}
           >
             <td className="commit-refs">
               <div className="commit-refs-inner">
+                {isStash && (
+                  <span className="commit-ref-badge commit-ref-stash">
+                    stash@{`{${commit.stashIndex}}`}
+                  </span>
+                )}
                 {commit.refs.map((refItem) => (
                   <RefBadge key={refItem.label} refItem={refItem} />
                 ))}
@@ -123,7 +148,13 @@ export function CommitList({ commits, selectedHash, onSelect }: CommitListProps)
             <td className="commit-date">{formatDate(commit.date)}</td>
             <td className="commit-author">{commit.author}</td>
           </tr>
-        ))}
+          );
+        })}
+        {loadingMore && (
+          <tr className="commit-loading-row" aria-hidden>
+            <td colSpan={5}>Loading more…</td>
+          </tr>
+        )}
       </tbody>
     </table>
   );

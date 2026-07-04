@@ -424,6 +424,17 @@ interface RepoSidebarProps {
   /** The repo's refs, or null while still loading. */
   refs: RepoRefs | null;
   /**
+   * A branch row was selected (single click): its tip commit should be
+   * highlighted in the commit list. `label` is the decoration the tip carries —
+   * a local branch's short name, or a remote branch's `remote/name`.
+   */
+  onSelectRef?: (label: string) => void;
+  /**
+   * A stash row was selected (single click): the matching stash row in the
+   * commit list should be highlighted. `index` is the stash's `stash@{index}`.
+   */
+  onSelectStash?: (index: number) => void;
+  /**
    * Check out a branch (double-clicking its row). `remote` is passed for a
    * remote branch so a tracking branch is created off that specific remote.
    */
@@ -449,6 +460,8 @@ interface RepoSidebarProps {
  */
 export function RepoSidebar({
   refs,
+  onSelectRef,
+  onSelectStash,
   onCheckout,
   onStashPop,
   onStashDrop,
@@ -490,10 +503,12 @@ export function RepoSidebar({
   const stashes = refs?.stashes ?? [];
   const currentBranch = localBranches.find((branch) => branch.current)?.name;
 
+  // Descending so the newest/highest tag (e.g. v0.2.0 before v0.1.0) is first.
+  // `numeric` compares version segments as numbers, so v0.10 sorts above v0.2.
   const tags = useMemo(
     () =>
       [...(refs?.tags ?? [])].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+        b.name.localeCompare(a.name, undefined, { sensitivity: 'base', numeric: true }),
       ),
     [refs?.tags],
   );
@@ -557,7 +572,10 @@ export function RepoSidebar({
                 depth={depth}
                 id={`local:${branch.name}`}
                 active={active}
-                onSelect={setActive}
+                onSelect={(id) => {
+                  setActive(id);
+                  onSelectRef?.(branch.name);
+                }}
                 onCheckout={onCheckout}
               />
             )}
@@ -587,7 +605,10 @@ export function RepoSidebar({
                       depth={depth}
                       id={`remote:${remote}/${branch.name}`}
                       active={active}
-                      onSelect={setActive}
+                      onSelect={(id) => {
+                        setActive(id);
+                        onSelectRef?.(`${remote}/${branch.name}`);
+                      }}
                       onCheckout={onCheckout}
                     />
                   )}
@@ -610,7 +631,10 @@ export function RepoSidebar({
                 stash={stash}
                 id={`stash:${stash.index}`}
                 active={active}
-                onSelect={setActive}
+                onSelect={(id) => {
+                  setActive(id);
+                  onSelectStash?.(stash.index);
+                }}
                 onPop={onStashPop}
                 onDrop={onStashDrop}
               />
@@ -648,7 +672,10 @@ export function RepoSidebar({
                 tag={tag}
                 id={`tag:${tag.name}`}
                 active={active}
-                onSelect={setActive}
+                onSelect={(id) => {
+                  setActive(id);
+                  onSelectRef?.(tag.name);
+                }}
               />
             ))}
       </CollapsibleSection>

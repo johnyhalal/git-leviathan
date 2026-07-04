@@ -162,6 +162,12 @@ export interface CommitLogEntry {
   /** First line of the commit message. */
   subject: string;
   refs: CommitRefDecoration[];
+  /**
+   * Set when this row is a local stash rather than a real commit: the stash's
+   * index (`stash@{N}`). Stash rows are drawn with a dotted line down to the
+   * commit they were taken from.
+   */
+  stashIndex?: number;
 }
 
 /** Status of a file within a commit or the working tree. */
