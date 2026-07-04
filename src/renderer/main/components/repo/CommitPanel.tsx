@@ -148,35 +148,38 @@ function FilesSection({ title, files, emptyText, bulk, action }: FilesSectionPro
 
 interface WorkingChangesProps {
   repoPath: string;
+  /** Shared working-tree status (owned by RepoView); null while loading. */
+  status: WorkingStatus | null;
+  /** Push a fresh status up after stage/unstage/commit. */
+  onStatusChange: (status: WorkingStatus) => void;
+  /** Shared commit message, mirrored with the working row's inline input. */
+  message: string;
+  /** Update the shared commit message. */
+  onMessageChange: (message: string) => void;
   /** Reload history/refs after a commit lands. */
   onCommitted: () => void;
   onError?: (title: string, message: string) => void;
 }
 
 /** Working-tree staging + commit, backed by real git status/add/reset/commit. */
-function WorkingChanges({ repoPath, onCommitted, onError }: WorkingChangesProps) {
-  const [status, setStatus] = useState<WorkingStatus | null>(null);
-  const [message, setMessage] = useState('');
+function WorkingChanges({
+  repoPath,
+  status,
+  onStatusChange,
+  message,
+  onMessageChange,
+  onCommitted,
+  onError,
+}: WorkingChangesProps) {
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    let live = true;
-    setStatus(null);
-    void window.api.repo.status(repoPath).then((result) => {
-      if (live) setStatus(result);
-    });
-    return () => {
-      live = false;
-    };
-  }, [repoPath]);
-
   const stage = useCallback(
-    async (file: string | null) => setStatus(await window.api.repo.stage(repoPath, file)),
-    [repoPath],
+    async (file: string | null) => onStatusChange(await window.api.repo.stage(repoPath, file)),
+    [repoPath, onStatusChange],
   );
   const unstage = useCallback(
-    async (file: string | null) => setStatus(await window.api.repo.unstage(repoPath, file)),
-    [repoPath],
+    async (file: string | null) => onStatusChange(await window.api.repo.unstage(repoPath, file)),
+    [repoPath, onStatusChange],
   );
 
   const commit = useCallback(async () => {
@@ -187,10 +190,10 @@ function WorkingChanges({ repoPath, onCommitted, onError }: WorkingChangesProps)
       onError?.('Commit failed', result.message);
       return;
     }
-    setMessage('');
-    setStatus(await window.api.repo.status(repoPath));
+    onMessageChange('');
+    onStatusChange(await window.api.repo.status(repoPath));
     onCommitted();
-  }, [repoPath, message, onCommitted, onError]);
+  }, [repoPath, message, onMessageChange, onStatusChange, onCommitted, onError]);
 
   if (status === null) {
     return (
@@ -249,7 +252,7 @@ function WorkingChanges({ repoPath, onCommitted, onError }: WorkingChangesProps)
           className="commit-message-input"
           placeholder="Commit message"
           value={message}
-          onChange={(event) => setMessage(event.target.value)}
+          onChange={(event) => onMessageChange(event.target.value)}
           rows={3}
         />
         <button
@@ -269,6 +272,14 @@ interface CommitPanelProps {
   /** The selected historical commit, or null for the working-tree view. */
   commit: CommitLogEntry | null;
   repoPath: string;
+  /** Shared working-tree status; null while loading. */
+  workingStatus: WorkingStatus | null;
+  /** Push a fresh working-tree status up after stage/unstage/commit. */
+  onWorkingStatusChange: (status: WorkingStatus) => void;
+  /** Shared commit message, mirrored with the working row's inline input. */
+  commitMessage: string;
+  /** Update the shared commit message. */
+  onCommitMessageChange: (message: string) => void;
   onCommitted: () => void;
   onError?: (title: string, message: string) => void;
 }
@@ -277,10 +288,27 @@ interface CommitPanelProps {
  * Right column. Two states: a read-only detail view when a past commit is
  * selected, otherwise the working-tree staging + commit UI.
  */
-export function CommitPanel({ commit, repoPath, onCommitted, onError }: CommitPanelProps) {
+export function CommitPanel({
+  commit,
+  repoPath,
+  workingStatus,
+  onWorkingStatusChange,
+  commitMessage,
+  onCommitMessageChange,
+  onCommitted,
+  onError,
+}: CommitPanelProps) {
   return commit ? (
     <CommitDetail commit={commit} repoPath={repoPath} />
   ) : (
-    <WorkingChanges repoPath={repoPath} onCommitted={onCommitted} onError={onError} />
+    <WorkingChanges
+      repoPath={repoPath}
+      status={workingStatus}
+      onStatusChange={onWorkingStatusChange}
+      message={commitMessage}
+      onMessageChange={onCommitMessageChange}
+      onCommitted={onCommitted}
+      onError={onError}
+    />
   );
 }

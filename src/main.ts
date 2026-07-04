@@ -41,6 +41,7 @@ import {
   type OpenRepoResult,
   type RecentRepo,
   type RemoteBranchInfo,
+  type RemoteInfo,
   type RemoteRepo,
   type RepoInfo,
   type RepoRefs,
@@ -480,6 +481,18 @@ async function readRemoteBranches(cwd: string): Promise<RemoteBranchInfo[]> {
   });
 }
 
+async function readRemotes(cwd: string): Promise<RemoteInfo[]> {
+  // "origin\tgit@github.com:owner/repo.git (fetch)" lines, one fetch + one push
+  // per remote. Keep the fetch URL, deduped by remote name.
+  const out = await runGit(cwd, ['remote', '-v']);
+  const byName = new Map<string, string>();
+  for (const line of nonEmptyLines(out)) {
+    const match = /^(\S+)\t(\S+)\s+\(fetch\)$/.exec(line);
+    if (match) byName.set(match[1], match[2]);
+  }
+  return [...byName.entries()].map(([name, url]) => ({ name, url }));
+}
+
 async function readTags(cwd: string): Promise<TagInfo[]> {
   const out = await runGit(cwd, [
     'for-each-ref',
@@ -501,19 +514,23 @@ async function readStashes(cwd: string): Promise<StashInfo[]> {
     const match = /stash@\{(\d+)\}/.exec(selector);
     if (!match) return [];
     // Subjects read "WIP on <branch>: …" or "On <branch>: …".
-    const branch = /^(?:WIP on|On) ([^:]+):/.exec(message)?.[1];
-    return [{ index: Number(match[1]), message, branch }];
+    const prefix = /^(?:WIP on|On) ([^:]+):\s*/.exec(message);
+    const branch = prefix?.[1];
+    // Strip the "On <branch>: " prefix; the branch is carried separately.
+    const subject = prefix ? message.slice(prefix[0].length) : message;
+    return [{ index: Number(match[1]), message: subject, branch }];
   });
 }
 
 async function readRefs(cwd: string): Promise<RepoRefs> {
-  const [localBranches, remoteBranches, tags, stashes] = await Promise.all([
+  const [localBranches, remoteBranches, remotes, tags, stashes] = await Promise.all([
     readLocalBranches(cwd),
     readRemoteBranches(cwd),
+    readRemotes(cwd),
     readTags(cwd),
     readStashes(cwd),
   ]);
-  return { localBranches, remoteBranches, tags, stashes };
+  return { localBranches, remoteBranches, remotes, tags, stashes };
 }
 
 /** Pull a concise message out of a failed git exec (its last stderr line). */
@@ -548,8 +565,19 @@ async function mutateRepo(
   return { status: 'ok', refs: await readRefs(cwd) };
 }
 
-/** Parse git's %D decoration string into structured refs. */
-function parseDecorations(raw: string): CommitRefDecoration[] {
+/** The configured remote names (`origin`, …), for classifying decorations. */
+async function readRemoteNames(cwd: string): Promise<Set<string>> {
+  const out = await runGit(cwd, ['remote']);
+  return new Set(nonEmptyLines(out));
+}
+
+/**
+ * Parse git's %D decoration string into structured refs. `remotes` is the set of
+ * configured remote names: a token is a remote-tracking ref only when its first
+ * path segment names an actual remote (`origin/…`). A slash alone doesn't imply
+ * a remote — local branches use slashes too (`feature/x`, `refactor/x`).
+ */
+function parseDecorations(raw: string, remotes: Set<string>): CommitRefDecoration[] {
   return raw
     .split(',')
     .map((token) => token.trim())
@@ -564,8 +592,10 @@ function parseDecorations(raw: string): CommitRefDecoration[] {
       if (token.startsWith('tag: ')) {
         return { kind: 'tag', label: token.slice('tag: '.length) };
       }
-      // A remote-tracking ref is qualified by its remote, e.g. "origin/main".
-      if (token.includes('/')) return { kind: 'remote', label: token };
+      const slash = token.indexOf('/');
+      if (slash !== -1 && remotes.has(token.slice(0, slash))) {
+        return { kind: 'remote', label: token };
+      }
       return { kind: 'branch', label: token };
     });
 }
@@ -573,7 +603,7 @@ function parseDecorations(raw: string): CommitRefDecoration[] {
 // Field/record separators unlikely to appear in commit metadata.
 const LOG_FS = '\x1f';
 const LOG_FORMAT = ['%H', '%h', '%P', '%an', '%ae', '%aI', '%s', '%D'].join(LOG_FS);
-const DEFAULT_LOG_LIMIT = 500;
+const DEFAULT_LOG_LIMIT = 2000;
 
 /**
  * Gravatar URL for an email, with a per-address `identicon` so authors without
@@ -591,12 +621,20 @@ async function readLogCommits(cwd: string, limit: number): Promise<CommitLogEntr
   // renderer's lane layout relies on. --all walks every ref (all branches, tags
   // and remotes) rather than just HEAD's history, so the graph shows every
   // branch and each branch's tip commit is present to be selected.
-  const out = await runGit(cwd, [
-    'log',
-    '--all',
-    '--topo-order',
-    `--max-count=${limit}`,
-    `--pretty=format:${LOG_FORMAT}`,
+  // --exclude=refs/stash (which must precede --all) keeps the stash out of this
+  // walk: a stash is a merge commit and --all would otherwise pull in both the
+  // stash tip and its synthetic "index on …" parent. Stashes are woven in
+  // separately, once each, by readStashCommits/mergeStashes.
+  const [out, remotes] = await Promise.all([
+    runGit(cwd, [
+      'log',
+      '--exclude=refs/stash',
+      '--all',
+      '--topo-order',
+      `--max-count=${limit}`,
+      `--pretty=format:${LOG_FORMAT}`,
+    ]),
+    readRemoteNames(cwd),
   ]);
   return nonEmptyLines(out).map((line) => {
     const [
@@ -617,7 +655,7 @@ async function readLogCommits(cwd: string, limit: number): Promise<CommitLogEntr
       authorAvatarUrl: gravatarUrl(authorEmail),
       date,
       subject,
-      refs: parseDecorations(decorations),
+      refs: parseDecorations(decorations, remotes),
     };
   });
 }
@@ -763,7 +801,7 @@ function registerRepoIpc(): void {
     RepoChannels.listRefs,
     async (_event, repoPath: unknown): Promise<RepoRefs> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
-        return { localBranches: [], remoteBranches: [], tags: [], stashes: [] };
+        return { localBranches: [], remoteBranches: [], remotes: [], tags: [], stashes: [] };
       }
       return readRefs(repoPath);
     },

@@ -1,8 +1,22 @@
 // Commit-graph layout: turns a linear, topo-ordered commit list (each with its
 // parent hashes) into per-row descriptors the CommitGraph cell can draw.
 
-/** Palette for graph lanes (teal / orange / purple accents), cycled by lane. */
-export const GRAPH_COLORS = ['#43d7c7', '#e0823d', '#8b5cf6'] as const;
+/**
+ * Palette for graph lanes: 10 colors ramping green → blue, cycled by lane so a
+ * repo with more than 10 concurrent lanes wraps back to the start.
+ */
+export const GRAPH_COLORS = [
+  '#43d7c7',
+  '#435bd7',
+  '#6d43d7',
+  '#9843d7',
+  '#d143d7',
+  '#d74352',
+  '#d77643',
+  '#d7bc43',
+  '#bcd743',
+  '#55d743',
+] as const;
 
 export const laneColor = (lane: number) => lane % GRAPH_COLORS.length;
 
@@ -42,6 +56,8 @@ export interface GraphNode {
   endBottom?: boolean;
   /** This row is a stash: hollow node, and its line to the base is dotted. */
   dashed?: boolean;
+  /** This row stands in for the working tree: empty, dotted-ring node. */
+  working?: boolean;
 }
 
 interface GraphInput {
@@ -49,6 +65,8 @@ interface GraphInput {
   parents: string[];
   /** Present when the row is a stash (see {@link GraphNode.dashed}). */
   stashIndex?: number;
+  /** Present when the row is the synthetic working-tree row. */
+  working?: boolean;
 }
 
 /**
@@ -133,6 +151,7 @@ export function computeGraph(commits: GraphInput[]): GraphNode[] {
       node: nodeLane,
       color: laneColor(nodeLane),
       dashed: isStash || undefined,
+      working: commit.working || undefined,
       verticals: verticals.length ? verticals : undefined,
       in: inbound.length ? inbound : undefined,
       out: out.length ? out : undefined,

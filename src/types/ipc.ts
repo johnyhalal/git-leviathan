@@ -100,6 +100,14 @@ export interface RemoteBranchInfo {
   name: string;
 }
 
+/** A configured remote and its fetch URL, used to badge it with its host. */
+export interface RemoteInfo {
+  /** Remote name, e.g. "origin". */
+  name: string;
+  /** Fetch URL, e.g. "git@github.com:owner/repo.git" (empty if unset). */
+  url: string;
+}
+
 /** A tag and the short hash of the object it points at. */
 export interface TagInfo {
   name: string;
@@ -110,7 +118,7 @@ export interface TagInfo {
 export interface StashInfo {
   /** Stash index, e.g. 0 for `stash@{0}` (0 is the most recent). */
   index: number;
-  /** The stash subject, e.g. "WIP on main: 1a2b3c Some commit". */
+  /** The stash subject with the "On <branch>:" prefix stripped, e.g. "1a2b3c Some commit". */
   message: string;
   /** The branch the stash was taken on, when parseable from the subject. */
   branch?: string;
@@ -120,6 +128,8 @@ export interface StashInfo {
 export interface RepoRefs {
   localBranches: LocalBranchInfo[];
   remoteBranches: RemoteBranchInfo[];
+  /** Configured remotes with their URLs, for badging each remote's host. */
+  remotes: RemoteInfo[];
   tags: TagInfo[];
   stashes: StashInfo[];
 }
@@ -168,7 +178,16 @@ export interface CommitLogEntry {
    * commit they were taken from.
    */
   stashIndex?: number;
+  /**
+   * Set on the synthetic top row that stands in for the working tree when it has
+   * uncommitted changes. Drawn with an empty, dotted-ring node and no message;
+   * selecting it opens the staging panel rather than a commit's details.
+   */
+  working?: boolean;
 }
+
+/** Sentinel hash for the synthetic working-tree ("uncommitted changes") row. */
+export const WORKING_TREE_HASH = '__working_tree__';
 
 /** Status of a file within a commit or the working tree. */
 export type FileStatus = 'modified' | 'added' | 'deleted' | 'renamed';

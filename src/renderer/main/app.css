@@ -1908,6 +1908,16 @@ body.is-col-resizing {
   white-space: nowrap;
 }
 
+/* A remote's owner avatar (GitHub), shown in place of the generic remote glyph
+   on the sidebar's remote folder and on commit-list remote badges. Sizing comes
+   from the element's width/height attributes so both call sites can differ. */
+.repo-remote-avatar {
+  flex: 0 0 auto;
+  border-radius: 3px;
+  object-fit: cover;
+  background: var(--control-bg);
+}
+
 /* Pull requests. */
 .repo-pr-icon {
   flex: 0 0 auto;
@@ -1965,19 +1975,8 @@ body.is-col-resizing {
   font-size: 13px;
 }
 
-.commit-col-refs {
-  width: 160px;
-}
-
-.commit-col-date {
-  width: 150px;
-}
-
-.commit-col-author {
-  width: 150px;
-}
-
-/* The message column carries no fixed width, so it absorbs the leftover space. */
+/* Column widths are driven by inline `<col>` styles from useCommitColumns; the
+   message column carries no width so it absorbs the leftover space. */
 
 .commit-table th,
 .commit-table td {
@@ -2003,12 +2002,84 @@ body.is-col-resizing {
   text-transform: uppercase;
 }
 
+/* Draggable/resizable header cell. `position: relative` anchors the resize grip
+   and the drop-indicator lines to the cell's edges; padding moves onto the label
+   so those absolutely-positioned children measure from the true cell edges and
+   aren't clipped. */
+.commit-th {
+  position: relative;
+  padding: 0;
+  overflow: visible;
+  cursor: grab;
+  user-select: none;
+}
+
+.commit-th.is-dragging {
+  opacity: 0.4;
+}
+
+.commit-th-label {
+  display: block;
+  padding: 0 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Insertion markers: a solid line on the edge the dragged column would drop at. */
+.commit-th.drop-before::before,
+.commit-th.drop-after::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--primary);
+  z-index: 2;
+}
+
+.commit-th.drop-before::before {
+  left: 0;
+}
+
+.commit-th.drop-after::after {
+  right: 0;
+}
+
+/* Right-edge grip; its own drag is suppressed so it resizes instead of reordering.
+   The 8px hit area straddles the column border, with a 2px line shown on hover. */
+.commit-col-resize {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  z-index: 3;
+  box-sizing: border-box;
+  width: 8px;
+  height: 100%;
+  padding: 0 3px;
+  cursor: col-resize;
+}
+
+.commit-col-resize:hover {
+  background: var(--primary);
+  background-clip: content-box;
+}
+
+body.is-col-resizing .commit-th {
+  cursor: col-resize;
+}
+
 .commit-row {
   cursor: pointer;
 }
 
 .commit-row td {
-  border-bottom: 1px solid var(--border);
+  border-bottom: none;
+}
+
+/* Zebra striping — every second row gets a faint tint. Declared before the
+   hover/selected rules (same specificity) so those still win. */
+.commit-row:nth-child(even) td {
+  background: color-mix(in srgb, var(--fg) 1%, transparent);
 }
 
 .commit-row:hover td {
@@ -2023,36 +2094,102 @@ body.is-col-resizing {
   display: flex;
   gap: 4px;
   overflow: hidden;
+  /* Positioning context for a hovered badge that expands over its neighbours. */
+  position: relative;
+}
+
+/* While a badge is hovered, stop clipping so its expanded form can spill past
+   the refs column and stay fully readable. The cell itself must not clip either
+   (it otherwise inherits `overflow: hidden` from `.commit-table td`) — the inner
+   strip does the normal clipping, so the cell can stay open. */
+.commit-refs-inner:has(> .commit-ref-badge:hover) {
+  overflow: visible;
+}
+
+.commit-table td.commit-refs {
+  overflow: visible;
 }
 
 .commit-ref-badge {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
+  gap: 3px;
+  padding: 3px 6px;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 11px;
+  border-radius: 2px;
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
+  color: var(--fg);
+  /* Lane tint (translucent) set inline via --ref-bg; over the row it reads as a
+     soft wash. */
+  background: var(--ref-bg);
+  /* Cap each badge at the column width and let the name truncate within it;
+     `min-width: 0` lets the name flex-shrink so the icons never get pushed out. */
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* The branch/tag name: truncates with an ellipsis while the icons stay pinned. */
+.commit-ref-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Hovering lets the badge grow to its full width and paint over whatever sits
+   to its right, so the whole name is readable. It stays in flow (position:
+   relative, not absolute) so it keeps its vertical centering; z-index lifts it
+   above the neighbouring cells and the un-clipped inner lets it spill past the
+   column. The tint is composited over an opaque surface so the message text
+   below can't bleed through. */
+.commit-ref-badge:hover {
+  position: relative;
+  z-index: 20;
+  /* Don't let the flex row shrink the hovered badge back down — otherwise only
+     the name (overflow: visible) spills out while the pill stays clipped. */
+  flex: 0 0 auto;
+  max-width: none;
+  width: max-content;
+  background: linear-gradient(var(--ref-bg), var(--ref-bg)), var(--bg-elev);
+}
+
+.commit-ref-badge:hover .commit-ref-name {
+  overflow: visible;
+}
+
+/* Branches that aren't checked out can be double-clicked to check out. */
+.commit-ref-badge.is-checkoutable {
+  cursor: pointer;
+}
+
+/* Local/remote/tag glyphs; inherit the badge's color via `currentColor`. */
+.commit-ref-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  opacity: 1;
+}
+
+/* Extra breathing room between the branch name and its trailing glyphs. */
+.commit-ref-icons-trailing {
+  margin-left: 4px;
+}
+
+.commit-ref-icons svg {
+  display: block;
 }
 
 .commit-ref-head {
-  color: var(--primary);
-  border-color: var(--primary);
 }
-
 .commit-ref-remote {
-  color: var(--fg-muted);
 }
-
 .commit-ref-tag {
-  color: #e0823d;
-  border-color: #e0823d;
 }
-
-.commit-ref-stash {
-  color: var(--fg-muted);
-  border-style: dashed;
+.commit-ref-branch,
+.commit-ref-both {
 }
 
 /* Stash rows read as secondary to real commits. */
@@ -2061,10 +2198,77 @@ body.is-col-resizing {
   font-style: italic;
 }
 
+/* The working-tree row's message cell: an inline commit-message field followed
+   by a modified/added/deleted counter group. The flex lives on an inner wrapper
+   so the <td> stays a normal fixed-width, overflow-clipping table cell. */
+.commit-message-working {
+  overflow: visible;
+}
+
+.commit-working-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.commit-working-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.commit-working-input::placeholder {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.commit-working-input:focus {
+  border-color: var(--primary);
+}
+
+.commit-working-counts {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.commit-working-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.commit-working-count svg {
+  display: block;
+}
+
+.commit-working-modified svg {
+  color: #e0823d;
+}
+.commit-working-added svg {
+  color: #2ea043;
+}
+.commit-working-deleted svg {
+  color: var(--danger);
+}
+
 /* The graph SVG is exactly the graph column's width; drop the cell padding so
    the lanes align with the fixed column and connect between rows. */
 .commit-graph-cell {
   padding: 0;
+  min-width: 100px;
 }
 
 .commit-graph {

@@ -1,10 +1,16 @@
 import { GRAPH_COLORS, type GraphNode } from './graph';
 
 const LANE_GAP = 20;
-const PAD_X = 12;
+/** Horizontal gutter before lane 0 and past the last lane. Sized to fully clear
+ *  the avatar node (radius + ring ≈ 11px), which is wider than a plain lane dot. */
+const PAD_X = 13;
 const NODE_R = 4.5;
 /** Dash pattern for stash lines (dot-dot). */
-const DASH = '2 3';
+const DASH = '4 2';
+/** Stroke width for every lane line and connector. */
+const PADDING = 3;
+/** Stroke width for every lane line and connector. */
+const STROKE_W = 2;
 /** Radius of the author-avatar node (larger than the plain dot). */
 const AVATAR_R = 10;
 /** Corner radius where an elbow connector turns from vertical to horizontal. */
@@ -38,8 +44,14 @@ function elbowOut(
   return `M ${nodeX} ${mid} H ${targetX - dir * r} Q ${targetX} ${mid} ${targetX} ${mid + r} V ${rowHeight}`;
 }
 
-/** Pixel width a graph cell needs to hold lanes `0..maxLane`. */
-export const graphCellWidth = (maxLane: number) => PAD_X * 2 + maxLane * LANE_GAP;
+/** Minimum graph cell width, so a single-lane graph still reserves room for the
+ *  avatar node and its lane wash rather than collapsing to a sliver. */
+const MIN_CELL_WIDTH = 100;
+
+/** Pixel width a graph cell needs to hold lanes `0..maxLane` (never below the
+ *  minimum, so a single lane keeps a comfortable column). */
+export const graphCellWidth = (maxLane: number) =>
+  Math.max(MIN_CELL_WIDTH, PAD_X * 2 + maxLane * LANE_GAP);
 
 const color = (index: number) => GRAPH_COLORS[index] ?? GRAPH_COLORS[0];
 
@@ -66,7 +78,7 @@ export function CommitGraph({
   avatarUrl,
   nodeId,
 }: CommitGraphProps) {
-  const width = PAD_X * 2 + maxLane * LANE_GAP;
+  const width = graphCellWidth(maxLane);
   const mid = rowHeight / 2;
   const nodeX = laneX(graph.node);
   const nodeColor = color(graph.color);
@@ -80,6 +92,25 @@ export function CommitGraph({
       viewBox={`0 0 ${width} ${rowHeight}`}
       aria-hidden="true"
     >
+      {/* Faint wash in the node's lane color, from the avatar centre out to the
+          cell's right edge — the same hue as the lane line at 10% alpha, capped
+          on the right by a solid line in the full lane color. */}
+      <rect
+        x={nodeX}
+        y={PADDING}
+        width={Math.max(0, width - nodeX)}
+        height={rowHeight-PADDING*2}
+        fill={`${nodeColor}1a`}
+      />
+      <line
+        x1={width - 13}
+        y1={PADDING}
+        x2={width - 13}
+        y2={rowHeight-PADDING}
+        stroke={nodeColor}
+        strokeWidth={STROKE_W}
+      />
+
       {/* Straight branch lines passing fully through the row. */}
       {graph.verticals?.map((v) => (
         <line
@@ -89,7 +120,7 @@ export function CommitGraph({
           x2={laneX(v.lane)}
           y2={rowHeight}
           stroke={color(v.color)}
-          strokeWidth={1.5}
+          strokeWidth={STROKE_W}
           strokeDasharray={v.dashed ? DASH : undefined}
         />
       ))}
@@ -102,7 +133,7 @@ export function CommitGraph({
           x2={nodeX}
           y2={mid}
           stroke={nodeColor}
-          strokeWidth={1.5}
+          strokeWidth={STROKE_W}
           strokeDasharray={graph.dashed ? DASH : undefined}
         />
       )}
@@ -113,7 +144,7 @@ export function CommitGraph({
           x2={nodeX}
           y2={rowHeight}
           stroke={nodeColor}
-          strokeWidth={1.5}
+          strokeWidth={STROKE_W}
           strokeDasharray={graph.dashed ? DASH : undefined}
         />
       )}
@@ -125,7 +156,7 @@ export function CommitGraph({
           d={elbowIn(laneX(c.lane), nodeX, mid)}
           fill="none"
           stroke={color(c.color)}
-          strokeWidth={1.5}
+          strokeWidth={STROKE_W}
           strokeDasharray={c.dashed ? DASH : undefined}
         />
       ))}
@@ -137,21 +168,33 @@ export function CommitGraph({
           d={elbowOut(nodeX, laneX(c.lane), mid, rowHeight)}
           fill="none"
           stroke={color(c.color)}
-          strokeWidth={1.5}
+          strokeWidth={STROKE_W}
         />
       ))}
 
-      {/* The node itself. A stash is a hollow, dotted-ring dot to set it apart
-          from real commits; otherwise the author's avatar clipped to a circle
-          with a lane-colored ring, or a plain dot when no avatar is available. */}
-      {graph.dashed ? (
+      {/* The node itself. The working-tree row is an empty, avatar-sized circle
+          with a dotted lane-colored ring (no image, no fill). A stash is a
+          hollow, dotted-ring dot to set it apart from real commits; otherwise
+          the author's avatar clipped to a circle with a lane-colored ring, or a
+          plain dot when no avatar is available. */}
+      {graph.working ? (
+        <circle
+          cx={nodeX}
+          cy={mid}
+          r={AVATAR_R}
+          fill="var(--bg-elev)"
+          stroke={nodeColor}
+          strokeWidth={STROKE_W}
+          strokeDasharray={DASH}
+        />
+      ) : graph.dashed ? (
         <circle
           cx={nodeX}
           cy={mid}
           r={NODE_R}
           fill="var(--bg-elev)"
           stroke={nodeColor}
-          strokeWidth={1.5}
+          strokeWidth={STROKE_W}
           strokeDasharray={DASH}
         />
       ) : avatarUrl ? (
@@ -175,7 +218,7 @@ export function CommitGraph({
             r={AVATAR_R}
             fill="none"
             stroke={nodeColor}
-            strokeWidth={1.5}
+            strokeWidth={STROKE_W}
           />
         </>
       ) : (

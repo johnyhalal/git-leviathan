@@ -3,6 +3,7 @@ import type {
   CommitLogEntry,
   GitflowKind,
   RepoRefs,
+  WorkingStatus,
 } from '../../../../types/ipc';
 import { RepoSidebar } from './RepoSidebar';
 import { CommitList } from './CommitList';
@@ -14,6 +15,14 @@ interface RepoColumnsProps {
   repoPath: string;
   refs: RepoRefs | null;
   commits: CommitLogEntry[] | null;
+  /** The shared working-tree status (staged/unstaged), or null while loading. */
+  workingStatus: WorkingStatus | null;
+  /** Push a fresh working-tree status up (after stage/unstage/commit). */
+  onWorkingStatusChange: (status: WorkingStatus) => void;
+  /** The shared commit message (mirrored between the working row and the panel). */
+  commitMessage: string;
+  /** Update the shared commit message. */
+  onCommitMessageChange: (message: string) => void;
   /** Whether another page of history is currently being fetched. */
   loadingMore: boolean;
   /** Request the next page of history (scrolled near the bottom of the list). */
@@ -47,6 +56,10 @@ export function RepoColumns({
   repoPath,
   refs,
   commits,
+  workingStatus,
+  onWorkingStatusChange,
+  commitMessage,
+  onCommitMessageChange,
   loadingMore,
   onLoadMore,
   onCommitted,
@@ -60,8 +73,11 @@ export function RepoColumns({
   const { leftWidth, rightWidth, startResize } = useResizableColumns(240, 320);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
 
+  // The working-tree row isn't a real commit — selecting it highlights the row
+  // but leaves the panel on the staging view (a null selection), so it's
+  // excluded from what counts as the selected commit.
   const selectedCommit =
-    commits?.find((commit) => commit.hash === selectedHash) ?? null;
+    commits?.find((commit) => commit.hash === selectedHash && !commit.working) ?? null;
 
   // Clicking the selected row again clears it, returning to the working view.
   const toggleSelect = (hash: string) =>
@@ -114,8 +130,13 @@ export function RepoColumns({
         <CommitList
           commits={commits}
           selectedHash={selectedHash}
+          remotes={refs?.remotes}
+          workingStatus={workingStatus}
+          commitMessage={commitMessage}
+          onCommitMessageChange={onCommitMessageChange}
           loadingMore={loadingMore}
           onSelect={toggleSelect}
+          onCheckout={onCheckout}
         />
       </div>
 
@@ -125,6 +146,10 @@ export function RepoColumns({
         <CommitPanel
           commit={selectedCommit}
           repoPath={repoPath}
+          workingStatus={workingStatus}
+          onWorkingStatusChange={onWorkingStatusChange}
+          commitMessage={commitMessage}
+          onCommitMessageChange={onCommitMessageChange}
           onCommitted={onCommitted}
           onError={onError}
         />

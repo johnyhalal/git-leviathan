@@ -4,7 +4,9 @@ import type {
   GitflowKind,
   RefsMutationResult,
   RepoRefs,
+  WorkingStatus,
 } from '../../../../types/ipc';
+import { WORKING_TREE_HASH } from '../../../../types/ipc';
 import { RepoToolbar } from './RepoToolbar';
 import { RepoColumns } from './RepoColumns';
 
@@ -21,13 +23,19 @@ interface RepoViewProps {
  * on a checkout), and shares them with the toolbar, sidebar and commit list.
  */
 /** How many commits to fetch per page (initial load and each "load more"). */
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 500;
 
 export function RepoView({ title, repoPath, onError }: RepoViewProps) {
   void title;
 
   const [refs, setRefs] = useState<RepoRefs | null>(null);
   const [commits, setCommits] = useState<CommitLogEntry[] | null>(null);
+  // The working-tree status, shared so both the synthetic top-of-list
+  // "uncommitted" row and the commit panel reflect the same staged/unstaged set.
+  const [workingStatus, setWorkingStatus] = useState<WorkingStatus | null>(null);
+  // The commit message, lifted here so the working row's inline input and the
+  // commit panel's textarea are two views of one value (edits mirror both ways).
+  const [commitMessage, setCommitMessage] = useState('');
   // Whether another page might exist, and whether one is being fetched now.
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -36,19 +44,28 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
   // Bumped after a checkout to re-run the loader with the new HEAD.
   const [reloadToken, setReloadToken] = useState(0);
 
+  // A typed-but-uncommitted message belongs to one repo; drop it when the tab
+  // switches to another (this view is reused across repos, not remounted).
+  useEffect(() => {
+    setCommitMessage('');
+  }, [repoPath]);
+
   useEffect(() => {
     let live = true;
     setRefs(null);
     setCommits(null);
+    setWorkingStatus(null);
     setHasMore(false);
     loadedCountRef.current = 0;
     void Promise.all([
       window.api.repo.listRefs(repoPath),
       window.api.repo.log(repoPath, PAGE_SIZE),
-    ]).then(([nextRefs, nextCommits]) => {
+      window.api.repo.status(repoPath),
+    ]).then(([nextRefs, nextCommits, status]) => {
       if (!live) return;
       setRefs(nextRefs);
       setCommits(nextCommits);
+      setWorkingStatus(status);
       loadedCountRef.current = PAGE_SIZE;
       // A full page back means there may be more; a short page is the end. Stash
       // rows are woven in on top of the real commits, so the count can exceed the
@@ -131,6 +148,32 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
     [repoPath, runMutation],
   );
 
+  const hasChanges =
+    (workingStatus?.staged.length ?? 0) + (workingStatus?.unstaged.length ?? 0) > 0;
+
+  // The list handed to the UI: when the working tree is dirty, a synthetic row
+  // for the uncommitted changes rides on top, parented to HEAD so the graph
+  // connects it to the current tip. It carries no author/avatar/message — the
+  // graph draws it as an empty, dotted-ring node.
+  const displayCommits = useMemo(() => {
+    if (!hasChanges || commits === null) return commits;
+    const headHash = commits.find((commit) =>
+      commit.refs.some((ref) => ref.kind === 'head'),
+    )?.hash;
+    const workingRow: CommitLogEntry = {
+      hash: WORKING_TREE_HASH,
+      shortHash: '',
+      parents: headHash ? [headHash] : [],
+      author: '',
+      authorAvatarUrl: '',
+      date: '',
+      subject: '',
+      refs: [],
+      working: true,
+    };
+    return [workingRow, ...commits];
+  }, [commits, hasChanges]);
+
   const currentBranch = refs?.localBranches.find((branch) => branch.current)?.name;
   const branchNames = useMemo(
     () => refs?.localBranches.map((branch) => branch.name) ?? [],
@@ -150,7 +193,11 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
       <RepoColumns
         repoPath={repoPath}
         refs={refs}
-        commits={commits}
+        commits={displayCommits}
+        workingStatus={workingStatus}
+        onWorkingStatusChange={setWorkingStatus}
+        commitMessage={commitMessage}
+        onCommitMessageChange={setCommitMessage}
         loadingMore={loadingMore}
         onLoadMore={() => void loadMore()}
         onCommitted={reload}

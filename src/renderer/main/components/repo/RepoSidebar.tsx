@@ -12,6 +12,7 @@ import {
   CloseIcon,
   FolderIcon,
   GitflowIcon,
+  LocalIcon,
   PlusIcon,
   PopIcon,
   RemoteIcon,
@@ -19,6 +20,7 @@ import {
   StashIcon,
   TagIcon,
 } from '../../../../../assets/icons';
+import { RemoteAvatar } from './RemoteAvatar';
 import type {
   GitflowKind,
   LocalBranchInfo,
@@ -519,8 +521,9 @@ export function RepoSidebar({
   );
 
   // Remote branches: a folder per remote (origin, upstream, …), each holding a
-  // tree of that remote's branches.
+  // tree of that remote's branches, badged with its host's icon (from its URL).
   const remotes = useMemo(() => {
+    const urlByRemote = new Map((refs?.remotes ?? []).map((r) => [r.name, r.url]));
     const byRemote = new Map<string, RemoteBranchInfo[]>();
     for (const branch of remoteBranches) {
       const list = byRemote.get(branch.remote);
@@ -531,9 +534,10 @@ export function RepoSidebar({
       .sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
       .map(([remote, branches]) => ({
         remote,
+        url: urlByRemote.get(remote),
         tree: buildTree(branches, (branch) => branch.name),
       }));
-  }, [remoteBranches]);
+  }, [remoteBranches, refs?.remotes]);
 
   const placeholder = (empty: string) => (
     <p className="repo-section-empty">{loading ? 'Loading…' : empty}</p>
@@ -555,7 +559,7 @@ export function RepoSidebar({
 
       <CollapsibleSection
         label="Local Branches"
-        icon={<BranchIcon size={16} />}
+        icon={<LocalIcon size={16} />}
         count={localBranches.length}
         {...sectionProps('local')}
       >
@@ -591,8 +595,8 @@ export function RepoSidebar({
       >
         {remoteBranches.length === 0
           ? placeholder('No remote branches')
-          : remotes.map(({ remote, tree }) => (
-              <TreeFolder key={remote} name={remote} depth={0} icon={<RemoteIcon size={14} />}>
+          : remotes.map(({ remote, url, tree }) => (
+              <TreeFolder key={remote} name={remote} depth={0} icon={<RemoteAvatar url={url} />}>
                 <BranchTree
                   nodes={tree}
                   depth={1}
