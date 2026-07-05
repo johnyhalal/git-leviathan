@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CommitDetailData,
   CommitLogEntry,
@@ -8,6 +8,7 @@ import type {
   WorkingStatus,
 } from '../../../../types/ipc';
 import type { DiffTarget } from './DiffView';
+import { useConfirm } from '../ConfirmBar';
 import {
   CertificateIcon,
   ChevronDownIcon,
@@ -17,6 +18,7 @@ import {
   PencilIcon,
   PlusIcon,
   SortIcon,
+  TrashIcon,
   TreeIcon,
 } from '../../../../../assets/icons';
 
@@ -63,6 +65,13 @@ const joinMessage = (subject: string, body: string) => {
   const trimmedBody = body.trim();
   return trimmedBody ? `${subject.trim()}\n\n${trimmedBody}` : subject.trim();
 };
+
+/**
+ * Live join of the two working-tree message fields into the shared message, kept
+ * lenient (no trimming) so typing round-trips cleanly through {@link splitMessage}.
+ */
+const composeMessage = (subject: string, body: string) =>
+  body ? `${subject}\n\n${body}` : subject;
 
 /** A row in the file list: a real change, or (in "View all files" mode) an
  * unchanged file from the commit snapshot, marked by a null status. */
@@ -197,12 +206,14 @@ interface DirNodeProps {
   onToggle: (path: string) => void;
   /** Open a leaf file in the diff viewer. */
   onOpenFile?: (file: DisplayFile) => void;
+  /** Per-file stage/unstage control, threaded down to each leaf row. */
+  action?: (file: DisplayFile) => FileRowProps['action'];
   /** Path of the file currently shown in the diff viewer, if any. */
   activePath?: string | null;
 }
 
 /** Recursively render a folder's subfolders (first) then its files. */
-function DirNode({ dir, depth, asc, collapsed, onToggle, onOpenFile, activePath }: DirNodeProps) {
+function DirNode({ dir, depth, asc, collapsed, onToggle, onOpenFile, action, activePath }: DirNodeProps) {
   const dirs = [...dir.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
   const files = [...dir.files].sort((a, b) =>
     baseName(a.path).localeCompare(baseName(b.path)),
@@ -238,6 +249,7 @@ function DirNode({ dir, depth, asc, collapsed, onToggle, onOpenFile, activePath 
                 collapsed={collapsed}
                 onToggle={onToggle}
                 onOpenFile={onOpenFile}
+                action={action}
                 activePath={activePath}
               />
             )}
@@ -250,6 +262,7 @@ function DirNode({ dir, depth, asc, collapsed, onToggle, onOpenFile, activePath 
           file={file}
           showDir={false}
           indent={6 + depth * 14}
+          action={action?.(file)}
           onOpen={onOpenFile ? () => onOpenFile(file) : undefined}
           selected={file.path === activePath}
         />
@@ -692,60 +705,87 @@ function CommitDetail({
   );
 }
 
-interface FilesSectionProps {
-  title: string;
+interface WorkingFileListProps {
   files: FileChange[];
+  /** Flat list or folder tree; shared across both working sections. */
+  mode: 'list' | 'tree';
+  /** Ascending path sort? Shared across both working sections. */
+  asc: boolean;
   emptyText: string;
-  /** Bulk action for the whole section (stage all / unstage all). */
-  bulk?: { label: string; onClick: () => void };
-  /** Per-file action builder. */
-  action: (file: FileChange) => FileRowProps['action'];
+  /** Per-file stage/unstage control. */
+  action: (file: DisplayFile) => FileRowProps['action'];
   /** Open a file in the center diff viewer. */
-  onOpenFile?: (file: FileChange) => void;
+  onOpenFile: (file: DisplayFile) => void;
   /** Path of the file currently shown in the diff viewer, if any. */
-  activePath?: string | null;
+  activePath: string | null;
 }
 
-function FilesSection({
-  title,
+/**
+ * A working-tree file list — the staged/unstaged sections share it. Renders a
+ * flat sorted list or a collapsible folder tree, with per-file stage/unstage
+ * actions and click-to-diff, mirroring the commit-detail file list's look.
+ */
+function WorkingFileList({
   files,
+  mode,
+  asc,
   emptyText,
-  bulk,
   action,
   onOpenFile,
   activePath,
-}: FilesSectionProps) {
-  return (
-    <div className="commit-files">
-      <div className="commit-files-header">
-        <span className="commit-files-title">
-          {title} · {files.length}
-        </span>
-        {bulk && files.length > 0 && (
-          <button type="button" className="commit-files-bulk" onClick={bulk.onClick}>
-            {bulk.label}
-          </button>
-        )}
+}: WorkingFileListProps) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggleDir = useCallback((path: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const sorted = useMemo(() => {
+    const arr = [...files].sort((a, b) => a.path.localeCompare(b.path));
+    if (!asc) arr.reverse();
+    return arr;
+  }, [files, asc]);
+
+  if (sorted.length === 0) return <p className="commit-files-empty">{emptyText}</p>;
+  if (mode === 'tree') {
+    return (
+      <div className="commit-tree">
+        <DirNode
+          dir={buildTree(sorted)}
+          depth={0}
+          asc={asc}
+          collapsed={collapsed}
+          onToggle={toggleDir}
+          onOpenFile={onOpenFile}
+          action={action}
+          activePath={activePath}
+        />
       </div>
-      {files.length === 0 ? (
-        <p className="commit-files-empty">{emptyText}</p>
-      ) : (
-        files.map((file) => (
-          <FileRow
-            key={file.path}
-            file={file}
-            action={action(file)}
-            onOpen={onOpenFile ? () => onOpenFile(file) : undefined}
-            selected={file.path === activePath}
-          />
-        ))
-      )}
-    </div>
+    );
+  }
+  return (
+    <>
+      {sorted.map((file) => (
+        <FileRow
+          key={file.path}
+          file={file}
+          action={action(file)}
+          onOpen={() => onOpenFile(file)}
+          selected={file.path === activePath}
+        />
+      ))}
+    </>
   );
 }
 
 interface WorkingChangesProps {
   repoPath: string;
+  /** The checked-out branch name, shown in the "N files changed on …" header. */
+  branch?: string;
   /** Shared working-tree status (owned by RepoView); null while loading. */
   status: WorkingStatus | null;
   /** Push a fresh status up after stage/unstage/commit. */
@@ -766,6 +806,7 @@ interface WorkingChangesProps {
 /** Working-tree staging + commit, backed by real git status/add/reset/commit. */
 function WorkingChanges({
   repoPath,
+  branch,
   status,
   onStatusChange,
   message,
@@ -776,6 +817,15 @@ function WorkingChanges({
   onError,
 }: WorkingChangesProps) {
   const [busy, setBusy] = useState(false);
+  // Shared across both sections: sort direction and list-vs-tree presentation.
+  const [asc, setAsc] = useState(true);
+  const [mode, setMode] = useState<'list' | 'tree'>('list');
+  // Destructive actions route through the global confirm bar over the toolbar.
+  const requestConfirm = useConfirm();
+  // The share of the changes body given to the unstaged (top) section; the
+  // staged (bottom) section takes the remainder. Dragged via the divider.
+  const [topRatio, setTopRatio] = useState(0.5);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   // Staged rows diff the index against HEAD; unstaged rows the working tree
   // against the index. A row is active only when the open diff matches both its
@@ -794,6 +844,21 @@ function WorkingChanges({
     [repoPath, onStatusChange],
   );
 
+  const discardAll = useCallback(() => {
+    requestConfirm({
+      message: 'Discard all changes? This cannot be undone.',
+      actions: [
+        {
+          label: 'Discard all',
+          busyLabel: 'Discarding…',
+          tone: 'danger',
+          onClick: async () =>
+            onStatusChange(await window.api.repo.discardAll(repoPath)),
+        },
+      ],
+    });
+  }, [requestConfirm, repoPath, onStatusChange]);
+
   const commit = useCallback(async () => {
     setBusy(true);
     const result = await window.api.repo.commit(repoPath, message);
@@ -807,6 +872,27 @@ function WorkingChanges({
     onCommitted();
   }, [repoPath, message, onMessageChange, onStatusChange, onCommitted, onError]);
 
+  // Drag the divider: convert the pointer's Y within the body to a top/bottom
+  // split ratio, clamped so neither section fully collapses.
+  const startVSplit = useCallback((event: React.PointerEvent) => {
+    event.preventDefault();
+    const onMove = (ev: PointerEvent) => {
+      const el = bodyRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const ratio = (ev.clientY - rect.top) / rect.height;
+      setTopRatio(Math.min(0.85, Math.max(0.15, ratio)));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.classList.remove('is-row-resizing');
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    document.body.classList.add('is-row-resizing');
+  }, []);
+
   if (status === null) {
     return (
       <aside className="commit-panel" aria-label="Commit changes">
@@ -819,62 +905,173 @@ function WorkingChanges({
   }
 
   const { staged, unstaged } = status;
-  const nothing = staged.length === 0 && unstaged.length === 0;
-  const canCommit = staged.length > 0 && message.trim().length > 0 && !busy;
+  const changedCount = countWorkingFiles(status);
+  const hasChanges = changedCount > 0;
+  // The shared message is one string; split it into the subject + description
+  // fields and recompose on edit so the working row's inline input stays mirrored.
+  const { subject, body } = splitMessage(message);
+  const canCommit = staged.length > 0 && subject.trim().length > 0 && !busy;
 
   return (
     <aside className="commit-panel" aria-label="Commit changes">
-      <header className="commit-panel-header">Commit changes</header>
+      <header className="commit-panel-header commit-changes-header">
+        <button
+          type="button"
+          className="commit-discard-btn tooltip-host"
+          data-tooltip="Discard all changes"
+          aria-label="Discard all changes"
+          disabled={!hasChanges}
+          onClick={discardAll}
+        >
+          <TrashIcon size={16} />
+        </button>
+        <span className="commit-changes-summary">
+          {changedCount} {changedCount === 1 ? 'file' : 'files'} changed
+          {branch && (
+            <>
+              {' '}
+              on <strong>{branch}</strong>
+            </>
+          )}
+        </span>
+      </header>
 
-      <div className="commit-panel-body">
-        {nothing ? (
-          <div className="commit-panel-empty">
-            <p>No changes to commit</p>
+      <div className="commit-changes-controls">
+        <button
+          type="button"
+          className="commit-files-sort"
+          title={asc ? 'Sorted A→Z (click for Z→A)' : 'Sorted Z→A (click for A→Z)'}
+          aria-label="Toggle sort order"
+          onClick={() => setAsc((v) => !v)}
+        >
+          <span className={`commit-files-sort-icon${asc ? '' : ' desc'}`}>
+            <SortIcon size={14} />
+          </span>
+        </button>
+        <div className="commit-files-viewswitch" role="group" aria-label="File view mode">
+          <button
+            type="button"
+            className={mode === 'list' ? 'active' : ''}
+            title="List view"
+            aria-pressed={mode === 'list'}
+            onClick={() => setMode('list')}
+          >
+            <ListIcon size={14} />
+            List
+          </button>
+          <button
+            type="button"
+            className={mode === 'tree' ? 'active' : ''}
+            title="Tree view"
+            aria-pressed={mode === 'tree'}
+            onClick={() => setMode('tree')}
+          >
+            <TreeIcon size={14} />
+            Tree
+          </button>
+        </div>
+      </div>
+
+      <div className="commit-changes-body" ref={bodyRef}>
+        <section className="commit-changes-section" style={{ flexGrow: topRatio }}>
+          <div className="commit-files-header">
+            <span className="commit-files-title">Unstaged Files · {unstaged.length}</span>
+            {unstaged.length > 0 && (
+              <button
+                type="button"
+                className="commit-files-bulk"
+                onClick={() => void stage(null)}
+              >
+                Stage all
+              </button>
+            )}
           </div>
-        ) : (
-          <>
-            <FilesSection
-              title="Staged"
-              files={staged}
-              emptyText="Nothing staged"
-              bulk={{ label: 'Unstage all', onClick: () => void unstage(null) }}
-              action={(file) => ({
-                label: '−',
-                title: 'Unstage file',
-                onClick: () => void unstage(file.path),
-              })}
-              onOpenFile={(file) =>
-                onOpenDiff({ source: stagedSource, path: file.path, status: file.status })
-              }
-              activePath={activePathFor(stagedSource)}
-            />
-            <FilesSection
-              title="Changes"
+          <div className="commit-changes-scroll">
+            <WorkingFileList
               files={unstaged}
+              mode={mode}
+              asc={asc}
               emptyText="No unstaged changes"
-              bulk={{ label: 'Stage all', onClick: () => void stage(null) }}
               action={(file) => ({
                 label: '+',
                 title: 'Stage file',
                 onClick: () => void stage(file.path),
               })}
               onOpenFile={(file) =>
-                onOpenDiff({ source: unstagedSource, path: file.path, status: file.status })
+                onOpenDiff({
+                  source: unstagedSource,
+                  path: file.path,
+                  status: file.status ?? 'modified',
+                })
               }
               activePath={activePathFor(unstagedSource)}
             />
-          </>
-        )}
+          </div>
+        </section>
+
+        <div
+          className="commit-split-handle"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize unstaged and staged sections"
+          onPointerDown={startVSplit}
+        />
+
+        <section className="commit-changes-section" style={{ flexGrow: 1 - topRatio }}>
+          <div className="commit-files-header">
+            <span className="commit-files-title">Staged Files · {staged.length}</span>
+            {staged.length > 0 && (
+              <button
+                type="button"
+                className="commit-files-bulk"
+                onClick={() => void unstage(null)}
+              >
+                Unstage all
+              </button>
+            )}
+          </div>
+          <div className="commit-changes-scroll">
+            <WorkingFileList
+              files={staged}
+              mode={mode}
+              asc={asc}
+              emptyText="Nothing staged"
+              action={(file) => ({
+                label: '−',
+                title: 'Unstage file',
+                onClick: () => void unstage(file.path),
+              })}
+              onOpenFile={(file) =>
+                onOpenDiff({
+                  source: stagedSource,
+                  path: file.path,
+                  status: file.status ?? 'modified',
+                })
+              }
+              activePath={activePathFor(stagedSource)}
+            />
+          </div>
+        </section>
       </div>
 
       <div className="commit-message-box">
-        <textarea
-          className="commit-message-input"
-          placeholder="Commit message"
-          value={message}
-          onChange={(event) => onMessageChange(event.target.value)}
-          rows={3}
-        />
+        <div className="commit-message-fields">
+          <input
+            className="commit-message-subject"
+            placeholder="Summary"
+            aria-label="Commit summary"
+            value={subject}
+            onChange={(event) => onMessageChange(composeMessage(event.target.value, body))}
+          />
+          <textarea
+            className="commit-message-description"
+            placeholder="Description"
+            aria-label="Commit description"
+            value={body}
+            onChange={(event) => onMessageChange(composeMessage(subject, event.target.value))}
+            rows={3}
+          />
+        </div>
         <button
           type="button"
           className="commit-submit"
@@ -892,6 +1089,8 @@ interface CommitPanelProps {
   /** The selected historical commit, or null for the working-tree view. */
   commit: CommitLogEntry | null;
   repoPath: string;
+  /** The checked-out branch name, shown in the working-tree changes header. */
+  branch?: string;
   /** Shared working-tree status; null while loading. */
   workingStatus: WorkingStatus | null;
   /** Push a fresh working-tree status up after stage/unstage/commit. */
@@ -919,6 +1118,7 @@ interface CommitPanelProps {
 export function CommitPanel({
   commit,
   repoPath,
+  branch,
   workingStatus,
   onWorkingStatusChange,
   commitMessage,
@@ -945,6 +1145,7 @@ export function CommitPanel({
   ) : (
     <WorkingChanges
       repoPath={repoPath}
+      branch={branch}
       status={workingStatus}
       onStatusChange={onWorkingStatusChange}
       message={commitMessage}

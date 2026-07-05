@@ -20,6 +20,7 @@ import {
   IntegrationChannels,
   RepoChannels,
   ThemeChannels,
+  UpdateChannels,
   type CloneProgress,
   type CloneRequest,
   type CloneResult,
@@ -54,6 +55,7 @@ import {
   type TagInfo,
   type ThemeSource,
   type ThemeState,
+  type UpdateInfo,
 } from './types/ipc';
 import type { DeviceAuthorization } from './oauth/deviceFlow';
 import * as github from './oauth/github';
@@ -1145,7 +1147,75 @@ async function readStatus(cwd: string): Promise<WorkingStatus> {
   return { staged, unstaged };
 }
 
+// ---- Working-tree watching -----------------------------------------------
+
+/** Coalesce a burst of filesystem events into a single change signal. */
+const WATCH_DEBOUNCE_MS = 150;
+
+interface RepoWatch {
+  watcher: fs.FSWatcher;
+  timer: NodeJS.Timeout | null;
+}
+
+// One watcher per renderer, for the repo it currently shows.
+const repoWatchers = new Map<Electron.WebContents, RepoWatch>();
+// Renderers whose 'destroyed' cleanup we've already hooked.
+const watchCleanupHooked = new WeakSet<Electron.WebContents>();
+
+/** Tear down the watcher (if any) currently registered for `wc`. */
+function stopRepoWatch(wc: Electron.WebContents): void {
+  const existing = repoWatchers.get(wc);
+  if (!existing) return;
+  if (existing.timer) clearTimeout(existing.timer);
+  existing.watcher.close();
+  repoWatchers.delete(wc);
+}
+
+/**
+ * Watch `repoPath`'s working tree for a renderer, replacing any prior watch.
+ * Events inside `.git` are ignored — index/lock/object churn would fire
+ * constantly and isn't a working-tree edit (branch/commit changes are picked up
+ * by the focus refresh). Bursts are debounced, then the renderer is told its
+ * repo changed so it can re-read status/refs/log.
+ */
+function startRepoWatch(wc: Electron.WebContents, repoPath: string): void {
+  stopRepoWatch(wc);
+  if (!isGitRepo(repoPath)) return;
+  let watcher: fs.FSWatcher;
+  try {
+    watcher = fs.watch(repoPath, { recursive: true });
+  } catch {
+    // Recursive watching may be unavailable on some platforms; degrade to the
+    // focus-based refresh rather than crash.
+    return;
+  }
+  const entry: RepoWatch = { watcher, timer: null };
+  repoWatchers.set(wc, entry);
+  watcher.on('error', () => stopRepoWatch(wc));
+  watcher.on('change', (_type, filename) => {
+    const name = filename?.toString();
+    if (name && (name === '.git' || name.startsWith('.git/') || name.startsWith(`.git${path.sep}`))) {
+      return;
+    }
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      if (!wc.isDestroyed()) wc.send(RepoChannels.changed, repoPath);
+    }, WATCH_DEBOUNCE_MS);
+  });
+}
+
 function registerRepoIpc(): void {
+  ipcMain.on(RepoChannels.watch, (event, repoPath: unknown) => {
+    const wc = event.sender;
+    if (!watchCleanupHooked.has(wc)) {
+      watchCleanupHooked.add(wc);
+      wc.once('destroyed', () => stopRepoWatch(wc));
+    }
+    if (typeof repoPath === 'string') startRepoWatch(wc, repoPath);
+    else stopRepoWatch(wc);
+  });
+
   ipcMain.handle(
     RepoChannels.listRefs,
     async (_event, repoPath: unknown): Promise<RepoRefs> => {
@@ -1286,6 +1356,20 @@ function registerRepoIpc(): void {
           ? ['reset', '-q', '--', file]
           : ['reset', '-q'];
       await runGit(repoPath, args);
+      return readStatus(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.discardAll,
+    async (_event, repoPath: unknown): Promise<WorkingStatus> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
+      // Revert tracked modifications and drop the index (no-op when there's no
+      // HEAD yet); a plain reset then unstages any freshly-added files in a
+      // commit-less repo; clean removes untracked files and directories.
+      await runGit(repoPath, ['reset', '--hard', 'HEAD']);
+      await runGit(repoPath, ['reset', '-q']);
+      await runGit(repoPath, ['clean', '-fd']);
       return readStatus(repoPath);
     },
   );
@@ -2157,12 +2241,24 @@ function createMainWindow(): BrowserWindow {
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e24' : '#f5f5f7',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    webPreferences: { preload: preloadPath },
+    webPreferences: {
+      preload: preloadPath,
+      // Hand the app version to the preload synchronously (works packaged too,
+      // where npm_package_version is absent). Read back off process.argv.
+      additionalArguments: [`--app-version=${app.getVersion()}`],
+    },
   });
 
   if (settings.windowMaximized) {
     win.maximize();
   }
+
+  // Tell the renderer each time the window regains OS focus, so it can re-sync
+  // the on-screen repo with changes made outside the app (edits in an editor,
+  // commits from a terminal) while it was in the background.
+  win.on('focus', () => {
+    if (!win.isDestroyed()) win.webContents.send(AppChannels.focused);
+  });
 
   // Persist size/position (and maximized state) as they were on close.
   // getNormalBounds() returns the un-maximized bounds so a restore lands right.
@@ -2260,6 +2356,81 @@ function registerAppIpc(): void {
   });
 }
 
+// ---- Update check ---------------------------------------------------------
+
+/** owner/repo whose GitHub Releases are the source of truth for updates. */
+const GITHUB_RELEASES_REPO = 'johnyhalal/git-leviathan';
+
+/** Parse a `major.minor.patch` string (tolerating a leading "v") into numbers. */
+function parseSemver(raw: string): [number, number, number] | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(raw.trim());
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** Whether `remote` is a strictly newer semver than `current`. */
+function isNewerVersion(remote: string, current: string): boolean {
+  const a = parseSemver(remote);
+  const b = parseSemver(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] > b[i]) return true;
+    if (a[i] < b[i]) return false;
+  }
+  return false;
+}
+
+function registerUpdateIpc(): void {
+  ipcMain.handle(UpdateChannels.check, async (): Promise<UpdateInfo | null> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${GITHUB_RELEASES_REPO}/releases/latest`,
+        {
+          headers: {
+            'User-Agent': 'GitLeviathan',
+            Accept: 'application/vnd.github+json',
+          },
+          signal: controller.signal,
+        },
+      );
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        tag_name?: string;
+        html_url?: string;
+      };
+      if (typeof data.tag_name !== 'string' || typeof data.html_url !== 'string') {
+        return null;
+      }
+      if (!isNewerVersion(data.tag_name, app.getVersion())) return null;
+      return {
+        version: data.tag_name.replace(/^v/, ''),
+        releaseUrl: data.html_url,
+      };
+    } catch {
+      // Offline, aborted, rate-limited, malformed — stay silent.
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+
+  ipcMain.on(UpdateChannels.openRelease, (_event, url: unknown): void => {
+    if (typeof url !== 'string') return;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return;
+    }
+    // Only ever hand github.com https URLs to the OS browser.
+    if (parsed.protocol === 'https:' && parsed.hostname === 'github.com') {
+      void shell.openExternal(url);
+    }
+  });
+}
+
 app.on('ready', () => {
   loadSettings();
   reconcileIntegrations();
@@ -2269,6 +2440,7 @@ app.on('ready', () => {
   registerRepoIpc();
   registerIntegrationsIpc();
   registerAppIpc();
+  registerUpdateIpc();
   console.log(
     `[main] ready — theme "${nativeTheme.themeSource}" (dark=${nativeTheme.shouldUseDarkColors})`,
   );

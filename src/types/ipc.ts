@@ -34,7 +34,24 @@ export const AppChannels = {
   getPullMode: 'app:get-pull-mode',
   /** Renderer -> main (invoke): persist the default pull mode (global). */
   setPullMode: 'app:set-pull-mode',
+  /** Main -> renderer (send): the main window regained OS focus. */
+  focused: 'app:focused',
 } as const;
+
+export const UpdateChannels = {
+  /** Renderer -> main (invoke): resolve a newer release, or null. */
+  check: 'update:check',
+  /** Renderer -> main (send): open the release page in the browser. */
+  openRelease: 'update:open',
+} as const;
+
+/** A newer published release than the one currently running. */
+export interface UpdateInfo {
+  /** Latest published version, normalized (no leading "v"), e.g. "0.2.0". */
+  version: string;
+  /** GitHub release page URL to open in the browser. */
+  releaseUrl: string;
+}
 
 // ---- Repositories ---------------------------------------------------------
 
@@ -294,6 +311,8 @@ export const RepoChannels = {
   stage: 'repo:stage',
   /** Renderer -> main (invoke): unstage a file (or all); returns fresh status. */
   unstage: 'repo:unstage',
+  /** Renderer -> main (invoke): discard every working-tree change; fresh status. */
+  discardAll: 'repo:discard-all',
   /** Renderer -> main (invoke): commit the staged changes. */
   commit: 'repo:commit',
   /** Renderer -> main (invoke): reword a commit's message (amend / rebase). */
@@ -336,6 +355,10 @@ export const RepoChannels = {
   cloneProgress: 'repo:clone-progress',
   /** Renderer -> main (invoke): cancel this window's in-flight clone. */
   cloneCancel: 'repo:clone-cancel',
+  /** Renderer -> main (send): watch this repo's working tree (null to stop). */
+  watch: 'repo:watch',
+  /** Main -> renderer (send): the watched repo's working tree changed on disk. */
+  changed: 'repo:changed',
 } as const;
 
 // ---- Integrations ---------------------------------------------------------
@@ -455,6 +478,12 @@ export interface AppApi {
   getPullMode(): Promise<PullMode>;
   /** Persist the default pull mode (global). */
   setPullMode(mode: PullMode): Promise<void>;
+  /**
+   * Subscribe to the main window regaining OS focus (e.g. the user switched
+   * back to the app from another window). Fires each time; used to re-sync the
+   * on-screen repo with what's on disk. Returns an unsubscribe function.
+   */
+  onWindowFocus(callback: () => void): () => void;
 }
 
 export interface RepoApi {
@@ -502,6 +531,12 @@ export interface RepoApi {
   stage(path: string, file: string | null): Promise<WorkingStatus>;
   /** Unstage `file` (a path), or everything when null. Returns fresh status. */
   unstage(path: string, file: string | null): Promise<WorkingStatus>;
+  /**
+   * Discard every working-tree change: revert tracked modifications, unstage the
+   * index, and delete untracked files/directories (`git reset --hard` + `git
+   * clean -fd`). Irreversible. Resolves with the (now clean) working status.
+   */
+  discardAll(path: string): Promise<WorkingStatus>;
   /** Commit the currently staged changes with `message`. */
   commit(path: string, message: string): Promise<CommitResult>;
   /**
@@ -613,6 +648,18 @@ export interface RepoApi {
    * resolves with `{ status: 'canceled' }` and the partial folder is removed.
    */
   cancelClone(): Promise<void>;
+  /**
+   * Ask the main process to watch a repository's working tree for on-disk
+   * changes made outside the app (edits from an editor, commits from a
+   * terminal). Pass a path to (re)start watching that repo, or null to stop.
+   * Changes arrive, debounced, via `onRepoChanged`.
+   */
+  watch(path: string | null): void;
+  /**
+   * Subscribe to on-disk changes for the currently watched repo; the callback
+   * receives the changed repo's path. Returns an unsubscribe function.
+   */
+  onRepoChanged(callback: (path: string) => void): () => void;
 }
 
 export interface IntegrationsApi {
@@ -635,11 +682,25 @@ export interface IntegrationsApi {
   onChange(callback: (state: IntegrationsState) => void): () => void;
 }
 
+export interface UpdateApi {
+  /**
+   * Check GitHub for the latest published release. Resolves with the release
+   * when it's newer than the running app, or null (no update, or the check
+   * failed — offline, rate-limited, no releases). Never rejects.
+   */
+  check(): Promise<UpdateInfo | null>;
+  /** Open a release page (github.com URL) in the default browser. */
+  openRelease(url: string): void;
+}
+
 export interface ExposedApi {
   /** Host OS platform, mirrored from the main process' `process.platform`. */
   platform: NodeJS.Platform;
+  /** The running app version (from the main process' `app.getVersion()`). */
+  version: string;
   theme: ThemeApi;
   app: AppApi;
   repo: RepoApi;
   integrations: IntegrationsApi;
+  update: UpdateApi;
 }

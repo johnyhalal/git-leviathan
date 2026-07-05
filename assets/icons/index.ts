@@ -25,5 +25,6 @@ export { PullRequestIcon } from './PullRequestIcon';
 export { TagIcon } from './TagIcon';
 export { CertificateIcon } from './CertificateIcon';
 export { SortIcon } from './SortIcon';
+export { TrashIcon } from './TrashIcon';
 export { ListIcon } from './ListIcon';
 export { TreeIcon } from './TreeIcon';

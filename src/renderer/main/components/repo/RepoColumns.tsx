@@ -14,6 +14,8 @@ import { useResizableColumns } from './useResizableColumns';
 
 interface RepoColumnsProps {
   repoPath: string;
+  /** The checked-out branch name (undefined when detached), shown in the panel. */
+  branch?: string;
   refs: RepoRefs | null;
   commits: CommitLogEntry[] | null;
   /** The shared working-tree status (staged/unstaged), or null while loading. */
@@ -55,6 +57,7 @@ interface RepoColumnsProps {
  */
 export function RepoColumns({
   repoPath,
+  branch,
   refs,
   commits,
   workingStatus,
@@ -179,6 +182,7 @@ export function RepoColumns({
         <CommitPanel
           commit={selectedCommit}
           repoPath={repoPath}
+          branch={branch}
           workingStatus={workingStatus}
           onWorkingStatusChange={onWorkingStatusChange}
           commitMessage={commitMessage}

@@ -6,7 +6,7 @@ import { Settings } from './components/Settings';
 import { CloneDialog } from './components/CloneDialog';
 import { RepoView } from './components/repo/RepoView';
 import { GearIcon } from '../../../assets/icons';
-import type { RepoInfo } from '../../types/ipc';
+import type { RepoInfo, UpdateInfo } from '../../types/ipc';
 
 let nextTabId = 2;
 let nextToastId = 1;
@@ -25,6 +25,7 @@ export function App() {
   const [cloneOpen, setCloneOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
   // Gate tab persistence until the initial restore has run, so the default
   // empty tab can't overwrite the saved list before it's loaded.
   const tabsHydrated = useRef(false);
@@ -39,6 +40,25 @@ export function App() {
     });
     return () => {
       active = false;
+    };
+  }, []);
+
+  // Check GitHub for a newer release on mount, every 6 hours, and whenever the
+  // window regains focus. A failed check resolves null, so this quietly shows
+  // nothing when offline.
+  useEffect(() => {
+    let alive = true;
+    const run = () =>
+      void window.api.update.check().then((info) => {
+        if (alive) setUpdate(info);
+      });
+    run();
+    const id = setInterval(run, 6 * 60 * 60 * 1000);
+    const unsubscribe = window.api.app.onWindowFocus(run);
+    return () => {
+      alive = false;
+      clearInterval(id);
+      unsubscribe();
     };
   }, []);
 
@@ -207,6 +227,20 @@ export function App() {
           />
         )}
       </main>
+
+      <footer className="statusbar">
+        {update && (
+          <button
+            type="button"
+            className="statusbar-update"
+            title="Open the release page"
+            onClick={() => window.api.update.openRelease(update.releaseUrl)}
+          >
+            Update available (v{update.version})
+          </button>
+        )}
+        <span className="statusbar-version">v{window.api.version}</span>
+      </footer>
 
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
 

@@ -4,6 +4,7 @@ import {
   IntegrationChannels,
   RepoChannels,
   ThemeChannels,
+  UpdateChannels,
   type CheckoutResult,
   type RefsMutationResult,
   type GitflowKind,
@@ -30,10 +31,17 @@ import {
   type RepoRefs,
   type ThemeSource,
   type ThemeState,
+  type UpdateInfo,
 } from './types/ipc';
+
+// The main process passes the app version via webPreferences.additionalArguments
+// as `--app-version=x`; pull it back off argv for a synchronous read.
+const appVersion =
+  process.argv.find((arg) => arg.startsWith('--app-version='))?.slice('--app-version='.length) ?? '';
 
 const api: ExposedApi = {
   platform: process.platform,
+  version: appVersion,
   app: {
     signalReady: () => ipcRenderer.send(AppChannels.ready),
     getSidebarSections: () =>
@@ -46,6 +54,11 @@ const api: ExposedApi = {
       ipcRenderer.invoke(AppChannels.getPullMode) as Promise<PullMode>,
     setPullMode: (mode: PullMode) =>
       ipcRenderer.invoke(AppChannels.setPullMode, mode) as Promise<void>,
+    onWindowFocus: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on(AppChannels.focused, listener);
+      return () => ipcRenderer.removeListener(AppChannels.focused, listener);
+    },
   },
   repo: {
     open: () => ipcRenderer.invoke(RepoChannels.open) as Promise<OpenRepoResult>,
@@ -69,6 +82,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.stage, path, file) as Promise<WorkingStatus>,
     unstage: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.unstage, path, file) as Promise<WorkingStatus>,
+    discardAll: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.discardAll, path) as Promise<WorkingStatus>,
     commit: (path: string, message: string) =>
       ipcRenderer.invoke(RepoChannels.commit, path, message) as Promise<CommitResult>,
     reword: (path: string, hash: string, message: string) =>
@@ -116,6 +131,12 @@ const api: ExposedApi = {
     },
     cancelClone: () =>
       ipcRenderer.invoke(RepoChannels.cloneCancel) as Promise<void>,
+    watch: (path: string | null) => ipcRenderer.send(RepoChannels.watch, path),
+    onRepoChanged: (callback) => {
+      const listener = (_event: IpcRendererEvent, path: string) => callback(path);
+      ipcRenderer.on(RepoChannels.changed, listener);
+      return () => ipcRenderer.removeListener(RepoChannels.changed, listener);
+    },
   },
   theme: {
     get: () => ipcRenderer.invoke(ThemeChannels.get) as Promise<ThemeState>,
@@ -153,6 +174,12 @@ const api: ExposedApi = {
       return () =>
         ipcRenderer.removeListener(IntegrationChannels.changed, listener);
     },
+  },
+  update: {
+    check: () =>
+      ipcRenderer.invoke(UpdateChannels.check) as Promise<UpdateInfo | null>,
+    openRelease: (url: string) =>
+      ipcRenderer.send(UpdateChannels.openRelease, url),
   },
 };
 

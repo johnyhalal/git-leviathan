@@ -10,6 +10,7 @@ import type {
 import { WORKING_TREE_HASH } from '../../../../types/ipc';
 import { RepoToolbar } from './RepoToolbar';
 import { RepoColumns } from './RepoColumns';
+import { ConfirmProvider } from '../ConfirmBar';
 
 interface RepoViewProps {
   title: string;
@@ -42,6 +43,9 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
   const [loadingMore, setLoadingMore] = useState(false);
   // How many commits we've requested so far — the running `--max-count` cap.
   const loadedCountRef = useRef(0);
+  // Guards the focus-driven refresh so overlapping focus events can't fire
+  // concurrent re-reads.
+  const refreshingRef = useRef(false);
   // Bumped after a checkout to re-run the loader with the new HEAD.
   const [reloadToken, setReloadToken] = useState(0);
   // True while a push is in flight, to disable the toolbar button.
@@ -97,6 +101,62 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
   }, [repoPath, hasMore, loadingMore]);
 
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
+
+  // A seamless re-sync used when the window regains focus: re-read refs, the
+  // commit log and the working status at the current page cap and swap them in
+  // place — no nulling of state, so there's no loading flash and the scroll
+  // position and selected commit survive. Unlike `reload()` this doesn't reset
+  // pagination. Skipped while the initial load hasn't finished (`refs === null`),
+  // while a page fetch is in flight (would race `loadedCountRef`/`commits`), or
+  // while a prior refresh is still running.
+  const refresh = useCallback(async () => {
+    if (refs === null || loadingMore || refreshingRef.current) return;
+    refreshingRef.current = true;
+    try {
+      const count = loadedCountRef.current || PAGE_SIZE;
+      const [nextRefs, nextCommits, status] = await Promise.all([
+        window.api.repo.listRefs(repoPath),
+        window.api.repo.log(repoPath, count),
+        window.api.repo.status(repoPath),
+      ]);
+      setRefs(nextRefs);
+      setCommits(nextCommits);
+      setWorkingStatus(status);
+      setHasMore(nextCommits.length >= count);
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, [refs, loadingMore, repoPath]);
+
+  // Always call the latest `refresh` from the long-lived subscriptions below
+  // without re-subscribing on every render (refresh's identity changes each
+  // time it swaps in new refs).
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
+  // Re-sync the view whenever the OS window regains focus, so edits made in an
+  // editor or commits made from a terminal show up without a manual action.
+  // The main process detects window focus and broadcasts it (renderer-side
+  // `window` focus events are unreliable in Electron).
+  useEffect(
+    () => window.api.app.onWindowFocus(() => void refreshRef.current()),
+    [],
+  );
+
+  // Watch the working tree so external edits refresh the view the moment they
+  // hit disk. This closes the gap left by focus alone: editors that write on
+  // blur save the file just as the window gains focus, so the focus refresh can
+  // read the pre-save state — the watcher then catches the write that follows.
+  useEffect(() => {
+    window.api.repo.watch(repoPath);
+    const unsubscribe = window.api.repo.onRepoChanged((changed) => {
+      if (changed === repoPath) void refreshRef.current();
+    });
+    return () => {
+      unsubscribe();
+      window.api.repo.watch(null);
+    };
+  }, [repoPath]);
 
   // Push the current branch to its upstream; on success reload so the branch's
   // ahead/behind counts refresh, on failure surface git's message via a toast.
@@ -221,37 +281,41 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
 
   return (
     <div className="repo-view">
-      <RepoToolbar
-        branch={branchLabel}
-        branches={branchNames}
-        onCheckout={(branch) => void checkout(branch)}
-        onPush={() => void push()}
-        pushing={pushing}
-        onPull={(mode) => void pull(mode)}
-        pulling={pulling}
-        onStash={() => void stashPush()}
-        canStash={hasChanges}
-        hasStash={(refs?.stashes.length ?? 0) > 0}
-        onPop={() => void stashPop(0)}
-      />
-      <RepoColumns
-        repoPath={repoPath}
-        refs={refs}
-        commits={displayCommits}
-        workingStatus={workingStatus}
-        onWorkingStatusChange={setWorkingStatus}
-        commitMessage={commitMessage}
-        onCommitMessageChange={setCommitMessage}
-        loadingMore={loadingMore}
-        onLoadMore={() => void loadMore()}
-        onCommitted={reload}
-        onCheckout={(branch, remote) => void checkout(branch, remote)}
-        onStashPop={(index) => void stashPop(index)}
-        onStashDrop={(index) => void stashDrop(index)}
-        onGitflowStart={(kind, name) => void gitflowStart(kind, name)}
-        onGitflowFinish={() => void gitflowFinish()}
-        onError={onError}
-      />
+      {/* Scoped here so its confirm bar can overlay the toolbar below. */}
+      <ConfirmProvider>
+        <RepoToolbar
+          branch={branchLabel}
+          branches={branchNames}
+          onCheckout={(branch) => void checkout(branch)}
+          onPush={() => void push()}
+          pushing={pushing}
+          onPull={(mode) => void pull(mode)}
+          pulling={pulling}
+          onStash={() => void stashPush()}
+          canStash={hasChanges}
+          hasStash={(refs?.stashes.length ?? 0) > 0}
+          onPop={() => void stashPop(0)}
+        />
+        <RepoColumns
+          repoPath={repoPath}
+          branch={currentBranch}
+          refs={refs}
+          commits={displayCommits}
+          workingStatus={workingStatus}
+          onWorkingStatusChange={setWorkingStatus}
+          commitMessage={commitMessage}
+          onCommitMessageChange={setCommitMessage}
+          loadingMore={loadingMore}
+          onLoadMore={() => void loadMore()}
+          onCommitted={reload}
+          onCheckout={(branch, remote) => void checkout(branch, remote)}
+          onStashPop={(index) => void stashPop(index)}
+          onStashDrop={(index) => void stashDrop(index)}
+          onGitflowStart={(kind, name) => void gitflowStart(kind, name)}
+          onGitflowFinish={() => void gitflowFinish()}
+          onError={onError}
+        />
+      </ConfirmProvider>
     </div>
   );
 }
