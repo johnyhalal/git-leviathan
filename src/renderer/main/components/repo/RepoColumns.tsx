@@ -1,4 +1,4 @@
-import { useState, type UIEvent } from 'react';
+import { useEffect, useRef, useState, type UIEvent } from 'react';
 import type {
   CommitLogEntry,
   GitflowKind,
@@ -8,6 +8,7 @@ import type {
 import { RepoSidebar } from './RepoSidebar';
 import { CommitList } from './CommitList';
 import { CommitPanel } from './CommitPanel';
+import { DiffView, type DiffTarget } from './DiffView';
 import { ResizeHandle } from './ResizeHandle';
 import { useResizableColumns } from './useResizableColumns';
 
@@ -72,6 +73,27 @@ export function RepoColumns({
 }: RepoColumnsProps) {
   const { leftWidth, rightWidth, startResize } = useResizableColumns(240, 320);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
+  // The file opened in the center diff viewer, or null to show the commit list.
+  const [diffTarget, setDiffTarget] = useState<DiffTarget | null>(null);
+
+  // Switching repos or selecting a different commit makes any open diff stale
+  // (it was taken from the previous commit/working tree), so close it.
+  useEffect(() => {
+    setDiffTarget(null);
+  }, [repoPath, selectedHash]);
+
+  // On opening a repo, preselect the latest real commit — skipping the synthetic
+  // working-tree row and any stash rows. Keyed on repoPath so it runs once per
+  // repo and never clobbers a manual selection on later reloads.
+  const initializedRepo = useRef<string | null>(null);
+  useEffect(() => {
+    if (initializedRepo.current === repoPath) return;
+    const latest = commits?.find((commit) => !commit.working && commit.stashIndex === undefined);
+    if (latest) {
+      setSelectedHash(latest.hash);
+      initializedRepo.current = repoPath;
+    }
+  }, [repoPath, commits]);
 
   // The working-tree row isn't a real commit — selecting it highlights the row
   // but leaves the panel on the staging view (a null selection), so it's
@@ -124,23 +146,34 @@ export function RepoColumns({
         />
       </div>
 
-      <ResizeHandle aria-label="Resize sidebar" onPointerDown={startResize('left')} />
+      <ResizeHandle side="left" aria-label="Resize sidebar" onPointerDown={startResize('left')} />
 
-      <div className="repo-column repo-column-center" onScroll={handleScroll}>
-        <CommitList
-          commits={commits}
-          selectedHash={selectedHash}
-          remotes={refs?.remotes}
-          workingStatus={workingStatus}
-          commitMessage={commitMessage}
-          onCommitMessageChange={onCommitMessageChange}
-          loadingMore={loadingMore}
-          onSelect={toggleSelect}
-          onCheckout={onCheckout}
-        />
+      <div
+        className="repo-column repo-column-center"
+        onScroll={diffTarget ? undefined : handleScroll}
+      >
+        {diffTarget ? (
+          <DiffView
+            repoPath={repoPath}
+            target={diffTarget}
+            onClose={() => setDiffTarget(null)}
+          />
+        ) : (
+          <CommitList
+            commits={commits}
+            selectedHash={selectedHash}
+            remotes={refs?.remotes}
+            workingStatus={workingStatus}
+            commitMessage={commitMessage}
+            onCommitMessageChange={onCommitMessageChange}
+            loadingMore={loadingMore}
+            onSelect={toggleSelect}
+            onCheckout={onCheckout}
+          />
+        )}
       </div>
 
-      <ResizeHandle aria-label="Resize commit panel" onPointerDown={startResize('right')} />
+      <ResizeHandle side="right" aria-label="Resize commit panel" onPointerDown={startResize('right')} />
 
       <div className="repo-column repo-column-right" style={{ width: rightWidth }}>
         <CommitPanel
@@ -151,6 +184,10 @@ export function RepoColumns({
           commitMessage={commitMessage}
           onCommitMessageChange={onCommitMessageChange}
           onCommitted={onCommitted}
+          onViewWorking={() => setSelectedHash(commits?.[0]?.hash ?? null)}
+          onSelectCommit={setSelectedHash}
+          onOpenDiff={setDiffTarget}
+          activeDiff={diffTarget}
           onError={onError}
         />
       </div>

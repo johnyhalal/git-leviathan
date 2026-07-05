@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CommitLogEntry,
   GitflowKind,
+  PullMode,
   RefsMutationResult,
   RepoRefs,
   WorkingStatus,
@@ -43,6 +44,10 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
   const loadedCountRef = useRef(0);
   // Bumped after a checkout to re-run the loader with the new HEAD.
   const [reloadToken, setReloadToken] = useState(0);
+  // True while a push is in flight, to disable the toolbar button.
+  const [pushing, setPushing] = useState(false);
+  // True while a pull/fetch is in flight, to disable the toolbar button.
+  const [pulling, setPulling] = useState(false);
 
   // A typed-but-uncommitted message belongs to one repo; drop it when the tab
   // switches to another (this view is reused across repos, not remounted).
@@ -93,6 +98,31 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
 
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
 
+  // Push the current branch to its upstream; on success reload so the branch's
+  // ahead/behind counts refresh, on failure surface git's message via a toast.
+  const push = useCallback(async () => {
+    if (pushing) return;
+    setPushing(true);
+    const result = await window.api.repo.push(repoPath);
+    setPushing(false);
+    if (result.status === 'ok') reload();
+    else onError?.('Push failed', result.message);
+  }, [pushing, repoPath, reload, onError]);
+
+  // Pull/fetch the current branch; reload on success (HEAD, log and ahead/behind
+  // all move), surface git's message on failure.
+  const pull = useCallback(
+    async (mode: PullMode) => {
+      if (pulling) return;
+      setPulling(true);
+      const result = await window.api.repo.pull(repoPath, mode);
+      setPulling(false);
+      if (result.status === 'ok') reload();
+      else onError?.('Pull failed', result.message);
+    },
+    [pulling, repoPath, reload, onError],
+  );
+
   const checkout = useCallback(
     async (branch: string, remote?: string) => {
       const result = await window.api.repo.checkout(repoPath, branch, remote);
@@ -114,6 +144,12 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
       else onError?.(failureTitle, result.message);
     },
     [onError, reload],
+  );
+
+  const stashPush = useCallback(
+    () =>
+      runMutation('Stash failed', () => window.api.repo.stashPush(repoPath)),
+    [repoPath, runMutation],
   );
 
   const stashPop = useCallback(
@@ -189,6 +225,14 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
         branch={branchLabel}
         branches={branchNames}
         onCheckout={(branch) => void checkout(branch)}
+        onPush={() => void push()}
+        pushing={pushing}
+        onPull={(mode) => void pull(mode)}
+        pulling={pulling}
+        onStash={() => void stashPush()}
+        canStash={hasChanges}
+        hasStash={(refs?.stashes.length ?? 0) > 0}
+        onPop={() => void stashPop(0)}
       />
       <RepoColumns
         repoPath={repoPath}

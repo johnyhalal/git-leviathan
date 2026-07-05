@@ -32,13 +32,19 @@ import {
   type StashInfo,
   type CommitLogEntry,
   type CommitRefDecoration,
+  type CommitDetailData,
   type CommitResult,
+  type DiffSource,
+  type DiffLine,
   type FileChange,
+  type FileDiff,
   type FileStatus,
   type WorkingStatus,
   type IntegrationsState,
   type LocalBranchInfo,
   type OpenRepoResult,
+  type OpenTabsState,
+  type PullMode,
   type RecentRepo,
   type RemoteBranchInfo,
   type RemoteInfo,
@@ -130,8 +136,12 @@ interface Settings {
   recentRepos?: RecentRepo[];
   /** Repository paths open as tabs last session, in tab order. */
   openTabs?: string[];
+  /** Path of the tab that was active last session (absent for an empty tab). */
+  activeTab?: string;
   /** Repo sidebar collapsible sections' open/closed state, keyed by section id. */
   sidebarSections?: Record<string, boolean>;
+  /** Default pull mode for the toolbar's pull action (global, not per-repo). */
+  pullMode?: PullMode;
   /** Connected Git host accounts, keyed by provider id. */
   integrations?: Partial<Record<IntegrationProvider, IntegrationConnection>>;
 }
@@ -221,6 +231,9 @@ function loadSettings(): void {
         (p): p is string => typeof p === 'string',
       );
     }
+    if (typeof parsed.activeTab === 'string') {
+      settings.activeTab = parsed.activeTab;
+    }
     if (parsed.sidebarSections && typeof parsed.sidebarSections === 'object') {
       const raw = parsed.sidebarSections as Record<string, unknown>;
       const valid: Record<string, boolean> = {};
@@ -228,6 +241,9 @@ function loadSettings(): void {
         if (typeof value === 'boolean') valid[key] = value;
       }
       settings.sidebarSections = valid;
+    }
+    if (PULL_MODES.includes(parsed.pullMode as PullMode)) {
+      settings.pullMode = parsed.pullMode as PullMode;
     }
     if (parsed.integrations && typeof parsed.integrations === 'object') {
       const raw = parsed.integrations as Record<string, unknown>;
@@ -506,19 +522,28 @@ async function readTags(cwd: string): Promise<TagInfo[]> {
   });
 }
 
+/**
+ * Split a stash subject into its "WIP on <branch>:" / "On <branch>:" prefix and
+ * the remaining message. Git names stashes "WIP on <branch>: <sha> <subject>"
+ * (auto) or "On <branch>: <message>" (when created with `git stash push -m`); the
+ * branch is surfaced separately so callers can drop that prefix from the text
+ * they display.
+ */
+function parseStashSubject(subject: string): { branch?: string; message: string } {
+  const prefix = /^(?:WIP on|On) ([^:]+):\s*/.exec(subject);
+  if (!prefix) return { message: subject };
+  return { branch: prefix[1], message: subject.slice(prefix[0].length) };
+}
+
 async function readStashes(cwd: string): Promise<StashInfo[]> {
   // %gd = the "stash@{N}" selector, %gs = the stash subject; \t (%x09) between.
   const out = await runGit(cwd, ['stash', 'list', '--format=%gd%x09%gs']);
   return nonEmptyLines(out).flatMap((line) => {
-    const [selector, message = ''] = line.split('\t');
+    const [selector, subject = ''] = line.split('\t');
     const match = /stash@\{(\d+)\}/.exec(selector);
     if (!match) return [];
-    // Subjects read "WIP on <branch>: …" or "On <branch>: …".
-    const prefix = /^(?:WIP on|On) ([^:]+):\s*/.exec(message);
-    const branch = prefix?.[1];
-    // Strip the "On <branch>: " prefix; the branch is carried separately.
-    const subject = prefix ? message.slice(prefix[0].length) : message;
-    return [{ index: Number(match[1]), message: subject, branch }];
+    const { branch, message } = parseStashSubject(subject);
+    return [{ index: Number(match[1]), message, branch }];
   });
 }
 
@@ -544,6 +569,8 @@ function gitErrorMessage(err: unknown, fallback: string): string {
 }
 
 const GITFLOW_KINDS: GitflowKind[] = ['feature', 'release', 'hotfix'];
+
+const PULL_MODES: PullMode[] = ['ff', 'ff-only', 'rebase', 'fetch-all'];
 
 /**
  * Run a sequence of git commands in `cwd`, stopping at the first failure, then
@@ -680,7 +707,9 @@ async function readStashCommits(cwd: string): Promise<CommitLogEntry[]> {
       author,
       authorAvatarUrl: gravatarUrl(authorEmail),
       date,
-      subject,
+      // Drop the "WIP on <branch>:" / "On <branch>:" noise so the graph row reads
+      // as the message alone (matching how the stash list renders it).
+      subject: parseStashSubject(subject).message,
       refs: [],
       stashIndex: index,
     };
@@ -749,6 +778,326 @@ async function readCommitFiles(cwd: string, hash: string): Promise<FileChange[]>
     const path = parts[parts.length - 1];
     return [{ path, status: mapFileStatus(parts[0][0] ?? '') }];
   });
+}
+
+/**
+ * List every file in a commit's tree — the full repository snapshot as of that
+ * commit. `ls-tree -r --name-only` walks the whole tree and prints one path per
+ * blob (no directories).
+ */
+async function readCommitTree(cwd: string, hash: string): Promise<string[]> {
+  const out = await runGit(cwd, ['ls-tree', '-r', '--name-only', hash]);
+  return nonEmptyLines(out);
+}
+
+/**
+ * Parse a unified diff (git's `-p` output) into per-line rows for the viewer.
+ * Header lines (`diff --git`, `index`, `---`, `+++`) are dropped; each `@@` hunk
+ * header becomes a `hunk` row and resets the running old/new line counters that
+ * subsequent context/add/delete rows are numbered from.
+ */
+function parseUnifiedDiff(patch: string): { binary: boolean; lines: DiffLine[] } {
+  const lines: DiffLine[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  let inHunk = false;
+  let binary = false;
+  for (const raw of patch.split('\n')) {
+    if (raw.startsWith('@@')) {
+      const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+      if (match) {
+        oldLine = Number(match[1]);
+        newLine = Number(match[2]);
+        inHunk = true;
+        lines.push({ kind: 'hunk', oldLine: null, newLine: null, text: raw });
+      }
+      continue;
+    }
+    if (!inHunk) {
+      // Pre-hunk header lines are skipped, but note a binary marker so the viewer
+      // can say so instead of showing an empty diff.
+      if (raw.startsWith('Binary files') || raw.startsWith('GIT binary patch')) {
+        binary = true;
+      }
+      continue;
+    }
+    const marker = raw[0];
+    const text = raw.slice(1);
+    if (marker === '+') {
+      lines.push({ kind: 'add', oldLine: null, newLine, text });
+      newLine++;
+    } else if (marker === '-') {
+      lines.push({ kind: 'delete', oldLine, newLine: null, text });
+      oldLine++;
+    } else if (marker === ' ') {
+      lines.push({ kind: 'context', oldLine, newLine, text });
+      oldLine++;
+      newLine++;
+    }
+    // A "\ No newline at end of file" marker (and the trailing empty split entry)
+    // fall through and are ignored.
+  }
+  return { binary, lines };
+}
+
+/** The git args that emit `file`'s unified diff for a given diff source. */
+function fileDiffArgs(source: DiffSource, file: string): string[] {
+  switch (source.kind) {
+    case 'commit':
+      // `show --format=` prints just the patch; --root lists the initial commit's
+      // files as additions. -M detects renames.
+      return ['show', '--no-color', '--format=', '-M', source.hash, '--', file];
+    case 'staged':
+      return ['diff', '--no-color', '-M', '--cached', '--', file];
+    case 'unstaged':
+      return ['diff', '--no-color', '-M', '--', file];
+  }
+}
+
+async function readFileDiff(
+  cwd: string,
+  source: DiffSource,
+  file: string,
+): Promise<FileDiff> {
+  const out = await runGit(cwd, fileDiffArgs(source, file));
+  const { binary, lines } = parseUnifiedDiff(out);
+  return { path: file, binary, lines };
+}
+
+/** Drop a single trailing empty entry produced by splitting on a final newline. */
+function splitContent(text: string): string[] {
+  const lines = text.split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+/**
+ * Read `file`'s full content at `source` for the "file view". An unstaged source
+ * is the working copy on disk; staged is the index blob (`:path`); a commit is
+ * that commit's blob (`hash:path`). Binary/absent files yield an empty list.
+ */
+async function readFileContent(
+  cwd: string,
+  source: DiffSource,
+  file: string,
+): Promise<string[]> {
+  if (source.kind === 'unstaged') {
+    try {
+      // `file` comes from git's own output, but resolve and confine it under the
+      // repo root as a guard before touching the filesystem.
+      const full = path.resolve(cwd, file);
+      const root = path.resolve(cwd);
+      if (full !== root && !full.startsWith(root + path.sep)) return [];
+      const buf = await fs.promises.readFile(full, 'utf8');
+      return splitContent(buf);
+    } catch {
+      return [];
+    }
+  }
+  const rev = source.kind === 'commit' ? source.hash : '';
+  const out = await runGit(cwd, ['show', `${rev}:${file}`]);
+  return splitContent(out);
+}
+
+/**
+ * Read a single commit's full message and GPG signature status. `%G?` triggers
+ * signature verification for just this one commit (cheap, unlike doing it across
+ * the whole log), and `%B` is the raw message (subject + body).
+ */
+async function readCommitDetail(
+  cwd: string,
+  hash: string,
+): Promise<{ message: string; signature: string }> {
+  const out = await runGit(cwd, [
+    'show',
+    '--no-patch',
+    `--format=%G?${LOG_FS}%B`,
+    hash,
+  ]);
+  const sep = out.indexOf(LOG_FS);
+  const signature = sep === -1 ? '' : out.slice(0, sep);
+  const message = (sep === -1 ? out : out.slice(sep + 1)).replace(/\s+$/, '');
+  return { signature, message };
+}
+
+/**
+ * Rewrite commit `hash`'s message to `message`. HEAD is amended in place; an
+ * older commit is reworded by replaying the commits above it with a
+ * non-interactive `git rebase -i`, driven by two scripted editors:
+ *   - GIT_SEQUENCE_EDITOR flips the target's `pick` to `reword`. The rebase
+ *     starts at the target's parent, so the target is the todo's first line.
+ *   - GIT_EDITOR overwrites the commit message with our text.
+ * Both are POSIX `sh` one-liners (git ships an `sh`, even on Windows). On any
+ * failure the rebase is aborted, leaving the working tree and history untouched.
+ */
+async function rewordCommit(
+  cwd: string,
+  hash: string,
+  message: string,
+): Promise<CommitResult> {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const head = (await runGit(cwd, ['rev-parse', 'HEAD'])).trim();
+
+  // Rewording HEAD is a plain amend; `--only` with no paths ignores the index,
+  // so any staged work the user is preparing is left out of the reword.
+  if (head === hash) {
+    try {
+      await execFileAsync('git', ['commit', '--amend', '--only', '-m', message], { cwd, env });
+      return { status: 'ok' };
+    } catch (err) {
+      return { status: 'error', message: gitErrorMessage(err, 'Amend failed.') };
+    }
+  }
+
+  // Older commit: reword via rebase. Hand the new message to the scripted
+  // GIT_EDITOR through a temp file, and rebase from the target's parent (or
+  // `--root` when the target is the repo's first commit).
+  const msgDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'gl-reword-'));
+  const msgFile = path.join(msgDir, 'message');
+  fs.writeFileSync(msgFile, message.endsWith('\n') ? message : `${message}\n`);
+
+  let base: string;
+  try {
+    await runGit(cwd, ['rev-parse', '--verify', `${hash}^`]);
+    base = `${hash}^`;
+  } catch {
+    base = '--root';
+  }
+
+  const rebaseEnv = {
+    ...env,
+    GL_REWORD_MSG: msgFile,
+    // `abbreviateCommands=false` keeps the todo verb as `pick`, so the sed matches.
+    GIT_SEQUENCE_EDITOR: `sh -c 'sed "1s/^pick /reword /" "$1" > "$1.gl" && mv "$1.gl" "$1"' sh`,
+    GIT_EDITOR: `sh -c 'cat "$GL_REWORD_MSG" > "$1"' sh`,
+  };
+
+  try {
+    await execFileAsync(
+      'git',
+      ['-c', 'rebase.abbreviateCommands=false', 'rebase', '-i', '--autostash', base],
+      { cwd, env: rebaseEnv },
+    );
+    return { status: 'ok' };
+  } catch (err) {
+    await execFileAsync('git', ['rebase', '--abort'], { cwd, env }).catch(() => undefined);
+    return { status: 'error', message: gitErrorMessage(err, 'Reword failed.') };
+  } finally {
+    fs.rmSync(msgDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Turn a failed `git push`'s stderr into a single, actionable line. The common
+ * case is a non-fast-forward rejection, where git's *last* stderr line is just
+ * an unhelpful "See the 'Note about fast-forwards'…" pointer — so we detect the
+ * rejection ourselves and explain it; everything else falls back to the generic
+ * last-line extraction.
+ */
+function pushErrorMessage(err: unknown): string {
+  const stderr =
+    err && typeof err === 'object' && 'stderr' in err
+      ? String((err as { stderr: unknown }).stderr ?? '')
+      : '';
+  if (/\[rejected\]|non-fast-forward|fetch first|failed to push some refs/i.test(stderr)) {
+    return 'The remote has commits you don’t have locally. Pull (or fetch and integrate) first, then push again.';
+  }
+  return gitErrorMessage(err, 'Push failed.');
+}
+
+/**
+ * Push the current branch. If it already tracks an upstream, a plain `git push`
+ * follows that; otherwise we set the upstream on the sole remote (preferring
+ * "origin"), and bail with a clear message when the remote is missing or
+ * ambiguous. GIT_TERMINAL_PROMPT=0 keeps a credential prompt from hanging the
+ * app — an auth-required HTTPS remote surfaces as an error instead.
+ */
+async function pushCurrent(cwd: string): Promise<CommitResult> {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const branch = (await runGit(cwd, ['symbolic-ref', '--short', 'HEAD'])).trim();
+  if (!branch) {
+    return { status: 'error', message: 'HEAD is detached — check out a branch before pushing.' };
+  }
+  const upstream = (
+    await runGit(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
+  ).trim();
+
+  try {
+    if (upstream) {
+      await execFileAsync('git', ['push'], { cwd, env });
+      return { status: 'ok' };
+    }
+    const remotes = (await runGit(cwd, ['remote']))
+      .split('\n')
+      .map((name) => name.trim())
+      .filter(Boolean);
+    if (remotes.length === 0) {
+      return { status: 'error', message: 'No remote is configured for this repository.' };
+    }
+    const remote = remotes.includes('origin')
+      ? 'origin'
+      : remotes.length === 1
+        ? remotes[0]
+        : '';
+    if (!remote) {
+      return {
+        status: 'error',
+        message: `“${branch}” has no upstream and several remotes exist (${remotes.join(
+          ', ',
+        )}). Set an upstream branch, then push.`,
+      };
+    }
+    await execFileAsync('git', ['push', '--set-upstream', remote, branch], { cwd, env });
+    return { status: 'ok' };
+  } catch (err) {
+    return { status: 'error', message: pushErrorMessage(err) };
+  }
+}
+
+/**
+ * Interpret a failed `git pull`/`fetch`. Conflict and "divergent branches"
+ * notices land on stdout as often as stderr, so we scan both streams and map
+ * the common cases to one clear line before falling back to the generic tail.
+ */
+function pullErrorMessage(err: unknown): string {
+  let output = '';
+  if (err && typeof err === 'object') {
+    const e = err as { stdout?: unknown; stderr?: unknown };
+    output = `${String(e.stdout ?? '')}\n${String(e.stderr ?? '')}`;
+  }
+  if (/no tracking information|no upstream|do not have a branch/i.test(output)) {
+    return 'This branch has no upstream to pull from. Set one, then pull.';
+  }
+  if (/not possible to fast-forward|need to specify how to reconcile|diverg/i.test(output)) {
+    return 'Your branch and the remote have diverged, so a fast-forward isn’t possible. Pull with rebase or a merge instead.';
+  }
+  if (/CONFLICT|Automatic merge failed|could not apply|Resolve all conflicts/i.test(output)) {
+    return 'Pull stopped on conflicts. Resolve them in your working tree, then continue.';
+  }
+  return gitErrorMessage(err, 'Pull failed.');
+}
+
+/**
+ * Pull (or, for `fetch-all`, fetch) the current branch from its upstream. The
+ * mode maps straight onto git's flags. GIT_TERMINAL_PROMPT=0 keeps an
+ * auth-required remote from hanging the app.
+ */
+async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const args =
+    mode === 'fetch-all'
+      ? ['fetch', '--all']
+      : mode === 'ff-only'
+        ? ['pull', '--ff-only']
+        : mode === 'rebase'
+          ? ['pull', '--rebase']
+          : ['pull'];
+  try {
+    await execFileAsync('git', args, { cwd, env });
+    return { status: 'ok' };
+  } catch (err) {
+    return { status: 'error', message: pullErrorMessage(err) };
+  }
 }
 
 /** Map a porcelain status letter (untracked '?' included) to a FileStatus. */
@@ -826,6 +1175,83 @@ function registerRepoIpc(): void {
     },
   );
 
+  ipcMain.handle(
+    RepoChannels.commitTree,
+    async (_event, repoPath: unknown, hash: unknown): Promise<string[]> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return [];
+      if (typeof hash !== 'string' || hash.length === 0) return [];
+      return readCommitTree(repoPath, hash);
+    },
+  );
+
+  // Narrow an untrusted IPC value to a DiffSource, or null if it isn't one.
+  const asDiffSource = (value: unknown): DiffSource | null => {
+    if (typeof value !== 'object' || value === null) return null;
+    const source = value as { kind?: unknown; hash?: unknown };
+    if (source.kind === 'staged' || source.kind === 'unstaged') {
+      return { kind: source.kind };
+    }
+    if (source.kind === 'commit' && typeof source.hash === 'string' && source.hash.length > 0) {
+      return { kind: 'commit', hash: source.hash };
+    }
+    return null;
+  };
+
+  ipcMain.handle(
+    RepoChannels.fileDiff,
+    async (
+      _event,
+      repoPath: unknown,
+      source: unknown,
+      file: unknown,
+    ): Promise<FileDiff> => {
+      const src = asDiffSource(source);
+      if (
+        typeof repoPath !== 'string' ||
+        !isGitRepo(repoPath) ||
+        src === null ||
+        typeof file !== 'string' ||
+        file.length === 0
+      ) {
+        return { path: typeof file === 'string' ? file : '', binary: false, lines: [] };
+      }
+      return readFileDiff(repoPath, src, file);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.fileContent,
+    async (
+      _event,
+      repoPath: unknown,
+      source: unknown,
+      file: unknown,
+    ): Promise<string[]> => {
+      const src = asDiffSource(source);
+      if (
+        typeof repoPath !== 'string' ||
+        !isGitRepo(repoPath) ||
+        src === null ||
+        typeof file !== 'string' ||
+        file.length === 0
+      ) {
+        return [];
+      }
+      return readFileContent(repoPath, src, file);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.commitDetail,
+    async (_event, repoPath: unknown, hash: unknown): Promise<CommitDetailData> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath))
+        return { message: '', signature: '' };
+      if (typeof hash !== 'string' || hash.length === 0)
+        return { message: '', signature: '' };
+      return readCommitDetail(repoPath, hash);
+    },
+  );
+
   const emptyStatus: WorkingStatus = { staged: [], unstaged: [] };
 
   ipcMain.handle(
@@ -885,6 +1311,61 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.reword,
+    async (
+      _event,
+      repoPath: unknown,
+      hash: unknown,
+      message: unknown,
+    ): Promise<CommitResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof hash !== 'string' || hash.length === 0) {
+        return { status: 'error', message: 'No commit selected.' };
+      }
+      const text = typeof message === 'string' ? message.trim() : '';
+      if (!text) return { status: 'error', message: 'Enter a commit message.' };
+      return rewordCommit(repoPath, hash, text);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.rewordCount,
+    async (_event, repoPath: unknown, hash: unknown): Promise<number> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return 0;
+      if (typeof hash !== 'string' || hash.length === 0) return 0;
+      // The rebase replays the target's parent..HEAD, i.e. the target plus every
+      // descendant. `hash..HEAD` counts only the descendants, so add the target.
+      // (Excluding the target sidesteps the root-commit `hash^` having no parent.)
+      const out = await runGit(repoPath, ['rev-list', '--count', `${hash}..HEAD`]);
+      const descendants = Number.parseInt(out.trim(), 10);
+      return Number.isNaN(descendants) ? 0 : descendants + 1;
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.push,
+    async (_event, repoPath: unknown): Promise<CommitResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      return pushCurrent(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.pull,
+    async (_event, repoPath: unknown, mode: unknown): Promise<CommitResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const chosen = PULL_MODES.includes(mode as PullMode) ? (mode as PullMode) : 'ff';
+      return pullCurrent(repoPath, chosen);
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.checkout,
     async (
       _event,
@@ -921,6 +1402,21 @@ function registerRepoIpc(): void {
         };
       }
       return { status: 'ok', refs: await readRefs(repoPath) };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.stashPush,
+    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Default the stash message to "WIP on <branch>". On a detached HEAD there
+      // is no branch, so omit -m and let git use its own default message.
+      const branch = await currentBranchName(repoPath);
+      const args = ['stash', 'push', '--include-untracked'];
+      if (branch) args.push('-m', `WIP on ${branch}`);
+      return mutateRepo(repoPath, [args], 'Could not stash your changes.');
     },
   );
 
@@ -1155,7 +1651,7 @@ function registerRepoIpc(): void {
     },
   );
 
-  ipcMain.handle(RepoChannels.openTabs, (): string[] => {
+  ipcMain.handle(RepoChannels.openTabs, (): OpenTabsState => {
     // Prune paths that are gone / no longer git repos so a stale tab can't
     // reopen into a broken view, and persist the pruning.
     const stored = settings.openTabs ?? [];
@@ -1166,18 +1662,25 @@ function registerRepoIpc(): void {
       settings.openTabs = existing;
       saveSettings();
     }
-    return [...existing];
+    // Resolve the active tab by path (ids are ephemeral, and pruning can shift
+    // indices); fall back to the first tab when it's gone or was an empty tab.
+    const activeIndex = settings.activeTab
+      ? Math.max(existing.indexOf(settings.activeTab), 0)
+      : 0;
+    return { paths: [...existing], activeIndex };
   });
 
   ipcMain.handle(
     RepoChannels.saveOpenTabs,
-    (_event, paths: unknown): void => {
+    (_event, paths: unknown, activePath: unknown): void => {
       if (!Array.isArray(paths)) {
         throw new Error('Invalid open-tabs payload');
       }
       settings.openTabs = paths.filter(
         (p): p is string => typeof p === 'string',
       );
+      settings.activeTab =
+        typeof activePath === 'string' ? activePath : undefined;
       saveSettings();
     },
   );
@@ -1742,6 +2245,19 @@ function registerAppIpc(): void {
       saveSettings();
     },
   );
+
+  ipcMain.handle(
+    AppChannels.getPullMode,
+    (): PullMode => settings.pullMode ?? 'ff',
+  );
+
+  ipcMain.handle(AppChannels.setPullMode, (_event, mode: unknown): void => {
+    if (!PULL_MODES.includes(mode as PullMode)) {
+      throw new Error('Invalid pull mode');
+    }
+    settings.pullMode = mode as PullMode;
+    saveSettings();
+  });
 }
 
 app.on('ready', () => {

@@ -15,7 +15,7 @@ export function PullIcon({ size = 18 }: IconProps) {
       aria-hidden="true"
     >
       <path d="M12 3v12" />
-      <polyline points="7 10 12 15 17 10" />
+      <polyline points="7 9 12 14 17 9" />
       <path d="M5 21h14" />
     </svg>
   );

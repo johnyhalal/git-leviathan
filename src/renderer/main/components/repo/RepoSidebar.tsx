@@ -17,7 +17,7 @@ import {
   PopIcon,
   RemoteIcon,
   PullRequestIcon,
-  StashIcon,
+  TrayIcon,
   TagIcon,
 } from '../../../../../assets/icons';
 import { RemoteAvatar } from './RemoteAvatar';
@@ -301,10 +301,18 @@ function StashRow({
         type="button"
         className="repo-stash-main"
         onClick={() => onSelect(id)}
-        title={stash.message}
+        title={stash.branch ? `${stash.message} on: ${stash.branch}` : stash.message}
       >
-        <StashIcon size={14} />
-        <span className="repo-list-label">{stash.message}</span>
+        <TrayIcon size={14} />
+        <span className="repo-list-label">
+          {stash.message}
+          {stash.branch && (
+            <>
+              {' on: '}
+              <span className="repo-stash-branch">{stash.branch}</span>
+            </>
+          )}
+        </span>
       </button>
       <button
         type="button"
@@ -621,29 +629,29 @@ export function RepoSidebar({
             ))}
       </CollapsibleSection>
 
-      <CollapsibleSection
-        label="Stashes"
-        icon={<StashIcon size={16} />}
-        count={stashes.length}
-        {...sectionProps('stashes')}
-      >
-        {stashes.length === 0
-          ? placeholder('No stashes')
-          : stashes.map((stash) => (
-              <StashRow
-                key={stash.index}
-                stash={stash}
-                id={`stash:${stash.index}`}
-                active={active}
-                onSelect={(id) => {
-                  setActive(id);
-                  onSelectStash?.(stash.index);
-                }}
-                onPop={onStashPop}
-                onDrop={onStashDrop}
-              />
-            ))}
-      </CollapsibleSection>
+      {stashes.length > 0 && (
+        <CollapsibleSection
+          label="Stashes"
+          icon={<TrayIcon size={16} />}
+          count={stashes.length}
+          {...sectionProps('stashes')}
+        >
+          {stashes.map((stash) => (
+            <StashRow
+              key={stash.index}
+              stash={stash}
+              id={`stash:${stash.index}`}
+              active={active}
+              onSelect={(id) => {
+                setActive(id);
+                onSelectStash?.(stash.index);
+              }}
+              onPop={onStashPop}
+              onDrop={onStashDrop}
+            />
+          ))}
+        </CollapsibleSection>
+      )}
 
       <CollapsibleSection
         label="Pull Requests"

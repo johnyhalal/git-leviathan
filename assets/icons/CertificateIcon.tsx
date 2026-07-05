@@ -1,7 +1,7 @@
 import type { IconProps } from './types';
 
-/** Push (upload to remote): arrow up from a baseline. Inherits color via `currentColor`. */
-export function PushIcon({ size = 18 }: IconProps) {
+/** Award rosette, used to mark a GPG-signed commit. Inherits color via `currentColor`. */
+export function CertificateIcon({ size = 18 }: IconProps) {
   return (
     <svg
       width={size}
@@ -14,9 +14,8 @@ export function PushIcon({ size = 18 }: IconProps) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M12 16V7" />
-      <polyline points="7 10 12 5 17 10" />
-      <path d="M5 21h14" />
+      <circle cx="12" cy="8" r="6" />
+      <path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11" />
     </svg>
   );
 }

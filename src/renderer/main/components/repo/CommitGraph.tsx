@@ -13,6 +13,9 @@ const PADDING = 3;
 const STROKE_W = 2;
 /** Radius of the author-avatar node (larger than the plain dot). */
 const AVATAR_R = 10;
+/** Side of the stash node's dotted square, and the tray glyph drawn inside it. */
+const STASH_BOX = 18;
+const STASH_TRAY = 13;
 /** Corner radius where an elbow connector turns from vertical to horizontal. */
 const CORNER_R = 8;
 
@@ -174,9 +177,9 @@ export function CommitGraph({
 
       {/* The node itself. The working-tree row is an empty, avatar-sized circle
           with a dotted lane-colored ring (no image, no fill). A stash is a
-          hollow, dotted-ring dot to set it apart from real commits; otherwise
-          the author's avatar clipped to a circle with a lane-colored ring, or a
-          plain dot when no avatar is available. */}
+          dotted-outline square holding a small tray glyph, to set it apart from
+          real commits; otherwise the author's avatar clipped to a circle with a
+          lane-colored ring, or a plain dot when no avatar is available. */}
       {graph.working ? (
         <circle
           cx={nodeX}
@@ -188,15 +191,33 @@ export function CommitGraph({
           strokeDasharray={DASH}
         />
       ) : graph.dashed ? (
-        <circle
-          cx={nodeX}
-          cy={mid}
-          r={NODE_R}
-          fill="var(--bg-elev)"
-          stroke={nodeColor}
-          strokeWidth={STROKE_W}
-          strokeDasharray={DASH}
-        />
+        <g>
+          <rect
+            x={nodeX - STASH_BOX / 2}
+            y={mid - STASH_BOX / 2}
+            width={STASH_BOX}
+            height={STASH_BOX}
+            rx={3}
+            fill="var(--bg-elev)"
+            stroke={nodeColor}
+            strokeWidth={STROKE_W}
+            strokeDasharray={DASH}
+          />
+          <g
+            transform={`translate(${nodeX - STASH_TRAY / 2} ${mid - STASH_TRAY / 2}) scale(${STASH_TRAY / 24})`}
+            fill="none"
+            stroke={nodeColor}
+            strokeWidth={1.6}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M22 12h-6l-2 3h-4l-2-3H2" vectorEffect="non-scaling-stroke" />
+            <path
+              d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"
+              vectorEffect="non-scaling-stroke"
+            />
+          </g>
+        </g>
       ) : avatarUrl ? (
         <>
           <clipPath id={clipId}>

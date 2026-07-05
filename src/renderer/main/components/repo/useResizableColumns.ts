@@ -3,9 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 type Side = 'left' | 'right';
 
 const MIN_WIDTH = 160;
+// The right column (commit panel) needs more room for its content.
+const RIGHT_MIN_WIDTH = 300;
 const MAX_WIDTH = 560;
 
-const clamp = (value: number) => Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value));
+const clamp = (value: number, min = MIN_WIDTH) =>
+  Math.min(MAX_WIDTH, Math.max(min, value));
 
 interface DragState {
   side: Side;
@@ -20,7 +23,7 @@ interface DragState {
  */
 export function useResizableColumns(initialLeft: number, initialRight: number) {
   const [leftWidth, setLeftWidth] = useState(clamp(initialLeft));
-  const [rightWidth, setRightWidth] = useState(clamp(initialRight));
+  const [rightWidth, setRightWidth] = useState(clamp(initialRight, RIGHT_MIN_WIDTH));
   const drag = useRef<DragState | null>(null);
 
   useEffect(() => {
@@ -33,6 +36,7 @@ export function useResizableColumns(initialLeft: number, initialRight: number) {
         state.side === 'left'
           ? state.startWidth + delta
           : state.startWidth - delta,
+        state.side === 'left' ? MIN_WIDTH : RIGHT_MIN_WIDTH,
       );
       if (state.side === 'left') setLeftWidth(next);
       else setRightWidth(next);

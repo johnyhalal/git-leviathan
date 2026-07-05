@@ -46,7 +46,7 @@ export function App() {
   // titles are derived from the folder name).
   useEffect(() => {
     let active = true;
-    void window.api.repo.openTabs().then((paths) => {
+    void window.api.repo.openTabs().then(({ paths, activeIndex }) => {
       if (!active) return;
       if (paths.length > 0) {
         const restored: Tab[] = paths.map((path) => ({
@@ -55,7 +55,7 @@ export function App() {
           repoPath: path,
         }));
         setTabs(restored);
-        setActiveId(restored[0].id);
+        setActiveId((restored[activeIndex] ?? restored[0]).id);
       }
       tabsHydrated.current = true;
     });
@@ -64,14 +64,16 @@ export function App() {
     };
   }, []);
 
-  // Persist the open repo tabs (paths, in order) whenever they change.
+  // Persist the open repo tabs (paths, in order) and which one is active,
+  // whenever either changes.
   useEffect(() => {
     if (!tabsHydrated.current) return;
     const paths = tabs
       .map((tab) => tab.repoPath)
       .filter((path): path is string => typeof path === 'string');
-    void window.api.repo.saveOpenTabs(paths);
-  }, [tabs]);
+    const activePath = tabs.find((tab) => tab.id === activeId)?.repoPath ?? null;
+    void window.api.repo.saveOpenTabs(paths, activePath);
+  }, [tabs, activeId]);
 
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));

@@ -1,17 +1,40 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
+  CommitDetailData,
   CommitLogEntry,
+  DiffSource,
   FileChange,
   FileStatus,
   WorkingStatus,
 } from '../../../../types/ipc';
+import type { DiffTarget } from './DiffView';
+import {
+  CertificateIcon,
+  ChevronDownIcon,
+  FolderIcon,
+  ListIcon,
+  MinusIcon,
+  PencilIcon,
+  PlusIcon,
+  SortIcon,
+  TreeIcon,
+} from '../../../../../assets/icons';
 
-const STATUS_LETTER: Record<FileStatus, string> = {
-  modified: 'M',
-  added: 'A',
-  deleted: 'D',
-  renamed: 'R',
-};
+/** `%G?` status char: 'N'/'E' mean no verifiable signature; anything else is signed. */
+const isSigned = (signature: string) => signature !== '' && signature !== 'N';
+
+/** Per-status glyph, matching the change/add/delete icons used in the counts
+ * summary and the working row (renames reuse the modified pencil). */
+function statusIcon(status: FileStatus) {
+  switch (status) {
+    case 'added':
+      return <PlusIcon size={14} />;
+    case 'deleted':
+      return <MinusIcon size={14} />;
+    default:
+      return <PencilIcon size={14} />;
+  }
+}
 
 const dateFmt = new Intl.DateTimeFormat(undefined, {
   dateStyle: 'medium',
@@ -28,23 +51,81 @@ const dirName = (path: string) => {
   return slash === -1 ? '' : path.slice(0, slash + 1);
 };
 
-interface FileRowProps {
-  file: FileChange;
-  /** Optional stage/unstage control; omitted in the read-only detail view. */
-  action?: { label: string; title: string; onClick: () => void };
+/** Split a commit message into its subject (first line) and body (the rest). */
+const splitMessage = (message: string) => {
+  const nl = message.indexOf('\n');
+  if (nl === -1) return { subject: message, body: '' };
+  return { subject: message.slice(0, nl), body: message.slice(nl + 1).replace(/^\n+/, '') };
+};
+
+/** Recombine an edited subject + body into a conventional commit message. */
+const joinMessage = (subject: string, body: string) => {
+  const trimmedBody = body.trim();
+  return trimmedBody ? `${subject.trim()}\n\n${trimmedBody}` : subject.trim();
+};
+
+/** A row in the file list: a real change, or (in "View all files" mode) an
+ * unchanged file from the commit snapshot, marked by a null status. */
+type DisplayFile = { path: string; status: FileStatus | null };
+
+/** Whether two diff sources refer to the same revision. */
+function sameSource(a: DiffSource, b: DiffSource): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'commit' && b.kind === 'commit') return a.hash === b.hash;
+  return true;
 }
 
-function FileRow({ file, action }: FileRowProps) {
+interface FileRowProps {
+  file: DisplayFile;
+  /** Optional stage/unstage control; omitted in the read-only detail view. */
+  action?: { label: string; title: string; onClick: () => void };
+  /** Hide the directory suffix (tree view already conveys the folder). */
+  showDir?: boolean;
+  /** Left indent in px, for nesting a file under its folder in tree view. */
+  indent?: number;
+  /** Open this file in the center diff viewer (row becomes clickable). */
+  onOpen?: () => void;
+  /** Whether this file is the one currently shown in the diff viewer. */
+  selected?: boolean;
+}
+
+function FileRow({ file, action, showDir = true, indent, onOpen, selected }: FileRowProps) {
+  const classes = ['commit-file', 'tooltip-host'];
+  if (!file.status) classes.push('commit-file-unchanged');
+  if (onOpen) classes.push('is-openable');
+  if (selected) classes.push('is-open');
   return (
-    <div className="commit-file">
-      <span className={`commit-file-status status-${file.status}`} title={file.status}>
-        {STATUS_LETTER[file.status]}
-      </span>
-      <span className="commit-file-path" title={file.path}>
-        <span className="commit-file-name">{baseName(file.path)}</span>
-        {dirName(file.path) && (
+    <div
+      className={classes.join(' ')}
+      data-tooltip={file.path}
+      style={indent ? { paddingLeft: indent } : undefined}
+      role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      aria-pressed={onOpen ? selected : undefined}
+      onClick={onOpen}
+      onKeyDown={
+        onOpen
+          ? (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onOpen();
+              }
+            }
+          : undefined
+      }
+    >
+      {file.status ? (
+        <span className={`commit-file-status status-${file.status}`} title={file.status}>
+          {statusIcon(file.status)}
+        </span>
+      ) : (
+        <span className="commit-file-status" title="unchanged" aria-hidden="true" />
+      )}
+      <span className="commit-file-path">
+        {showDir && dirName(file.path) && (
           <span className="commit-file-dir">{dirName(file.path)}</span>
         )}
+        <span className="commit-file-name">{baseName(file.path)}</span>
       </span>
       {action && (
         <button
@@ -52,7 +133,11 @@ function FileRow({ file, action }: FileRowProps) {
           className="commit-file-action"
           title={action.title}
           aria-label={action.title}
-          onClick={action.onClick}
+          // Don't let the stage/unstage control also open the diff.
+          onClick={(event) => {
+            event.stopPropagation();
+            action.onClick();
+          }}
         >
           {action.label}
         </button>
@@ -61,54 +146,547 @@ function FileRow({ file, action }: FileRowProps) {
   );
 }
 
+/** Per-status tallies for a commit's changed files (renames fold into modified). */
+const fileCounts = (files: FileChange[]) => {
+  const counts = { modified: 0, added: 0, deleted: 0 };
+  for (const file of files) {
+    if (file.status === 'added') counts.added++;
+    else if (file.status === 'deleted') counts.deleted++;
+    else counts.modified++;
+  }
+  return counts;
+};
+
+interface TreeDir {
+  name: string;
+  /** Full slash-joined path, used as the collapse/expand key. */
+  path: string;
+  dirs: Map<string, TreeDir>;
+  files: DisplayFile[];
+}
+
+/** Group a flat file list into a folder tree keyed by path segments. */
+function buildTree(files: DisplayFile[]): TreeDir {
+  const root: TreeDir = { name: '', path: '', dirs: new Map(), files: [] };
+  for (const file of files) {
+    const parts = file.path.split('/');
+    parts.pop(); // drop the file name; the leaf lives in its folder
+    let node = root;
+    let acc = '';
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      let child = node.dirs.get(part);
+      if (!child) {
+        child = { name: part, path: acc, dirs: new Map(), files: [] };
+        node.dirs.set(part, child);
+      }
+      node = child;
+    }
+    node.files.push(file);
+  }
+  return root;
+}
+
+interface DirNodeProps {
+  dir: TreeDir;
+  depth: number;
+  /** Ascending sort? Applied to both folders and files at every level. */
+  asc: boolean;
+  /** Collapsed folder paths. */
+  collapsed: Set<string>;
+  onToggle: (path: string) => void;
+  /** Open a leaf file in the diff viewer. */
+  onOpenFile?: (file: DisplayFile) => void;
+  /** Path of the file currently shown in the diff viewer, if any. */
+  activePath?: string | null;
+}
+
+/** Recursively render a folder's subfolders (first) then its files. */
+function DirNode({ dir, depth, asc, collapsed, onToggle, onOpenFile, activePath }: DirNodeProps) {
+  const dirs = [...dir.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const files = [...dir.files].sort((a, b) =>
+    baseName(a.path).localeCompare(baseName(b.path)),
+  );
+  if (!asc) {
+    dirs.reverse();
+    files.reverse();
+  }
+  return (
+    <>
+      {dirs.map((child) => {
+        const open = !collapsed.has(child.path);
+        return (
+          <div key={child.path}>
+            <button
+              type="button"
+              className="commit-tree-dir"
+              style={{ paddingLeft: 6 + depth * 14 }}
+              aria-expanded={open}
+              onClick={() => onToggle(child.path)}
+            >
+              <span className={`commit-tree-caret${open ? '' : ' collapsed'}`}>
+                <ChevronDownIcon size={14} />
+              </span>
+              <FolderIcon size={14} />
+              <span className="commit-tree-dir-name">{child.name}</span>
+            </button>
+            {open && (
+              <DirNode
+                dir={child}
+                depth={depth + 1}
+                asc={asc}
+                collapsed={collapsed}
+                onToggle={onToggle}
+                onOpenFile={onOpenFile}
+                activePath={activePath}
+              />
+            )}
+          </div>
+        );
+      })}
+      {files.map((file) => (
+        <FileRow
+          key={file.path}
+          file={file}
+          showDir={false}
+          indent={6 + depth * 14}
+          onOpen={onOpenFile ? () => onOpenFile(file) : undefined}
+          selected={file.path === activePath}
+        />
+      ))}
+    </>
+  );
+}
+
+interface CommitFilesProps {
+  repoPath: string;
+  hash: string;
+  /** The commit's changed files; null while loading. */
+  files: FileChange[] | null;
+  /** Open a file in the center diff viewer. */
+  onOpenDiff: (target: DiffTarget) => void;
+  /** The diff target currently shown, so its row can be highlighted. */
+  activeDiff: DiffTarget | null;
+}
+
+/**
+ * The commit-detail files section: a counts + controls toolbar over a flat list
+ * or folder tree of the commit's files. By default it lists only the commit's
+ * changes; "View all files" fetches the full repository snapshot as of that
+ * commit and marks the changed files within it.
+ */
+function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFilesProps) {
+  const [asc, setAsc] = useState(true);
+  const [mode, setMode] = useState<'list' | 'tree'>('list');
+  const [viewAll, setViewAll] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // This section always diffs against the commit; the active row is the one
+  // whose path matches an open diff taken from this same commit.
+  const source: DiffSource = { kind: 'commit', hash };
+  const activePath =
+    activeDiff && sameSource(activeDiff.source, source) ? activeDiff.path : null;
+  const openFile = (file: DisplayFile) => {
+    // Unchanged snapshot rows (null status) carry no diff; treat them as modified
+    // for the header glyph so the viewer can still show the file's content.
+    onOpenDiff({ source, path: file.path, status: file.status ?? 'modified' });
+  };
+  // The full tree snapshot at this commit, fetched lazily the first time
+  // "View all files" is enabled; null until then / while loading.
+  const [allPaths, setAllPaths] = useState<string[] | null>(null);
+
+  // A new commit drops the previously fetched snapshot.
+  useEffect(() => {
+    setAllPaths(null);
+  }, [repoPath, hash]);
+
+  useEffect(() => {
+    if (!viewAll || allPaths !== null) return;
+    let live = true;
+    void window.api.repo.commitTree(repoPath, hash).then((paths) => {
+      if (live) setAllPaths(paths);
+    });
+    return () => {
+      live = false;
+    };
+  }, [viewAll, allPaths, repoPath, hash]);
+
+  const toggleDir = useCallback((path: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  // Counts always reflect the commit's own changes, regardless of view mode.
+  const counts = useMemo(() => fileCounts(files ?? []), [files]);
+
+  // The rows to render: changed-only, or the full snapshot with changes marked.
+  // null means we're still waiting on the data the current mode needs.
+  const display = useMemo<DisplayFile[] | null>(() => {
+    if (!files) return null;
+    if (!viewAll) return files;
+    if (allPaths === null) return null;
+    const changed = new Map(files.map((file) => [file.path, file.status]));
+    // Union the snapshot with the changed set so files the commit deleted (absent
+    // from the tree) still appear.
+    const paths = new Set([...allPaths, ...changed.keys()]);
+    return [...paths].map((path) => ({ path, status: changed.get(path) ?? null }));
+  }, [files, viewAll, allPaths]);
+
+  const sorted = useMemo(() => {
+    if (!display) return null;
+    const arr = [...display].sort((a, b) => a.path.localeCompare(b.path));
+    if (!asc) arr.reverse();
+    return arr;
+  }, [display, asc]);
+
+  // "View all files" forces the tree view (a flat list of the whole repo is
+  // unwieldy) and hides the list toggle.
+  const effectiveMode = viewAll ? 'tree' : mode;
+
+  return (
+    <div className="commit-files">
+      <div className="commit-files-header commit-files-header-toolbar">
+        <span className="commit-files-counts" aria-hidden="true">
+          {counts.modified > 0 && (
+            <span className="commit-files-count commit-files-modified" title="Modified files">
+              <PencilIcon size={12} />
+              {counts.modified} modified
+            </span>
+          )}
+          {counts.added > 0 && (
+            <span className="commit-files-count commit-files-added" title="Added files">
+              <PlusIcon size={12} />
+              {counts.added} added
+            </span>
+          )}
+          {counts.deleted > 0 && (
+            <span className="commit-files-count commit-files-deleted" title="Deleted files">
+              <MinusIcon size={12} />
+              {counts.deleted} deleted
+            </span>
+          )}
+        </span>
+        <div className="commit-files-controls">
+          <button
+            type="button"
+            className="commit-files-sort"
+            title={asc ? 'Sorted A→Z (click for Z→A)' : 'Sorted Z→A (click for A→Z)'}
+            aria-label="Toggle sort order"
+            onClick={() => setAsc((v) => !v)}
+          >
+            <span className={`commit-files-sort-icon${asc ? '' : ' desc'}`}>
+              <SortIcon size={14} />
+            </span>
+          </button>
+          <div className="commit-files-viewswitch" role="group" aria-label="File view mode">
+            {!viewAll && (
+              <button
+                type="button"
+                className={effectiveMode === 'list' ? 'active' : ''}
+                title="List view"
+                aria-pressed={effectiveMode === 'list'}
+                onClick={() => setMode('list')}
+              >
+                <ListIcon size={14} />
+                List
+              </button>
+            )}
+            <button
+              type="button"
+              className={effectiveMode === 'tree' ? 'active' : ''}
+              title="Tree view"
+              aria-pressed={effectiveMode === 'tree'}
+              onClick={() => setMode('tree')}
+            >
+              <TreeIcon size={14} />
+              Tree
+            </button>
+          </div>
+          <label className="commit-files-viewall">
+            <input
+              type="checkbox"
+              checked={viewAll}
+              onChange={(event) => setViewAll(event.target.checked)}
+            />
+            View all files
+          </label>
+        </div>
+      </div>
+      {sorted === null ? (
+        <p className="commit-files-empty">Loading…</p>
+      ) : sorted.length === 0 ? (
+        <p className="commit-files-empty">No file changes</p>
+      ) : effectiveMode === 'tree' ? (
+        <div className="commit-tree">
+          <DirNode
+            dir={buildTree(sorted)}
+            depth={0}
+            asc={asc}
+            collapsed={collapsed}
+            onToggle={toggleDir}
+            onOpenFile={openFile}
+            activePath={activePath}
+          />
+        </div>
+      ) : (
+        sorted.map((file) => (
+          <FileRow
+            key={file.path}
+            file={file}
+            onOpen={() => openFile(file)}
+            selected={file.path === activePath}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+/** Distinct files touched in the working tree (a path may be staged and unstaged). */
+const countWorkingFiles = (status: WorkingStatus) =>
+  new Set([...status.staged, ...status.unstaged].map((file) => file.path)).size;
+
+interface CommitDetailProps {
+  commit: CommitLogEntry;
+  repoPath: string;
+  /** Shared working-tree status, used to warn about uncommitted changes. */
+  workingStatus: WorkingStatus | null;
+  /** Return to the working-tree view (clears the selected commit). */
+  onViewWorking: () => void;
+  /** Reload history/refs after a reword rewrites the commit. */
+  onCommitted: () => void;
+  /** Select another commit by full hash (used by the parent-hash links). */
+  onSelectCommit: (hash: string) => void;
+  /** Open one of the commit's files in the center diff viewer. */
+  onOpenDiff: (target: DiffTarget) => void;
+  /** The diff target currently shown, so its row can be highlighted. */
+  activeDiff: DiffTarget | null;
+  onError?: (title: string, message: string) => void;
+}
+
 /** Read-only view of a selected historical commit; files load on demand. */
-function CommitDetail({ commit, repoPath }: { commit: CommitLogEntry; repoPath: string }) {
+function CommitDetail({
+  commit,
+  repoPath,
+  workingStatus,
+  onViewWorking,
+  onCommitted,
+  onSelectCommit,
+  onOpenDiff,
+  activeDiff,
+  onError,
+}: CommitDetailProps) {
   const [files, setFiles] = useState<FileChange[] | null>(null);
+  const [detail, setDetail] = useState<CommitDetailData | null>(null);
+  // Exact number of commits a reword would rebase (this + descendants), from git;
+  // null until it resolves.
+  const [rebaseCount, setRebaseCount] = useState<number | null>(null);
+  // Inline amend state: the message area is a display until clicked, then two
+  // editable fields (subject + description) with save/cancel.
+  const [editing, setEditing] = useState(false);
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let live = true;
     setFiles(null);
+    setDetail(null);
+    setRebaseCount(null);
+    // Selecting a different commit drops any in-progress edit.
+    setEditing(false);
     void window.api.repo.commitFiles(repoPath, commit.hash).then((result) => {
       if (live) setFiles(result);
+    });
+    void window.api.repo.commitDetail(repoPath, commit.hash).then((result) => {
+      if (live) setDetail(result);
+    });
+    void window.api.repo.rewordCount(repoPath, commit.hash).then((result) => {
+      if (live) setRebaseCount(result);
     });
     return () => {
       live = false;
     };
   }, [repoPath, commit.hash]);
 
+  const workingCount = workingStatus ? countWorkingFiles(workingStatus) : 0;
+  // Fall back to the subject (already in hand) until the full message arrives.
+  const message = detail?.message ?? commit.subject;
+  const signed = detail ? isSigned(detail.signature) : false;
+
+  const startEdit = () => {
+    const parts = splitMessage(message);
+    setSubject(parts.subject);
+    setBody(parts.body);
+    setEditing(true);
+  };
+
+  const save = useCallback(async () => {
+    const next = joinMessage(subject, body);
+    if (!next) {
+      onError?.('Reword failed', 'Enter a commit message.');
+      return;
+    }
+    // No-op if the message is unchanged — just leave edit mode.
+    if (next === message.trim()) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    const result = await window.api.repo.reword(repoPath, commit.hash, next);
+    setSaving(false);
+    if (result.status === 'error') {
+      onError?.('Reword failed', result.message);
+      return;
+    }
+    setEditing(false);
+    // The reword rewrites this commit (and its descendants) to new hashes, so
+    // reload history; the parent resolves the now-stale selection.
+    onCommitted();
+  }, [subject, body, message, repoPath, commit.hash, onCommitted, onError]);
+
   return (
     <aside className="commit-panel" aria-label="Commit details">
       <header className="commit-panel-header">Commit details</header>
+      {workingCount > 0 && (
+        <div className="commit-working-alert" role="status">
+          <span className="commit-working-alert-text">
+            {workingCount} {workingCount === 1 ? 'file' : 'files'} changed in the working directory
+          </span>
+          <button
+            type="button"
+            className="commit-working-alert-view"
+            onClick={onViewWorking}
+          >
+            View
+          </button>
+        </div>
+      )}
       <div className="commit-panel-body">
-        <p className="commit-detail-message">{commit.subject}</p>
-        <dl className="commit-detail-meta">
-          <div className="commit-detail-line">
-            <dt>Commit</dt>
-            <dd className="commit-detail-hash">{commit.shortHash}</dd>
+        <div className="commit-detail-hashline">
+          {signed && (
+            <span
+              className="commit-detail-signed"
+              title="Signed commit (verified GPG signature)"
+            >
+              <CertificateIcon size={14} />
+            </span>
+          )}
+          <span className="commit-detail-hash">commit: {commit.shortHash}</span>
+        </div>
+        {editing ? (
+          <div className="commit-amend">
+            <div className="commit-amend-fields">
+              <input
+                className="commit-amend-subject"
+                value={subject}
+                onChange={(event) => setSubject(event.target.value)}
+                placeholder="Summary"
+                aria-label="Commit summary"
+                autoFocus
+              />
+              <textarea
+                className="commit-amend-body"
+                value={body}
+                onChange={(event) => setBody(event.target.value)}
+                placeholder="Description"
+                aria-label="Commit description"
+                rows={4}
+              />
+            </div>
+            {rebaseCount !== null && rebaseCount > 1 && (
+              <p className="commit-amend-warning" role="alert">
+                Rewording this commit message will result in {rebaseCount} commits
+                being rebased.
+              </p>
+            )}
+            <div className="commit-amend-actions">
+              <button
+                type="button"
+                className="commit-amend-cancel"
+                onClick={() => setEditing(false)}
+                disabled={saving}
+              >
+                Cancel Amend
+              </button>
+              <button
+                type="button"
+                className="commit-amend-save"
+                onClick={() => void save()}
+                disabled={saving || subject.trim().length === 0}
+              >
+                {saving ? 'Saving…' : 'Update Message'}
+              </button>
+            </div>
           </div>
-          <div className="commit-detail-line">
-            <dt>Author</dt>
-            <dd>{commit.author}</dd>
+        ) : (
+          <div
+            className="commit-detail-message tooltip-host"
+            data-tooltip="Click to amend commit message"
+            aria-label="Click to amend commit message"
+            role="button"
+            tabIndex={0}
+            onClick={startEdit}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                startEdit();
+              }
+            }}
+          >
+            <span className="commit-detail-summary">{splitMessage(message).subject}</span>
+            {splitMessage(message).body && (
+              <span className="commit-detail-description">{splitMessage(message).body}</span>
+            )}
           </div>
-          <div className="commit-detail-line">
-            <dt>Date</dt>
-            <dd>{formatDate(commit.date)}</dd>
-          </div>
-        </dl>
-        <div className="commit-files">
-          <div className="commit-files-header">
-            <span className="commit-files-title">
-              {files === null ? 'Files changed' : `Files changed · ${files.length}`}
+        )}
+        <div className="commit-detail-meta">
+          <img
+            className="commit-detail-avatar"
+            src={commit.authorAvatarUrl}
+            alt=""
+            width={36}
+            height={36}
+          />
+          <div className="commit-detail-author">
+            <span className="commit-detail-author-name">{commit.author}</span>
+            <span className="commit-detail-author-date">
+              <i>authored</i> {formatDate(commit.date)}
             </span>
           </div>
-          {files === null ? (
-            <p className="commit-files-empty">Loading…</p>
-          ) : files.length === 0 ? (
-            <p className="commit-files-empty">No file changes</p>
-          ) : (
-            files.map((file) => <FileRow key={file.path} file={file} />)
+          {commit.parents.length > 0 && (
+            <div className="commit-detail-parents">
+              <div className="commit-detail-parents-label">
+                {commit.parents.length > 1 ? 'Parents' : 'Parent'}
+              </div>
+              <div className="commit-detail-parents-hashes">
+                {commit.parents.map((parent, index) => (
+                  <div key={parent}>
+                    <button
+                      type="button"
+                      className="commit-detail-parent-hash"
+                      title={`Select parent ${parent}`}
+                      onClick={() => onSelectCommit(parent)}
+                    >
+                      {parent.slice(0, 7)}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
+        <CommitFiles
+          repoPath={repoPath}
+          hash={commit.hash}
+          files={files}
+          onOpenDiff={onOpenDiff}
+          activeDiff={activeDiff}
+        />
       </div>
     </aside>
   );
@@ -122,9 +700,21 @@ interface FilesSectionProps {
   bulk?: { label: string; onClick: () => void };
   /** Per-file action builder. */
   action: (file: FileChange) => FileRowProps['action'];
+  /** Open a file in the center diff viewer. */
+  onOpenFile?: (file: FileChange) => void;
+  /** Path of the file currently shown in the diff viewer, if any. */
+  activePath?: string | null;
 }
 
-function FilesSection({ title, files, emptyText, bulk, action }: FilesSectionProps) {
+function FilesSection({
+  title,
+  files,
+  emptyText,
+  bulk,
+  action,
+  onOpenFile,
+  activePath,
+}: FilesSectionProps) {
   return (
     <div className="commit-files">
       <div className="commit-files-header">
@@ -140,7 +730,15 @@ function FilesSection({ title, files, emptyText, bulk, action }: FilesSectionPro
       {files.length === 0 ? (
         <p className="commit-files-empty">{emptyText}</p>
       ) : (
-        files.map((file) => <FileRow key={file.path} file={file} action={action(file)} />)
+        files.map((file) => (
+          <FileRow
+            key={file.path}
+            file={file}
+            action={action(file)}
+            onOpen={onOpenFile ? () => onOpenFile(file) : undefined}
+            selected={file.path === activePath}
+          />
+        ))
       )}
     </div>
   );
@@ -158,6 +756,10 @@ interface WorkingChangesProps {
   onMessageChange: (message: string) => void;
   /** Reload history/refs after a commit lands. */
   onCommitted: () => void;
+  /** Open a working-tree file in the center diff viewer. */
+  onOpenDiff: (target: DiffTarget) => void;
+  /** The diff target currently shown, so its row can be highlighted. */
+  activeDiff: DiffTarget | null;
   onError?: (title: string, message: string) => void;
 }
 
@@ -169,9 +771,19 @@ function WorkingChanges({
   message,
   onMessageChange,
   onCommitted,
+  onOpenDiff,
+  activeDiff,
   onError,
 }: WorkingChangesProps) {
   const [busy, setBusy] = useState(false);
+
+  // Staged rows diff the index against HEAD; unstaged rows the working tree
+  // against the index. A row is active only when the open diff matches both its
+  // path and its section's source.
+  const stagedSource: DiffSource = { kind: 'staged' };
+  const unstagedSource: DiffSource = { kind: 'unstaged' };
+  const activePathFor = (source: DiffSource) =>
+    activeDiff && sameSource(activeDiff.source, source) ? activeDiff.path : null;
 
   const stage = useCallback(
     async (file: string | null) => onStatusChange(await window.api.repo.stage(repoPath, file)),
@@ -231,6 +843,10 @@ function WorkingChanges({
                 title: 'Unstage file',
                 onClick: () => void unstage(file.path),
               })}
+              onOpenFile={(file) =>
+                onOpenDiff({ source: stagedSource, path: file.path, status: file.status })
+              }
+              activePath={activePathFor(stagedSource)}
             />
             <FilesSection
               title="Changes"
@@ -242,6 +858,10 @@ function WorkingChanges({
                 title: 'Stage file',
                 onClick: () => void stage(file.path),
               })}
+              onOpenFile={(file) =>
+                onOpenDiff({ source: unstagedSource, path: file.path, status: file.status })
+              }
+              activePath={activePathFor(unstagedSource)}
             />
           </>
         )}
@@ -281,6 +901,14 @@ interface CommitPanelProps {
   /** Update the shared commit message. */
   onCommitMessageChange: (message: string) => void;
   onCommitted: () => void;
+  /** Return to the working-tree view from the commit detail alert bar. */
+  onViewWorking: () => void;
+  /** Select another commit by full hash (used by the parent-hash links). */
+  onSelectCommit: (hash: string) => void;
+  /** Open a file in the center diff viewer. */
+  onOpenDiff: (target: DiffTarget) => void;
+  /** The diff target currently shown, so its file row can be highlighted. */
+  activeDiff: DiffTarget | null;
   onError?: (title: string, message: string) => void;
 }
 
@@ -296,10 +924,24 @@ export function CommitPanel({
   commitMessage,
   onCommitMessageChange,
   onCommitted,
+  onViewWorking,
+  onSelectCommit,
+  onOpenDiff,
+  activeDiff,
   onError,
 }: CommitPanelProps) {
   return commit ? (
-    <CommitDetail commit={commit} repoPath={repoPath} />
+    <CommitDetail
+      commit={commit}
+      repoPath={repoPath}
+      workingStatus={workingStatus}
+      onViewWorking={onViewWorking}
+      onCommitted={onCommitted}
+      onSelectCommit={onSelectCommit}
+      onOpenDiff={onOpenDiff}
+      activeDiff={activeDiff}
+      onError={onError}
+    />
   ) : (
     <WorkingChanges
       repoPath={repoPath}
@@ -308,6 +950,8 @@ export function CommitPanel({
       message={commitMessage}
       onMessageChange={onCommitMessageChange}
       onCommitted={onCommitted}
+      onOpenDiff={onOpenDiff}
+      activeDiff={activeDiff}
       onError={onError}
     />
   );

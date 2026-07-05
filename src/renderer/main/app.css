@@ -25,6 +25,10 @@
 :root {
   --bg: #f5f5f7;
   --bg-elev: #ffffff;
+  /* The side panels (sidebar + commit panel) sit 10% lighter than the app bg.
+     Defined once against var(--bg), so it tracks the per-theme --bg override. */
+  --panel-bg: color-mix(in srgb, var(--bg) 90%, #fff 4%);
+  --toolbar-bg: color-mix(in srgb, var(--bg) 90%, #fff 8%);
   --fg: #1d1d1f;
   --fg-muted: #505053;
   --primary: #43d7c7;
@@ -90,23 +94,23 @@ body {
   gap: 8px;
   height: 40px;
   padding: 0 8px;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
   -webkit-app-region: drag;
 }
 
 /* Leave room for the macOS traffic lights in the hiddenInset title bar. */
 .app.is-mac .topbar {
-  padding-left: 78px;
+  padding-left: 80px;
 }
 
 .tabs {
   display: flex;
-  align-items: center;
+  align-items: end;
   gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+  height: 100%;
 }
 
 .tab {
@@ -115,8 +119,8 @@ body {
   gap: 6px;
   max-width: 200px;
   padding: 6px 8px 6px 12px;
-  border-radius: 8px;
-  font-size: 13px;
+  border-radius: 8px 8px 0 0;
+  font-size: 15px;
   font-weight: 600;
   color: var(--fg-muted);
   cursor: default;
@@ -130,9 +134,9 @@ body {
 }
 
 .tab.active {
-  background: var(--bg);
+  background: var(--toolbar-bg);
   color: var(--fg);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.95);
 }
 
 .tab-title {
@@ -293,7 +297,7 @@ h1 {
     border-color 0.15s ease;
 }
 
-.repo-action:hover {
+.repo-action:hover:not(:disabled):not(.is-disabled) {
   background: var(--bg-elev);
   border-color: var(--fg-muted);
 }
@@ -1272,10 +1276,14 @@ h1 {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
-  height: 88px;
+  height: 70px;
   padding: 0 12px;
   gap: 12px;
-  border-bottom: 1px solid var(--border);
+  background: var(--toolbar-bg);
+  /* Lift the toolbar above the columns below so action tooltips, which overflow
+     downward past the bar, aren't painted over by the (later-in-DOM) columns. */
+  position: relative;
+  z-index: 10;
 }
 
 .repo-toolbar-left {
@@ -1338,9 +1346,19 @@ h1 {
   cursor: pointer;
 }
 
-.repo-action:hover {
+.repo-action:hover:not(:disabled):not(.is-disabled) {
   color: var(--fg);
   background: var(--control-bg);
+}
+
+/* `.is-disabled` (aria-disabled) mirrors the native `:disabled` look but keeps
+   the element hover-capable so its tooltip still shows. */
+.repo-action:disabled,
+.repo-action.is-disabled {
+  color: var(--fg-muted);
+  background: transparent;
+  opacity: 0.55;
+  cursor: default;
 }
 
 .repo-action-label {
@@ -1361,12 +1379,12 @@ h1 {
   top: calc(100% + 8px);
   left: 50%;
   z-index: 60;
-  padding: 5px 9px;
-  background: var(--bg-elev);
+  padding: 8px 12px 6px;
+  background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
   font-size: 12px;
   font-weight: 500;
   line-height: 1.2;
@@ -1585,6 +1603,7 @@ h1 {
 
 .repo-column-left {
   flex: 0 0 auto;
+  background: var(--panel-bg);
 }
 
 .repo-column-center {
@@ -1595,12 +1614,12 @@ h1 {
 
 .repo-column-right {
   flex: 0 0 auto;
+  background: var(--panel-bg);
 }
 
 /* A 5px hit area whose visible 1px line is drawn via content-box clipping. */
 .repo-resize-handle {
   flex: 0 0 5px;
-  padding: 0 2px;
   background: var(--border);
   background-clip: content-box;
   cursor: col-resize;
@@ -1608,6 +1627,14 @@ h1 {
 
 .repo-resize-handle:hover {
   background-color: var(--primary);
+}
+
+.repo-resize-handle-left {
+  padding-right: 4px;
+}
+
+.repo-resize-handle-right {
+  padding-left: 4px;
 }
 
 body.is-col-resizing {
@@ -1847,6 +1874,12 @@ body.is-col-resizing {
 .repo-stash-main > svg {
   flex: 0 0 auto;
   color: var(--fg-muted);
+}
+
+/* The branch suffix ("… on: <branch>") is de-emphasised. */
+.repo-stash-branch {
+  font-style: italic;
+  opacity: 0.5;
 }
 
 .repo-stash-action {
@@ -2214,6 +2247,7 @@ body.is-col-resizing .commit-th {
 .commit-working-input {
   flex: 1 1 auto;
   min-width: 0;
+  max-width: 250px;
   height: 22px;
   padding: 0 8px;
   border: 1px solid var(--border);
@@ -2318,6 +2352,42 @@ body.is-col-resizing .commit-th {
   padding: 12px;
 }
 
+/* Warn that uncommitted work is waiting while a past commit is being viewed. */
+.commit-working-alert {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #1e766c;
+  color: var(--fg);
+  font-size: 12px;
+  text-align: center;
+}
+
+.commit-working-alert-text {
+  line-height: 1.25;
+}
+
+.commit-working-alert-view {
+  flex: 0 0 auto;
+  border: 1px solid var(--fg);
+  border-radius: 6px;
+  background: #1e766c;
+  padding: 3px 10px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.commit-working-alert-view:hover {
+  background: #1e9588;
+}
+
 .commit-panel-empty {
   flex: 1;
   display: flex;
@@ -2328,35 +2398,212 @@ body.is-col-resizing .commit-th {
 }
 
 /* --- Commit detail (selected historical commit) --- */
+/* Centered hash line; a certificate icon sits to its left for signed commits. */
+.commit-detail-hashline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.commit-detail-signed {
+  display: inline-flex;
+  align-items: center;
+  color: var(--current);
+}
+
+/* Display mode: looks like a textarea but is inert until clicked. The border
+   stays invisible until hover, hinting the message is editable (amendable).
+   The first line reads as the summary, the rest as the description. */
 .commit-detail-message {
-  margin: 0 0 12px;
-  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin: 0 0 16px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  min-height: 100px;
+}
+
+.commit-detail-message:hover {
+  border-color: var(--primary);
+}
+
+.commit-detail-summary {
   font-weight: 600;
-  line-height: 1.35;
+  word-break: break-word;
+}
+
+.commit-detail-description {
+  color: var(--fg-muted);
   white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Edit mode: subject + description fields with save/cancel underneath. */
+.commit-amend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.commit-amend-subject,
+.commit-amend-body {
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.commit-amend-subject {
+  border-radius: 8px 8px 0 0;
+}
+.commit-amend-body {
+  resize: none;
+  border-radius: 0 0 8px 8px;
+}
+
+.commit-amend-subject:focus,
+.commit-amend-body:focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+/* Shown only when amending an older (non-HEAD) commit: warns that the reword
+   rebases and rewrites every descendant onto new hashes. */
+.commit-amend-warning {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.commit-amend-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.commit-amend-cancel,
+.commit-amend-save {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  color: var(--fg);
+  background: var(--bg-elev);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.commit-amend-save {
+  background: var(--current);
+  border-color: var(--current);
+}
+
+.commit-amend-cancel:hover {
+  border-color: var(--fg-muted);
+}
+
+.commit-amend-save:disabled,
+.commit-amend-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .commit-detail-meta {
   margin: 0 0 16px;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 10px;
 }
 
-.commit-detail-line {
+.commit-detail-avatar {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--control-bg);
+}
+
+.commit-detail-author {
   display: flex;
-  gap: 8px;
-  font-size: 12px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
-.commit-detail-line dt {
-  flex: 0 0 56px;
+.commit-detail-author-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.commit-detail-author-date {
+  font-size: 12px;
   color: var(--fg-muted);
 }
 
-.commit-detail-line dd {
-  margin: 0;
-  color: var(--fg);
+.commit-detail-author-date i {
+  font-style: italic;
+}
+
+.commit-detail-parents {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.commit-detail-parents-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.commit-detail-parents-hashes {
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.commit-detail-parent-sep {
+  color: var(--fg-muted);
+}
+
+.commit-detail-parent-hash {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.commit-detail-parent-hash:hover {
+  text-decoration: underline;
 }
 
 .commit-detail-hash {
@@ -2373,6 +2620,164 @@ body.is-col-resizing .commit-th {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 6px;
+}
+
+/* Commit-detail files header: two rows — a change/added/deleted counts summary
+   over a sort / list-tree / view-all control strip. */
+.commit-files-header-toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.commit-files-counts {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+  height: 20px;
+}
+
+.commit-files-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.commit-files-count svg {
+  display: block;
+}
+
+.commit-files-modified svg {
+  color: #e0823d;
+}
+.commit-files-added svg {
+  color: #2ea043;
+}
+.commit-files-deleted svg {
+  color: var(--danger);
+}
+
+.commit-files-controls {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.commit-files-sort,
+.commit-files-viewswitch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.commit-files-sort {
+  justify-self: start;
+}
+
+.commit-files-sort:hover,
+.commit-files-viewswitch button:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.commit-files-sort-icon {
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+
+/* Descending flips the wide→narrow arrow glyph vertically. */
+.commit-files-sort-icon.desc {
+  transform: scaleY(-1);
+}
+
+/* Segmented list/tree switch: two buttons joined into one pill, centered in the
+   controls row between the sort control and the "View all files" checkbox. */
+.commit-files-viewswitch {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.commit-files-viewswitch button.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.commit-files-viewall {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.commit-files-viewall input {
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+/* Unchanged files (only shown in "View all files" mode) read as muted, so the
+   commit's actual changes still stand out. */
+.commit-file-unchanged .commit-file-name {
+  color: var(--fg-muted);
+}
+
+/* Tree view: collapsible folder rows above indented file rows. */
+.commit-tree-dir {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.commit-tree-dir:hover {
+  background: var(--control-bg);
+}
+
+.commit-tree-caret {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  transition: transform 0.15s ease;
+}
+
+.commit-tree-caret.collapsed {
+  transform: rotate(-90deg);
+}
+
+.commit-tree-dir > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.commit-tree-dir-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .commit-files-title {
@@ -2418,13 +2823,26 @@ body.is-col-resizing .commit-th {
   background: var(--control-bg);
 }
 
+/* File paths can be long; wrap the designed tooltip and cap it to the row width
+   so it stays inside the (overflow-clipped) commit panel instead of being cut
+   off at the edge. */
+.commit-file.tooltip-host::after {
+  white-space: normal;
+  max-width: calc(100% - 12px);
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .commit-file-status {
   flex: 0 0 auto;
   width: 16px;
-  text-align: center;
-  font-size: 11px;
-  font-weight: 700;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.commit-file-status svg {
+  display: block;
 }
 
 .status-modified {
@@ -2446,15 +2864,27 @@ body.is-col-resizing .commit-th {
 .commit-file-path {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  overflow: hidden;
+  font-size: 14px;
+}
+
+/* The directory prefix truncates with an ellipsis when the row is tight; the
+   file name (below) never shrinks, so it stays fully readable. The full path is
+   still available via the row's title tooltip. */
+.commit-file-dir {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.commit-file-dir {
-  margin-left: 6px;
   color: var(--fg-muted);
   font-size: 12px;
+}
+
+.commit-file-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .commit-file-action {
@@ -2481,6 +2911,255 @@ body.is-col-resizing .commit-th {
 .commit-file-action:hover {
   color: var(--fg);
   background: var(--control-bg);
+}
+
+/* A file row that opens the center diff viewer: clickable, with the currently
+   open file highlighted. */
+.commit-file.is-openable {
+  cursor: pointer;
+}
+
+.commit-file.is-open {
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+}
+
+.commit-file.is-open .commit-file-name {
+  color: var(--fg);
+}
+
+/* --- Center-column file diff viewer (swaps in over the commit list) --- */
+.diff-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* Header: the file path (with its status glyph) over a close button. */
+.diff-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-header-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.diff-header-path {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.diff-header-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.diff-header-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.diff-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.diff-close:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+  background: var(--control-bg);
+}
+
+/* Secondary nav: a centered file/diff switch with prev/next steppers at the end. */
+.diff-subnav {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-viewswitch {
+  grid-column: 2;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.diff-viewswitch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.diff-viewswitch button:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.diff-viewswitch button.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.diff-steppers {
+  grid-column: 3;
+  justify-self: end;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.diff-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.diff-step:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+/* The prev stepper is the shared chevron flipped to point the other way. */
+.diff-step-prev svg {
+  transform: rotate(180deg);
+}
+
+/* Body: line-numbered, monospaced diff / file content that scrolls both ways. */
+.diff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.diff-empty {
+  margin: 0;
+  padding: 16px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+/* Rows size to their content (so long lines scroll) but never below the
+   viewport width (so row backgrounds fill it). */
+.diff-lines {
+  width: max-content;
+  min-width: 100%;
+}
+
+.diff-line {
+  display: flex;
+  align-items: flex-start;
+  width: max-content;
+  min-width: 100%;
+}
+
+.diff-gutter {
+  flex: 0 0 auto;
+  width: 48px;
+  padding: 0 8px;
+  text-align: right;
+  color: var(--fg-muted);
+  background: var(--panel-bg);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  -webkit-user-select: none;
+  font-variant-numeric: tabular-nums;
+  position: sticky;
+  left: 0;
+}
+
+.diff-sign {
+  flex: 0 0 auto;
+  width: 18px;
+  text-align: center;
+  color: var(--fg-muted);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.diff-code {
+  padding-right: 12px;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.diff-line-add {
+  background: color-mix(in srgb, #2ea043 14%, transparent);
+}
+
+.diff-line-add .diff-sign {
+  color: #2ea043;
+}
+
+.diff-line-delete {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.diff-line-delete .diff-sign {
+  color: var(--danger);
+}
+
+/* Hunk separator spans the full row with its raw @@ heading. */
+.diff-line-hunk {
+  background: var(--control-bg);
+}
+
+.diff-hunk-text {
+  padding: 2px 12px;
+  color: var(--primary);
+  white-space: pre-wrap;
+}
+
+/* File view uses a single, slightly wider line-number gutter. */
+.diff-lines-file .diff-gutter {
+  width: 56px;
 }
 
 /* --- Commit message box (working-tree view) --- */

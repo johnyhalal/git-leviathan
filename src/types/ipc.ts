@@ -30,6 +30,10 @@ export const AppChannels = {
   getSidebarSections: 'app:get-sidebar-sections',
   /** Renderer -> main (invoke): persist one sidebar section's open/closed state. */
   setSidebarSection: 'app:set-sidebar-section',
+  /** Renderer -> main (invoke): read the persisted default pull mode. */
+  getPullMode: 'app:get-pull-mode',
+  /** Renderer -> main (invoke): persist the default pull mode (global). */
+  setPullMode: 'app:set-pull-mode',
 } as const;
 
 // ---- Repositories ---------------------------------------------------------
@@ -45,6 +49,14 @@ export interface RepoInfo {
 export interface RecentRepo extends RepoInfo {
   /** Epoch milliseconds of the last time this repo was opened. */
   lastOpenedAt: number;
+}
+
+/** The persisted tab session: the open repo paths and which one was active. */
+export interface OpenTabsState {
+  /** Open repository paths, in tab order (pruned to those still on disk). */
+  paths: string[];
+  /** Index into `paths` of the active tab; 0 when it can't be resolved. */
+  activeIndex: number;
 }
 
 /** Outcome of the native "open repository" folder picker. */
@@ -148,6 +160,15 @@ export type CheckoutResult = RefsMutationResult;
 /** The three gitflow topic-branch kinds the sidebar can start/finish. */
 export type GitflowKind = 'feature' | 'release' | 'hotfix';
 
+/**
+ * How the toolbar's pull action reconciles with the upstream:
+ * - `ff`        — `git pull` (fast-forward when possible, else a merge)
+ * - `ff-only`   — `git pull --ff-only` (refuse anything but a fast-forward)
+ * - `rebase`    — `git pull --rebase` (replay local commits on top)
+ * - `fetch-all` — `git fetch --all` (update remotes without touching the branch)
+ */
+export type PullMode = 'ff' | 'ff-only' | 'rebase' | 'fetch-all';
+
 /** A ref decoration attached to a commit (branch tip, tag, HEAD, …). */
 export type RefKind = 'head' | 'branch' | 'remote' | 'tag';
 
@@ -197,10 +218,54 @@ export interface FileChange {
   status: FileStatus;
 }
 
+/**
+ * Full detail for a single commit, loaded on demand for the detail panel.
+ * `signature` is git's `%G?` status char: 'N' means unsigned, anything else
+ * (G/U/X/Y/R/E/B) means a signature is present.
+ */
+export interface CommitDetailData {
+  /** Full commit message (subject + body). */
+  message: string;
+  /** GPG signature status from `%G?`. */
+  signature: string;
+}
+
 /** The working tree split into staged (index) and unstaged changes. */
 export interface WorkingStatus {
   staged: FileChange[];
   unstaged: FileChange[];
+}
+
+/**
+ * The revision a file's diff (or content) is taken against:
+ * - `commit`   — the commit `hash`, diffed against its first parent.
+ * - `staged`   — the index vs HEAD (a staged working-tree change).
+ * - `unstaged` — the working tree vs the index (an unstaged change).
+ */
+export type DiffSource =
+  | { kind: 'commit'; hash: string }
+  | { kind: 'staged' }
+  | { kind: 'unstaged' };
+
+/** One row of a parsed unified diff. */
+export interface DiffLine {
+  /** `hunk` is the `@@ … @@` separator; the rest are content rows. */
+  kind: 'context' | 'add' | 'delete' | 'hunk';
+  /** 1-based old-side line number; null for added rows and hunk headers. */
+  oldLine: number | null;
+  /** 1-based new-side line number; null for deleted rows and hunk headers. */
+  newLine: number | null;
+  /** Line content without its leading +/-/space marker (raw `@@` line for a hunk). */
+  text: string;
+}
+
+/** A single file's diff, parsed into rows for the diff viewer. */
+export interface FileDiff {
+  path: string;
+  /** git treats the blob as binary — no textual diff is available. */
+  binary: boolean;
+  /** Parsed unified-diff rows (empty for a binary or unchanged file). */
+  lines: DiffLine[];
 }
 
 /** Outcome of a commit. */
@@ -215,6 +280,14 @@ export const RepoChannels = {
   log: 'repo:log',
   /** Renderer -> main (invoke): read the files changed by a single commit. */
   commitFiles: 'repo:commit-files',
+  /** Renderer -> main (invoke): list every file in a commit's tree snapshot. */
+  commitTree: 'repo:commit-tree',
+  /** Renderer -> main (invoke): read a single file's parsed unified diff. */
+  fileDiff: 'repo:file-diff',
+  /** Renderer -> main (invoke): read a single file's full content at a revision. */
+  fileContent: 'repo:file-content',
+  /** Renderer -> main (invoke): read a single commit's full message + signature. */
+  commitDetail: 'repo:commit-detail',
   /** Renderer -> main (invoke): read the working-tree status (staged/unstaged). */
   status: 'repo:status',
   /** Renderer -> main (invoke): stage a file (or all); returns fresh status. */
@@ -223,8 +296,18 @@ export const RepoChannels = {
   unstage: 'repo:unstage',
   /** Renderer -> main (invoke): commit the staged changes. */
   commit: 'repo:commit',
+  /** Renderer -> main (invoke): reword a commit's message (amend / rebase). */
+  reword: 'repo:reword',
+  /** Renderer -> main (invoke): count the commits a reword of a commit would rebase. */
+  rewordCount: 'repo:reword-count',
+  /** Renderer -> main (invoke): push the current branch to its upstream. */
+  push: 'repo:push',
+  /** Renderer -> main (invoke): pull/fetch the current branch from its upstream. */
+  pull: 'repo:pull',
   /** Renderer -> main (invoke): check out a branch; returns fresh refs. */
   checkout: 'repo:checkout',
+  /** Renderer -> main (invoke): stash uncommitted changes (`git stash push`). */
+  stashPush: 'repo:stash-push',
   /** Renderer -> main (invoke): apply & drop a stash (`git stash pop`). */
   stashPop: 'repo:stash-pop',
   /** Renderer -> main (invoke): discard a stash (`git stash drop`). */
@@ -365,6 +448,13 @@ export interface AppApi {
   getSidebarSections(): Promise<Record<string, boolean>>;
   /** Persist one sidebar section's open/closed state (keyed by section id). */
   setSidebarSection(key: string, open: boolean): Promise<void>;
+  /**
+   * Read the persisted default pull mode for the toolbar's pull action. It's a
+   * single global preference (not per-repo); defaults to `ff` when unset.
+   */
+  getPullMode(): Promise<PullMode>;
+  /** Persist the default pull mode (global). */
+  setPullMode(mode: PullMode): Promise<void>;
 }
 
 export interface RepoApi {
@@ -385,6 +475,24 @@ export interface RepoApi {
   log(path: string, limit?: number): Promise<CommitLogEntry[]>;
   /** Read the files changed by the commit `hash` (vs its first parent). */
   commitFiles(path: string, hash: string): Promise<FileChange[]>;
+  /**
+   * List every file path present in the commit `hash`'s tree (the full repo
+   * snapshot as of that commit), for the detail panel's "View all files" mode.
+   */
+  commitTree(path: string, hash: string): Promise<string[]>;
+  /**
+   * Read the parsed unified diff of `file` at `source` (a commit against its
+   * parent, or a staged/unstaged working-tree change).
+   */
+  fileDiff(path: string, source: DiffSource, file: string): Promise<FileDiff>;
+  /**
+   * Read `file`'s full content at `source` as an array of lines, for the diff
+   * viewer's "file view". For an unstaged source this is the on-disk working
+   * copy; otherwise it's the blob at that revision. Empty when absent/binary.
+   */
+  fileContent(path: string, source: DiffSource, file: string): Promise<string[]>;
+  /** Read the commit `hash`'s full message and GPG signature status. */
+  commitDetail(path: string, hash: string): Promise<CommitDetailData>;
   /** Read the working-tree status (staged + unstaged changes). */
   status(path: string): Promise<WorkingStatus>;
   /**
@@ -397,6 +505,30 @@ export interface RepoApi {
   /** Commit the currently staged changes with `message`. */
   commit(path: string, message: string): Promise<CommitResult>;
   /**
+   * Rewrite the message of the commit `hash` to `message`. Amends HEAD directly;
+   * for older commits it replays the history above them via a non-interactive
+   * rebase, so every descendant commit is rewritten (new hashes).
+   */
+  reword(path: string, hash: string, message: string): Promise<CommitResult>;
+  /**
+   * Count how many commits a reword of `hash` would rewrite: the commit itself
+   * plus every descendant up to HEAD that the rebase replays (1 when `hash` is
+   * HEAD, since that's a plain amend).
+   */
+  rewordCount(path: string, hash: string): Promise<number>;
+  /**
+   * Push the current branch to its upstream. When the branch has no upstream and
+   * exactly one remote exists (or an "origin"), it's set as the upstream. Resolves
+   * ok on success, or an error message (detached HEAD, no remote, auth failure…).
+   */
+  push(path: string): Promise<CommitResult>;
+  /**
+   * Pull the current branch from its upstream using `mode` (or, for `fetch-all`,
+   * fetch every remote without moving the branch). Resolves ok on success, or an
+   * error message (no upstream, diverged history, conflicts, auth failure…).
+   */
+  pull(path: string, mode: PullMode): Promise<CommitResult>;
+  /**
    * Check out `branch` in the repository at `path` (`git checkout`). Resolves
    * with the repo's fresh refs on success, or an error message (e.g. when the
    * working tree has conflicting local changes).
@@ -408,6 +540,12 @@ export interface RepoApi {
    * name already exists (that local branch is simply switched to).
    */
   checkout(path: string, branch: string, remote?: string): Promise<CheckoutResult>;
+  /**
+   * Stash the working tree's uncommitted changes (`git stash push`, including
+   * untracked files). Resolves with fresh refs, or an error (e.g. when there is
+   * nothing to stash).
+   */
+  stashPush(path: string): Promise<RefsMutationResult>;
   /**
    * Apply the stash at `index` and remove it from the stash list
    * (`git stash pop stash@{index}`). Resolves with fresh refs, or an error
@@ -448,13 +586,17 @@ export interface RepoApi {
   /** Remove a repository (by path) from the recent list; returns the rest. */
   forget(path: string): Promise<RecentRepo[]>;
   /**
-   * The repository paths for the tabs that were open last session, in order.
-   * Paths that no longer exist on disk are pruned. Restored on startup so the
-   * same repositories reopen as tabs.
+   * The repository paths for the tabs that were open last session, in order,
+   * plus the index of the one that was active. Paths that no longer exist on
+   * disk are pruned (and the active index is re-resolved against what remains).
+   * Restored on startup so the same repositories reopen with the same selection.
    */
-  openTabs(): Promise<string[]>;
-  /** Persist the open-tab repository paths (in tab order). */
-  saveOpenTabs(paths: string[]): Promise<void>;
+  openTabs(): Promise<OpenTabsState>;
+  /**
+   * Persist the open-tab repository paths (in tab order) and the active tab's
+   * path (null when the active tab is an empty "New Tab" with no repository).
+   */
+  saveOpenTabs(paths: string[], activePath: string | null): Promise<void>;
   /**
    * Clone a repository into a new subfolder of `destination`, running
    * `git clone`. Resolves with the opened repo or an error message. Progress

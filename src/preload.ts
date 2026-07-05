@@ -11,14 +11,19 @@ import {
   type CloneRequest,
   type CloneResult,
   type CommitLogEntry,
+  type CommitDetailData,
   type CommitResult,
   type DeviceCodePrompt,
+  type DiffSource,
   type ExposedApi,
   type FileChange,
+  type FileDiff,
   type WorkingStatus,
   type IntegrationProvider,
   type IntegrationsState,
   type OpenRepoResult,
+  type OpenTabsState,
+  type PullMode,
   type RecentRepo,
   type RemoteRepo,
   type RepoInfo,
@@ -37,6 +42,10 @@ const api: ExposedApi = {
       >,
     setSidebarSection: (key: string, open: boolean) =>
       ipcRenderer.invoke(AppChannels.setSidebarSection, key, open) as Promise<void>,
+    getPullMode: () =>
+      ipcRenderer.invoke(AppChannels.getPullMode) as Promise<PullMode>,
+    setPullMode: (mode: PullMode) =>
+      ipcRenderer.invoke(AppChannels.setPullMode, mode) as Promise<void>,
   },
   repo: {
     open: () => ipcRenderer.invoke(RepoChannels.open) as Promise<OpenRepoResult>,
@@ -46,6 +55,14 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.log, path, limit) as Promise<CommitLogEntry[]>,
     commitFiles: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.commitFiles, path, hash) as Promise<FileChange[]>,
+    commitTree: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.commitTree, path, hash) as Promise<string[]>,
+    fileDiff: (path: string, source: DiffSource, file: string) =>
+      ipcRenderer.invoke(RepoChannels.fileDiff, path, source, file) as Promise<FileDiff>,
+    fileContent: (path: string, source: DiffSource, file: string) =>
+      ipcRenderer.invoke(RepoChannels.fileContent, path, source, file) as Promise<string[]>,
+    commitDetail: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.commitDetail, path, hash) as Promise<CommitDetailData>,
     status: (path: string) =>
       ipcRenderer.invoke(RepoChannels.status, path) as Promise<WorkingStatus>,
     stage: (path: string, file: string | null) =>
@@ -54,8 +71,18 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.unstage, path, file) as Promise<WorkingStatus>,
     commit: (path: string, message: string) =>
       ipcRenderer.invoke(RepoChannels.commit, path, message) as Promise<CommitResult>,
+    reword: (path: string, hash: string, message: string) =>
+      ipcRenderer.invoke(RepoChannels.reword, path, hash, message) as Promise<CommitResult>,
+    rewordCount: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.rewordCount, path, hash) as Promise<number>,
+    push: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.push, path) as Promise<CommitResult>,
+    pull: (path: string, mode: PullMode) =>
+      ipcRenderer.invoke(RepoChannels.pull, path, mode) as Promise<CommitResult>,
     checkout: (path: string, branch: string, remote?: string) =>
       ipcRenderer.invoke(RepoChannels.checkout, path, branch, remote) as Promise<CheckoutResult>,
+    stashPush: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.stashPush, path) as Promise<RefsMutationResult>,
     stashPop: (path: string, index: number) =>
       ipcRenderer.invoke(RepoChannels.stashPop, path, index) as Promise<RefsMutationResult>,
     stashDrop: (path: string, index: number) =>
@@ -75,9 +102,9 @@ const api: ExposedApi = {
     forget: (path: string) =>
       ipcRenderer.invoke(RepoChannels.forget, path) as Promise<RecentRepo[]>,
     openTabs: () =>
-      ipcRenderer.invoke(RepoChannels.openTabs) as Promise<string[]>,
-    saveOpenTabs: (paths: string[]) =>
-      ipcRenderer.invoke(RepoChannels.saveOpenTabs, paths) as Promise<void>,
+      ipcRenderer.invoke(RepoChannels.openTabs) as Promise<OpenTabsState>,
+    saveOpenTabs: (paths: string[], activePath: string | null) =>
+      ipcRenderer.invoke(RepoChannels.saveOpenTabs, paths, activePath) as Promise<void>,
     clone: (request: CloneRequest) =>
       ipcRenderer.invoke(RepoChannels.clone, request) as Promise<CloneResult>,
     onCloneProgress: (callback) => {
