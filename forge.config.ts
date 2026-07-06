@@ -1,3 +1,8 @@
+// Load .env so build-time secrets (Apple notarization creds, OAuth client IDs)
+// are on process.env regardless of how forge is invoked (npm script, CI, bare
+// electron-forge). .env is gitignored — never commit it.
+import 'dotenv/config';
+import { execFileSync } from 'node:child_process';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerDMG } from '@electron-forge/maker-dmg';
@@ -19,34 +24,79 @@ const config: ForgeConfig = {
     // a quarantined (downloaded) app with a broken signature fails to load the
     // Electron Framework at launch. Signing also embeds the ElectronAsarIntegrity
     // hash required by the EnableEmbeddedAsarIntegrityValidation fuse.
-    // `identity: '-'` = ad-hoc (no Apple Developer certificate needed); recipients
-    // strip quarantine once via `xattr -cr <app>` since ad-hoc isn't notarized.
+    //
+    // Signed with the company Developer ID + hardened runtime; entitlements.plist
+    // grants back the JIT / unsigned-executable-memory / library-validation that
+    // hardened runtime blocks but Electron (V8) needs. Paired with osxNotarize
+    // below so Gatekeeper accepts a downloaded build with no `xattr -cr`.
     osxSign: {
-      identity: '-',
-      // '-' isn't a keychain identity, so skip the `security find-identity`
-      // check that would otherwise find nothing and silently skip signing.
-      identityValidation: false,
-      optionsForFile: () => ({ hardenedRuntime: false }),
+      identity: 'Developer ID Application: Designatives Ltd. (CNPU2N4697)',
+      optionsForFile: () => ({
+        hardenedRuntime: true,
+        entitlements: 'entitlements.plist',
+      }),
+    },
+    // Notarization uploads the signed app to Apple's notary service and staples
+    // the ticket. Credentials come from the environment — never commit them:
+    //   APPLE_ID                     Apple Developer account email
+    //   APPLE_APP_SPECIFIC_PASSWORD  app-specific password from appleid.apple.com
+    //   APPLE_TEAM_ID                CNPU2N4697
+    osxNotarize: {
+      appleId: process.env.APPLE_ID!,
+      appleIdPassword: process.env.APPLE_APP_SPECIFIC_PASSWORD!,
+      teamId: process.env.APPLE_TEAM_ID!,
     },
   },
   rebuildConfig: {},
+  hooks: {
+    // osxNotarize above notarizes+staples the .app *inside* the DMG, but not the
+    // DMG file itself — so a freshly made .dmg has no ticket of its own and only
+    // validates online. Submit the DMG to the notary service and staple it here
+    // so it validates offline too. Runs only on macOS and only when creds exist,
+    // so Linux/Windows makes and credential-less local builds still succeed.
+    postMake: async (_forgeConfig, makeResults) => {
+      if (process.platform !== 'darwin') return makeResults;
+      const { APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID } = process.env;
+      if (!APPLE_ID || !APPLE_APP_SPECIFIC_PASSWORD || !APPLE_TEAM_ID) {
+        console.warn('[postMake] Apple creds missing — skipping DMG notarization.');
+        return makeResults;
+      }
+      const dmgs = makeResults.flatMap((r) => r.artifacts).filter((a) => a.endsWith('.dmg'));
+      for (const dmg of dmgs) {
+        console.log(`[postMake] Notarizing DMG: ${dmg}`);
+        execFileSync(
+          'xcrun',
+          ['notarytool', 'submit', dmg,
+            '--apple-id', APPLE_ID,
+            '--password', APPLE_APP_SPECIFIC_PASSWORD,
+            '--team-id', APPLE_TEAM_ID,
+            '--wait'],
+          { stdio: 'inherit' },
+        );
+        execFileSync('xcrun', ['stapler', 'staple', dmg], { stdio: 'inherit' });
+      }
+      return makeResults;
+    },
+  },
   makers: [
     new MakerSquirrel({}),
-    // macOS installer .dmg. maker-dmg's default window already shows the app
-    // icon beside an Applications shortcut, so users drag the app onto
-    // Applications to install — the standard macOS flow. To ship fully custom
-    // artwork, add a `background` PNG (ideally with an @2x variant) and position
-    // the two icons to match it via a `contents` function, e.g.:
-    //   background: './assets/dmg-background.png',
-    //   additionalDMGOptions: { window: { size: { width: 660, height: 400 } } },
-    //   contents: (opts) => [
-    //     { x: 180, y: 210, type: 'file', path: opts.appPath },
-    //     { x: 480, y: 210, type: 'link', path: '/Applications' },
-    //   ],
+    // macOS installer .dmg. Custom artwork: assets/dmg-background.png (with an
+    // @2x retina variant beside it, which appdmg picks up automatically) is a
+    // white background with a bold slate (#263548, the marketing site's bg tone)
+    // arrow drawn in the gap between the two icons. The window size must match the
+    // 1x background (660x400); the icons sit at y=210 with the app on the left and
+    // the Applications drop target on the right, so users drag across to install
+    // and the arrow points the way — the standard macOS flow.
     new MakerDMG(
       {
         name: 'GitLeviathan',
         icon: './assets/icon.icns', // volume icon
+        background: './assets/dmg-background.png',
+        additionalDMGOptions: { window: { size: { width: 660, height: 400 } } },
+        contents: (opts) => [
+          { x: 180, y: 210, type: 'file', path: opts.appPath },
+          { x: 480, y: 210, type: 'link', path: '/Applications' },
+        ],
       },
       ['darwin'],
     ),
@@ -86,15 +136,12 @@ const config: ForgeConfig = {
     new FusesPlugin({
       version: FuseVersion.V1,
       [FuseV1Options.RunAsNode]: false,
-      // Off deliberately. Cookie encryption stores its key in the macOS keychain
-      // as "GitLeviathan Safe Storage", which an ad-hoc-signed build (no Developer
-      // ID identity) can't access silently — so it prompts for the keychain
-      // password on every launch. The app has no auth/session and never loads
-      // remote pages as UI; the only cookies possible are incidental ones from
-      // fetching public GitHub avatar images (RemoteAvatar.tsx), i.e. nothing
-      // sensitive. Re-enable once the app stores secrets AND is Developer ID
-      // signed (a stable signature makes the keychain grant persistent).
-      [FuseV1Options.EnableCookieEncryption]: false,
+      // On now that the app ships Developer ID signed. Cookie encryption stores
+      // its key in the macOS keychain as "GitLeviathan Safe Storage"; a stable
+      // Developer ID signature makes the keychain grant persistent, so it no
+      // longer prompts for the keychain password on every launch the way the old
+      // ad-hoc build did.
+      [FuseV1Options.EnableCookieEncryption]: true,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
       [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
