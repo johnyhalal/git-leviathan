@@ -35,6 +35,9 @@ jobs:
           {
             echo "GITHUB_CLIENT_ID=${{ vars.GH_CLIENT_ID }}"
             echo "GITLAB_CLIENT_ID=${{ vars.GITLAB_CLIENT_ID }}"
+            echo "APPLE_ID=${{ vars.APPLE_ID }}"
+            echo "APPLE_APP_SPECIFIC_PASSWORD=${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}"
+            echo "APPLE_TEAM_ID=${{ vars.APPLE_TEAM_ID }}"
           } > .env
 
       - name: Build macOS distributable
