@@ -1,6 +1,6 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
-import { MakerZIP } from '@electron-forge/maker-zip';
+import { MakerDMG } from '@electron-forge/maker-dmg';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
 import { VitePlugin } from '@electron-forge/plugin-vite';
@@ -32,7 +32,24 @@ const config: ForgeConfig = {
   rebuildConfig: {},
   makers: [
     new MakerSquirrel({}),
-    new MakerZIP({}, ['darwin']),
+    // macOS installer .dmg. maker-dmg's default window already shows the app
+    // icon beside an Applications shortcut, so users drag the app onto
+    // Applications to install — the standard macOS flow. To ship fully custom
+    // artwork, add a `background` PNG (ideally with an @2x variant) and position
+    // the two icons to match it via a `contents` function, e.g.:
+    //   background: './assets/dmg-background.png',
+    //   additionalDMGOptions: { window: { size: { width: 660, height: 400 } } },
+    //   contents: (opts) => [
+    //     { x: 180, y: 210, type: 'file', path: opts.appPath },
+    //     { x: 480, y: 210, type: 'link', path: '/Applications' },
+    //   ],
+    new MakerDMG(
+      {
+        name: 'GitLeviathan',
+        icon: './assets/icon.icns', // volume icon
+      },
+      ['darwin'],
+    ),
     new MakerRpm({}),
     new MakerDeb({}),
   ],

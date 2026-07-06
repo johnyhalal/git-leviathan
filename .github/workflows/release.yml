@@ -51,14 +51,14 @@ jobs:
 
       - name: Stage asset with a stable name
         run: |
-          ZIP=$(find out/make/zip/darwin -name '*.zip' | head -n1)
-          [ -z "$ZIP" ] && { echo "No macOS zip produced under out/make/zip/darwin"; exit 1; }
-          cp "$ZIP" "GitLeviathan-macOS.zip"
+          DMG=$(find out/make -name '*.dmg' | head -n1)
+          [ -z "$DMG" ] && { echo "No macOS .dmg produced under out/make"; exit 1; }
+          cp "$DMG" "GitLeviathan-macOS.dmg"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: GitLeviathan ${{ steps.meta.outputs.version }}
-          files: GitLeviathan-macOS.zip
+          files: GitLeviathan-macOS.dmg
           fail_on_unmatched_files: true

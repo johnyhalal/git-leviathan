@@ -5,14 +5,16 @@ React + TypeScript via Electron Forge.
 
 ## Download
 
-- **macOS (Apple Silicon):** [GitLeviathan-macOS.zip](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-macOS.zip)
+- **macOS (Apple Silicon):** [GitLeviathan-macOS.dmg](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-macOS.dmg)
 
 The link always points to the newest release. It becomes live after the first
 release build has run (see [Releasing](#releasing)).
 
+Open the `.dmg` and drag **GitLeviathan** onto the **Applications** shortcut.
+
 > **First launch on macOS.** The app is ad-hoc code-signed but not notarized, so
 > macOS Gatekeeper will warn that it's from an unidentified developer. Right-click
-> the app and choose **Open** (once), or clear the quarantine flag:
+> the app in Applications and choose **Open** (once), or clear the quarantine flag:
 >
 > ```bash
 > xattr -dr com.apple.quarantine /Applications/GitLeviathan.app
@@ -38,5 +40,5 @@ manually:
 3. Optionally enter a tag (blank defaults to `v<version>` from `package.json`).
 
 The workflow runs `npm run make` on a macOS runner and publishes the resulting
-`.zip` to a GitHub Release as `GitLeviathan-macOS.zip`, which the download link
+`.dmg` to a GitHub Release as `GitLeviathan-macOS.dmg`, which the download link
 above resolves to.
