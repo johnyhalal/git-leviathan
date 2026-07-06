@@ -10,9 +10,9 @@ React + TypeScript via Electron Forge.
 The link always points to the newest release. It becomes live after the first
 release build has run (see [Releasing](#releasing)).
 
-> **First launch on macOS.** The app is not yet code-signed or notarized, so macOS
-> Gatekeeper will warn that it's from an unidentified developer. Right-click the app
-> and choose **Open** (once), or clear the quarantine flag:
+> **First launch on macOS.** The app is ad-hoc code-signed but not notarized, so
+> macOS Gatekeeper will warn that it's from an unidentified developer. Right-click
+> the app and choose **Open** (once), or clear the quarantine flag:
 >
 > ```bash
 > xattr -dr com.apple.quarantine /Applications/GitLeviathan.app

@@ -13,6 +13,21 @@ const config: ForgeConfig = {
     // Base path — Packager appends .icns (macOS) / .ico (Windows) per platform.
     // Generate those from assets/icon.svg; assets/icon.png is a placeholder.
     icon: './assets/icon',
+    // Re-sign on macOS *after* the FusesPlugin flips the fuses and the packager
+    // rewrites Info.plist. Without this the app keeps Electron's stock ad-hoc
+    // signature, which those post-signing edits invalidate — and on Apple Silicon
+    // a quarantined (downloaded) app with a broken signature fails to load the
+    // Electron Framework at launch. Signing also embeds the ElectronAsarIntegrity
+    // hash required by the EnableEmbeddedAsarIntegrityValidation fuse.
+    // `identity: '-'` = ad-hoc (no Apple Developer certificate needed); recipients
+    // strip quarantine once via `xattr -cr <app>` since ad-hoc isn't notarized.
+    osxSign: {
+      identity: '-',
+      // '-' isn't a keychain identity, so skip the `security find-identity`
+      // check that would otherwise find nothing and silently skip signing.
+      identityValidation: false,
+      optionsForFile: () => ({ hardenedRuntime: false }),
+    },
   },
   rebuildConfig: {},
   makers: [
