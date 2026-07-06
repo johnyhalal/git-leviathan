@@ -24,6 +24,19 @@ jobs:
 
       - run: npm ci
 
+      # `.env` is gitignored, so it isn't on the runner. Vite bakes these OAuth
+      # client IDs into the main bundle at build time (see vite.main.config.ts),
+      # so without this the shipped app has empty client IDs. The IDs are public
+      # (no client secret involved), hence repo Variables rather than Secrets.
+      # NB: repo variable is GH_CLIENT_ID, not GITHUB_CLIENT_ID — Actions forbids
+      # secret/variable names starting with the GITHUB_ prefix.
+      - name: Write OAuth client IDs for the build
+        run: |
+          {
+            echo "GITHUB_CLIENT_ID=${{ vars.GH_CLIENT_ID }}"
+            echo "GITLAB_CLIENT_ID=${{ vars.GITLAB_CLIENT_ID }}"
+          } > .env
+
       - name: Build macOS distributable
         run: npm run make
 

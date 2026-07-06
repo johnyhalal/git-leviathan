@@ -69,7 +69,15 @@ const config: ForgeConfig = {
     new FusesPlugin({
       version: FuseVersion.V1,
       [FuseV1Options.RunAsNode]: false,
-      [FuseV1Options.EnableCookieEncryption]: true,
+      // Off deliberately. Cookie encryption stores its key in the macOS keychain
+      // as "GitLeviathan Safe Storage", which an ad-hoc-signed build (no Developer
+      // ID identity) can't access silently — so it prompts for the keychain
+      // password on every launch. The app has no auth/session and never loads
+      // remote pages as UI; the only cookies possible are incidental ones from
+      // fetching public GitHub avatar images (RemoteAvatar.tsx), i.e. nothing
+      // sensitive. Re-enable once the app stores secrets AND is Developer ID
+      // signed (a stable signature makes the keychain grant persistent).
+      [FuseV1Options.EnableCookieEncryption]: false,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
       [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
