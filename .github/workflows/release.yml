@@ -3,6 +3,17 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: "Which distributable to build"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - macos
+          - windows
+          - linux-x64
+          - linux-arm64
       tag:
         description: "Release tag (blank = v<version> from package.json)"
         required: false
@@ -13,6 +24,7 @@ permissions:
 
 jobs:
   build-macos:
+    if: ${{ inputs.target == 'all' || inputs.target == 'macos' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,6 +119,7 @@ jobs:
           fail_on_unmatched_files: true
 
   build-windows:
+    if: ${{ inputs.target == 'all' || inputs.target == 'windows' }}
     runs-on: windows-latest
     # Every `run:` here is bash (find/cp/[ -z ]); the Windows runner has Git Bash,
     # so pin it rather than falling back to PowerShell.
@@ -165,15 +178,33 @@ jobs:
           files: GitLeviathan-Windows-Setup.exe
           fail_on_unmatched_files: true
 
+  # Turn the single `target` choice into the list of Linux arches to build, so a
+  # `linux-x64` selection doesn't also spin up an arm64 build. `all` builds both.
+  # Skipped entirely when the selection has no Linux in it, which then skips
+  # build-linux via `needs`.
+  setup-linux:
+    if: ${{ inputs.target == 'all' || inputs.target == 'linux-x64' || inputs.target == 'linux-arm64' }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - id: gen
+        run: |
+          case "${{ inputs.target }}" in
+            linux-x64)   echo 'matrix={"arch":["x64"]}' >> "$GITHUB_OUTPUT" ;;
+            linux-arm64) echo 'matrix={"arch":["arm64"]}' >> "$GITHUB_OUTPUT" ;;
+            *)           echo 'matrix={"arch":["x64","arm64"]}' >> "$GITHUB_OUTPUT" ;;
+          esac
+
   build-linux:
+    needs: setup-linux
     runs-on: ubuntu-latest
     # Build each arch on the amd64 runner. The app is pure JS (no native modules
     # to rebuild) and dpkg/rpmbuild just stamp arch metadata, so arm64 packages
     # cross-build fine here — no arm64 runner needed.
     strategy:
       fail-fast: false
-      matrix:
-        arch: [x64, arm64]
+      matrix: ${{ fromJSON(needs.setup-linux.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
