@@ -2447,12 +2447,11 @@ app.on('ready', () => {
   boot();
 });
 
-// On macOS it is common for applications to stay active until the user quits
-// explicitly with Cmd + Q.
+// Closing the window quits the app on every platform. The usual macOS
+// convention is to stay resident in the dock, but GitLeviathan treats the
+// close button as "really close" so it doesn't linger after its last window.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  app.quit();
 });
 
 app.on('activate', () => {

@@ -397,6 +397,7 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
             rowHeight={ROW_HEIGHT}
             maxLane={ctx.maxLane}
             avatarUrl={commit.authorAvatarUrl}
+            merge={commit.parents.length > 1}
             nodeId={commit.hash}
           />
         </td>

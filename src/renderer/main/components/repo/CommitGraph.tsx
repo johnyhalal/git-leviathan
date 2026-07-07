@@ -13,6 +13,8 @@ const PADDING = 3;
 const STROKE_W = 2;
 /** Radius of the author-avatar node (larger than the plain dot). */
 const AVATAR_R = 10;
+/** Radius of a merge commit's node: a plain lane-color dot, half the avatar. */
+const MERGE_R = AVATAR_R / 2;
 /** Side of the stash node's dotted square, and the tray glyph drawn inside it. */
 const STASH_BOX = 18;
 const STASH_TRAY = 13;
@@ -66,6 +68,9 @@ interface CommitGraphProps {
   maxLane: number;
   /** Author avatar shown as the node; falls back to a plain dot if absent. */
   avatarUrl?: string;
+  /** This row is a merge commit (2+ parents): draw a small lane-color dot in
+   *  place of the avatar, since merges carry no file changes of their own. */
+  merge?: boolean;
   /** Stable id (e.g. commit hash) to scope this cell's SVG clip-path. */
   nodeId: string;
 }
@@ -79,6 +84,7 @@ export function CommitGraph({
   rowHeight,
   maxLane,
   avatarUrl,
+  merge,
   nodeId,
 }: CommitGraphProps) {
   const width = graphCellWidth(maxLane);
@@ -218,6 +224,10 @@ export function CommitGraph({
             />
           </g>
         </g>
+      ) : merge ? (
+        // A merge commit has no diff of its own, so it doesn't earn an avatar —
+        // just a small dot in its branch's lane color, half the avatar's size.
+        <circle cx={nodeX} cy={mid} r={MERGE_R} fill={nodeColor} />
       ) : avatarUrl ? (
         <>
           <clipPath id={clipId}>
