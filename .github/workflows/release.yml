@@ -40,6 +40,42 @@ jobs:
             echo "APPLE_TEAM_ID=${{ vars.APPLE_TEAM_ID }}"
           } > .env
 
+      # A fresh runner has no certificates, so osx-sign has no Developer ID
+      # identity and would leave the app ad-hoc (the notarize pre-check then fails
+      # with "code has no resources but signature indicates they must be present").
+      # Import the exported Developer ID Application .p12 into a throwaway keychain
+      # so codesign can find it. The APPLE_* vars written above only cover
+      # notarization — signing needs the actual cert + private key present here.
+      - name: Import Developer ID signing certificate
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_P12_PASSWORD: ${{ secrets.APPLE_CERT_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          echo -n "$APPLE_CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          # temporary keychain, unlocked for the length of the build
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # import the cert + private key
+          security import "$CERT_PATH" -P "$APPLE_CERT_P12_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          # let codesign use the key without an interactive prompt
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # put the keychain on the search list so `security find-identity` sees it
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # fail loudly here if the identity didn't land, rather than mid-make
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
       - name: Build macOS distributable
         run: npm run make
 
