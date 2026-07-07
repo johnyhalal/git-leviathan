@@ -100,8 +100,14 @@ const config: ForgeConfig = {
       },
       ['darwin'],
     ),
-    new MakerRpm({}),
-    new MakerDeb({}),
+    // `bin` must match the packaged executable's name. Packager names the Linux
+    // binary after productName ("GitLeviathan"), but these makers otherwise look
+    // for one named after package.json's `name` ("gitleviathan") and fail with
+    // "could not find the Electron app binary". Point them at the real name
+    // rather than renaming the binary globally (which would touch the signed
+    // macOS build and the Windows .exe).
+    new MakerRpm({ options: { bin: 'GitLeviathan' } }),
+    new MakerDeb({ options: { bin: 'GitLeviathan' } }),
   ],
   plugins: [
     new VitePlugin({
