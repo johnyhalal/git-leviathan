@@ -10,6 +10,7 @@
     "start": "electron-forge start",
     "package": "electron-forge package",
     "make": "electron-forge make",
+    "make:universal": "electron-forge make --arch=universal",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx ."
   },

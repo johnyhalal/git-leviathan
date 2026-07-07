@@ -1,4 +1,4 @@
-name: Release (macOS)
+name: Release
 
 on:
   workflow_dispatch:
@@ -76,8 +76,12 @@ jobs:
           # fail loudly here if the identity didn't land, rather than mid-make
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
+      # Universal build: one DMG carrying both arm64 and x64 slices, so it runs
+      # natively on Apple Silicon and Intel Macs. The arm64 runner builds this
+      # fine — Forge pulls the x64 Electron and merges via @electron/universal,
+      # then signs/notarizes the merged app.
       - name: Build macOS distributable
-        run: npm run make
+        run: npm run make:universal
 
       - name: Resolve release tag
         id: meta
@@ -100,4 +104,133 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: GitLeviathan ${{ steps.meta.outputs.version }}
           files: GitLeviathan-macOS.dmg
+          fail_on_unmatched_files: true
+
+  build-windows:
+    runs-on: windows-latest
+    # Every `run:` here is bash (find/cp/[ -z ]); the Windows runner has Git Bash,
+    # so pin it rather than falling back to PowerShell.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Same reason as the macOS job: Vite bakes the OAuth client IDs into the
+      # main bundle at build time, so they must be on `.env` before `make`. No
+      # Apple vars here — signing/notarization is macOS-only.
+      - name: Write OAuth client IDs for the build
+        run: |
+          {
+            echo "GITHUB_CLIENT_ID=${{ vars.GH_CLIENT_ID }}"
+            echo "GITLAB_CLIENT_ID=${{ vars.GITLAB_CLIENT_ID }}"
+          } > .env
+
+      # Produces the Squirrel installer (MakerSquirrel) under
+      # out/make/squirrel.windows/. The DMG/deb/rpm makers are macOS/Linux-only
+      # and are skipped on this runner. The installer is unsigned — Windows
+      # SmartScreen may warn until a code-signing cert is added.
+      - name: Build Windows distributable
+        run: npm run make
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="${{ inputs.tag }}"
+          [ -z "$TAG" ] && TAG="v$VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Stage asset with a stable name
+        run: |
+          EXE=$(find out/make -name '*.exe' | head -n1)
+          [ -z "$EXE" ] && { echo "No Windows Setup .exe produced under out/make"; exit 1; }
+          cp "$EXE" "GitLeviathan-Windows-Setup.exe"
+
+      # Uploads onto the same tag/release the macOS job creates; action-gh-release
+      # upserts the release and appends this asset.
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: GitLeviathan ${{ steps.meta.outputs.version }}
+          files: GitLeviathan-Windows-Setup.exe
+          fail_on_unmatched_files: true
+
+  build-linux:
+    runs-on: ubuntu-latest
+    # Build each arch on the amd64 runner. The app is pure JS (no native modules
+    # to rebuild) and dpkg/rpmbuild just stamp arch metadata, so arm64 packages
+    # cross-build fine here — no arm64 runner needed.
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # MakerDeb needs `dpkg` + `fakeroot`; MakerRpm needs `rpm` (rpmbuild).
+      # Ubuntu runners ship dpkg but not fakeroot/rpm, so install them or the
+      # deb/rpm makers fail mid-build.
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
+
+      - run: npm ci
+
+      # Same as the other jobs: Vite bakes the OAuth client IDs into the main
+      # bundle at build time, so they must be on `.env` before `make`.
+      - name: Write OAuth client IDs for the build
+        run: |
+          {
+            echo "GITHUB_CLIENT_ID=${{ vars.GH_CLIENT_ID }}"
+            echo "GITLAB_CLIENT_ID=${{ vars.GITLAB_CLIENT_ID }}"
+          } > .env
+
+      # Produces the .deb (MakerDeb) and .rpm (MakerRpm) for this arch under
+      # out/make/. The DMG/Squirrel makers are macOS/Windows-only and skipped.
+      - name: Build Linux distributables
+        run: npm run make -- --arch=${{ matrix.arch }}
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="${{ inputs.tag }}"
+          [ -z "$TAG" ] && TAG="v$VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Only this arch's packages exist under out/make, so the first match is it.
+      - name: Stage assets with stable names
+        run: |
+          DEB=$(find out/make -name '*.deb' | head -n1)
+          RPM=$(find out/make -name '*.rpm' | head -n1)
+          [ -z "$DEB" ] && { echo "No .deb produced under out/make"; exit 1; }
+          [ -z "$RPM" ] && { echo "No .rpm produced under out/make"; exit 1; }
+          cp "$DEB" "GitLeviathan-Linux-${{ matrix.arch }}.deb"
+          cp "$RPM" "GitLeviathan-Linux-${{ matrix.arch }}.rpm"
+
+      # Uploads onto the same tag/release the other jobs use; action-gh-release
+      # upserts the release and appends these assets.
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: GitLeviathan ${{ steps.meta.outputs.version }}
+          files: |
+            GitLeviathan-Linux-${{ matrix.arch }}.deb
+            GitLeviathan-Linux-${{ matrix.arch }}.rpm
           fail_on_unmatched_files: true
