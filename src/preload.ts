@@ -25,6 +25,7 @@ import {
   type OpenRepoResult,
   type OpenTabsState,
   type PullMode,
+  type PushResult,
   type RecentRepo,
   type RemoteRepo,
   type RepoInfo,
@@ -91,11 +92,34 @@ const api: ExposedApi = {
     rewordCount: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.rewordCount, path, hash) as Promise<number>,
     push: (path: string) =>
-      ipcRenderer.invoke(RepoChannels.push, path) as Promise<CommitResult>,
+      ipcRenderer.invoke(RepoChannels.push, path) as Promise<PushResult>,
+    pushSetUpstream: (path: string, remote: string, branch: string, remoteBranch?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.pushSetUpstream,
+        path,
+        remote,
+        branch,
+        remoteBranch,
+      ) as Promise<CommitResult>,
     pull: (path: string, mode: PullMode) =>
       ipcRenderer.invoke(RepoChannels.pull, path, mode) as Promise<CommitResult>,
     checkout: (path: string, branch: string, remote?: string) =>
       ipcRenderer.invoke(RepoChannels.checkout, path, branch, remote) as Promise<CheckoutResult>,
+    createBranch: (path: string, name: string) =>
+      ipcRenderer.invoke(RepoChannels.createBranch, path, name) as Promise<RefsMutationResult>,
+    deleteBranch: (path: string, branch: string) =>
+      ipcRenderer.invoke(RepoChannels.deleteBranch, path, branch) as Promise<RefsMutationResult>,
+    deleteRemoteBranch: (path: string, remote: string, branch: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.deleteRemoteBranch,
+        path,
+        remote,
+        branch,
+      ) as Promise<RefsMutationResult>,
+    merge: (path: string, source: string, target: string) =>
+      ipcRenderer.invoke(RepoChannels.merge, path, source, target) as Promise<RefsMutationResult>,
+    rebase: (path: string, source: string, target: string) =>
+      ipcRenderer.invoke(RepoChannels.rebase, path, source, target) as Promise<RefsMutationResult>,
     stashPush: (path: string) =>
       ipcRenderer.invoke(RepoChannels.stashPush, path) as Promise<RefsMutationResult>,
     stashPop: (path: string, index: number) =>

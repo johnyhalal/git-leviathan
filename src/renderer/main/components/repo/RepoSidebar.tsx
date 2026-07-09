@@ -21,6 +21,7 @@ import {
   TagIcon,
 } from '../../../../../assets/icons';
 import { RemoteAvatar } from './RemoteAvatar';
+import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
 import type {
   GitflowKind,
   LocalBranchInfo,
@@ -167,11 +168,13 @@ function LocalBranchRow({
   active,
   onSelect,
   onCheckout,
+  onOpenMenu,
 }: RowProps & {
   branch: LocalBranchInfo;
   label: string;
   depth: number;
   onCheckout: (branch: string) => void;
+  onOpenMenu: (target: BranchMenuTarget, x: number, y: number) => void;
 }) {
   return (
     <button
@@ -182,6 +185,14 @@ function LocalBranchRow({
       onClick={() => onSelect(id)}
       onDoubleClick={() => {
         if (!branch.current) onCheckout(branch.name);
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onOpenMenu(
+          { name: branch.name, local: true, isCurrent: branch.current, remote: false },
+          event.clientX,
+          event.clientY,
+        );
       }}
       title={`Double-click to check out ${branch.name}`}
     >
@@ -217,6 +228,7 @@ function RemoteBranchRow({
   active,
   onSelect,
   onCheckout,
+  onOpenMenu,
 }: RowProps & {
   full: string;
   name: string;
@@ -224,6 +236,7 @@ function RemoteBranchRow({
   label: string;
   depth: number;
   onCheckout: (branch: string, remote?: string) => void;
+  onOpenMenu: (target: BranchMenuTarget, x: number, y: number) => void;
 }) {
   return (
     <button
@@ -232,6 +245,14 @@ function RemoteBranchRow({
       style={{ paddingLeft: indent(depth) }}
       onClick={() => onSelect(id)}
       onDoubleClick={() => onCheckout(name, remote)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onOpenMenu(
+          { name, local: false, isCurrent: false, remote: true, remoteName: remote },
+          event.clientX,
+          event.clientY,
+        );
+      }}
       title={`Double-click to check out ${name}`}
     >
       <BranchIcon size={14} />
@@ -449,6 +470,10 @@ interface RepoSidebarProps {
    * remote branch so a tracking branch is created off that specific remote.
    */
   onCheckout: (branch: string, remote?: string) => void;
+  /** Delete a local branch (`git branch -D`), from a branch row's context menu. */
+  onDeleteBranch: (branch: string) => void;
+  /** Delete a branch on its remote (`git push <remote> --delete`). */
+  onDeleteRemoteBranch: (remote: string, branch: string) => void;
   /** Apply & drop a stash by index (`git stash pop`). */
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
@@ -473,12 +498,25 @@ export function RepoSidebar({
   onSelectRef,
   onSelectStash,
   onCheckout,
+  onDeleteBranch,
+  onDeleteRemoteBranch,
   onStashPop,
   onStashDrop,
   onGitflowStart,
   onGitflowFinish,
 }: RepoSidebarProps) {
   const [active, setActive] = useState<string | null>(null);
+  // The branch delete menu opened by right-clicking a branch row, anchored at the
+  // click point; null when closed.
+  const [contextMenu, setContextMenu] = useState<{
+    target: BranchMenuTarget;
+    x: number;
+    y: number;
+  } | null>(null);
+  const openBranchMenu = useCallback(
+    (target: BranchMenuTarget, x: number, y: number) => setContextMenu({ target, x, y }),
+    [],
+  );
 
   // Persisted open/closed state of each section, keyed by a stable id. Missing
   // keys default to closed, so a repo opened for the first time is all-collapsed.
@@ -589,6 +627,7 @@ export function RepoSidebar({
                   onSelectRef?.(branch.name);
                 }}
                 onCheckout={onCheckout}
+                onOpenMenu={openBranchMenu}
               />
             )}
           />
@@ -622,6 +661,7 @@ export function RepoSidebar({
                         onSelectRef?.(`${remote}/${branch.name}`);
                       }}
                       onCheckout={onCheckout}
+                      onOpenMenu={openBranchMenu}
                     />
                   )}
                 />
@@ -691,6 +731,16 @@ export function RepoSidebar({
               />
             ))}
       </CollapsibleSection>
+      {contextMenu && (
+        <BranchContextMenu
+          target={contextMenu.target}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onDeleteBranch={onDeleteBranch}
+          onDeleteRemoteBranch={onDeleteRemoteBranch}
+        />
+      )}
     </nav>
   );
 }

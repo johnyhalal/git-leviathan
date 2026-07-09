@@ -46,6 +46,7 @@ import {
   type OpenRepoResult,
   type OpenTabsState,
   type PullMode,
+  type PushResult,
   type RecentRepo,
   type RemoteBranchInfo,
   type RemoteInfo,
@@ -447,6 +448,34 @@ async function currentBranchName(cwd: string): Promise<string> {
   return name === 'HEAD' ? '' : name;
 }
 
+/**
+ * Validate an untrusted (repo, source, target) branch-pair from IPC for a merge
+ * or rebase: the path must be a repo, both branches must be strings naming
+ * distinct, existing local branches. Returns an error message, or null when the
+ * pair is safe to act on.
+ */
+async function validateBranchPair(
+  repoPath: unknown,
+  source: unknown,
+  target: unknown,
+): Promise<string | null> {
+  if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+    return 'Not a git repository.';
+  }
+  if (typeof source !== 'string' || source.length === 0 ||
+      typeof target !== 'string' || target.length === 0) {
+    return 'No branch was specified.';
+  }
+  if (source === target) return 'Choose two different branches.';
+  if (!(await localBranchExists(repoPath, source))) {
+    return `Branch “${source}” doesn’t exist.`;
+  }
+  if (!(await localBranchExists(repoPath, target))) {
+    return `Branch “${target}” doesn’t exist.`;
+  }
+  return null;
+}
+
 /** The first of `candidates` that exists as a local branch, or null. */
 async function firstExistingBranch(
   cwd: string,
@@ -594,6 +623,38 @@ async function mutateRepo(
   return { status: 'ok', refs: await readRefs(cwd) };
 }
 
+/**
+ * Integrate `source` into `target` by checking out `target` and running
+ * `git <op> source` (merge or rebase). We let git decide the shape: a merge
+ * fast-forwards when it can and makes a merge commit when the branches diverged.
+ * When the operation was a no-op — `target` already contained `source` — git
+ * prints an "up to date" line; we detect it and return a `notice` so the UI can
+ * tell the user nothing changed instead of silently reloading.
+ */
+async function integrateBranch(
+  cwd: string,
+  target: string,
+  source: string,
+  op: 'merge' | 'rebase',
+  fallback: string,
+): Promise<RefsMutationResult> {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  let output = '';
+  try {
+    await execFileAsync('git', ['checkout', target], { cwd, env });
+    const result = await execFileAsync('git', [op, source], { cwd, env });
+    output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  } catch (err) {
+    return { status: 'error', message: gitErrorMessage(err, fallback) };
+  }
+  const refs = await readRefs(cwd);
+  // `git merge` → "Already up to date."; `git rebase` → "…is up to date."
+  const noOp = /already up to date|is up to date/i.test(output);
+  return noOp
+    ? { status: 'ok', refs, notice: `“${target}” is already up to date with “${source}”.` }
+    : { status: 'ok', refs };
+}
+
 /** The configured remote names (`origin`, …), for classifying decorations. */
 async function readRemoteNames(cwd: string): Promise<Set<string>> {
   const out = await runGit(cwd, ['remote']);
@@ -646,20 +707,23 @@ function gravatarUrl(email: string): string {
 }
 
 async function readLogCommits(cwd: string, limit: number): Promise<CommitLogEntry[]> {
-  // --topo-order guarantees children are listed before their parents, which the
-  // renderer's lane layout relies on. --all walks every ref (all branches, tags
-  // and remotes) rather than just HEAD's history, so the graph shows every
-  // branch and each branch's tip commit is present to be selected.
-  // --exclude=refs/stash (which must precede --all) keeps the stash out of this
-  // walk: a stash is a merge commit and --all would otherwise pull in both the
-  // stash tip and its synthetic "index on …" parent. Stashes are woven in
-  // separately, once each, by readStashCommits/mergeStashes.
+  // --date-order lists commits newest-first by commit date while still never
+  // showing a parent before its children — the only ordering the renderer's lane
+  // layout relies on. (--topo-order also satisfies that, but walks one lineage
+  // fully before switching to a sibling, so merged branches make the dates jump
+  // backwards and forwards; --date-order interleaves them to stay chronological.)
+  // --all walks every ref (all branches, tags and remotes) rather than just
+  // HEAD's history, so the graph shows every branch and each branch's tip commit
+  // is present to be selected. --exclude=refs/stash (which must precede --all)
+  // keeps the stash out of this walk: a stash is a merge commit and --all would
+  // otherwise pull in both the stash tip and its synthetic "index on …" parent.
+  // Stashes are woven in separately, once each, by readStashCommits/mergeStashes.
   const [out, remotes] = await Promise.all([
     runGit(cwd, [
       'log',
       '--exclude=refs/stash',
       '--all',
-      '--topo-order',
+      '--date-order',
       `--max-count=${limit}`,
       `--pretty=format:${LOG_FORMAT}`,
     ]),
@@ -856,12 +920,56 @@ function fileDiffArgs(source: DiffSource, file: string): string[] {
   }
 }
 
+/**
+ * Like `runGit`, but preserves stdout when git exits non-zero. `git diff` uses
+ * exit code 1 to signal "there are differences", which `execFile` treats as an
+ * error — so the patch would otherwise be thrown away.
+ */
+async function runGitDiff(cwd: string, args: string[]): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout;
+  } catch (err) {
+    const out = (err as { stdout?: string }).stdout;
+    return typeof out === 'string' ? out : '';
+  }
+}
+
+/** Whether `file` is untracked (present on disk but not known to git). */
+async function isUntracked(cwd: string, file: string): Promise<boolean> {
+  const out = await runGit(cwd, [
+    'ls-files',
+    '--others',
+    '--exclude-standard',
+    '--',
+    file,
+  ]);
+  return out.trim().length > 0;
+}
+
 async function readFileDiff(
   cwd: string,
   source: DiffSource,
   file: string,
 ): Promise<FileDiff> {
-  const out = await runGit(cwd, fileDiffArgs(source, file));
+  let out = await runGit(cwd, fileDiffArgs(source, file));
+  // An untracked file isn't part of git's diff, so `git diff` prints nothing.
+  // Diff it against an empty file so the whole thing shows as added — matching
+  // how the staged (indexed) version renders once it's `git add`ed.
+  if (out === '' && source.kind === 'unstaged' && (await isUntracked(cwd, file))) {
+    out = await runGitDiff(cwd, [
+      'diff',
+      '--no-color',
+      '--no-index',
+      '--',
+      '/dev/null',
+      file,
+    ]);
+  }
   const { binary, lines } = parseUnifiedDiff(out);
   return { path: file, binary, lines };
 }
@@ -1009,12 +1117,14 @@ function pushErrorMessage(err: unknown): string {
 
 /**
  * Push the current branch. If it already tracks an upstream, a plain `git push`
- * follows that; otherwise we set the upstream on the sole remote (preferring
- * "origin"), and bail with a clear message when the remote is missing or
- * ambiguous. GIT_TERMINAL_PROMPT=0 keeps a credential prompt from hanging the
- * app — an auth-required HTTPS remote surfaces as an error instead.
+ * follows that. Otherwise the branch has no upstream yet: rather than publishing
+ * silently, resolve `needs-upstream` with the target remote (the sole remote,
+ * preferring "origin") so the UI can confirm creating the branch on the remote —
+ * `pushSetUpstream` does the actual publish. Bails with a clear message when the
+ * remote is missing or ambiguous. GIT_TERMINAL_PROMPT=0 keeps a credential prompt
+ * from hanging the app — an auth-required HTTPS remote surfaces as an error.
  */
-async function pushCurrent(cwd: string): Promise<CommitResult> {
+async function pushCurrent(cwd: string): Promise<PushResult> {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
   const branch = (await runGit(cwd, ['symbolic-ref', '--short', 'HEAD'])).trim();
   if (!branch) {
@@ -1024,32 +1134,72 @@ async function pushCurrent(cwd: string): Promise<CommitResult> {
     await runGit(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
   ).trim();
 
-  try {
-    if (upstream) {
+  if (upstream) {
+    try {
       await execFileAsync('git', ['push'], { cwd, env });
       return { status: 'ok' };
+    } catch (err) {
+      return { status: 'error', message: pushErrorMessage(err) };
     }
-    const remotes = (await runGit(cwd, ['remote']))
-      .split('\n')
-      .map((name) => name.trim())
-      .filter(Boolean);
-    if (remotes.length === 0) {
-      return { status: 'error', message: 'No remote is configured for this repository.' };
-    }
-    const remote = remotes.includes('origin')
-      ? 'origin'
-      : remotes.length === 1
-        ? remotes[0]
-        : '';
-    if (!remote) {
-      return {
-        status: 'error',
-        message: `“${branch}” has no upstream and several remotes exist (${remotes.join(
-          ', ',
-        )}). Set an upstream branch, then push.`,
-      };
-    }
-    await execFileAsync('git', ['push', '--set-upstream', remote, branch], { cwd, env });
+  }
+
+  // No upstream yet: resolve the remote to publish to and ask the UI to confirm.
+  const remotes = (await runGit(cwd, ['remote']))
+    .split('\n')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  if (remotes.length === 0) {
+    return { status: 'error', message: 'No remote is configured for this repository.' };
+  }
+  const remote = remotes.includes('origin')
+    ? 'origin'
+    : remotes.length === 1
+      ? remotes[0]
+      : '';
+  if (!remote) {
+    return {
+      status: 'error',
+      message: `“${branch}” has no upstream and several remotes exist (${remotes.join(
+        ', ',
+      )}). Set an upstream branch, then push.`,
+    };
+  }
+  return { status: 'needs-upstream', remote, branch };
+}
+
+/**
+ * Publish the current branch to `remote`, setting it as the upstream
+ * (`git push --set-upstream remote branch`). Called after the user confirms a
+ * `needs-upstream` result. `remote`/`branch` are re-validated by the caller
+ * against the repo's own remotes and current HEAD before reaching here.
+ */
+/**
+ * Validate a would-be branch name via `git check-ref-format`, so untrusted input
+ * can't smuggle refspec syntax or options into the push. Returns false on any
+ * non-zero exit (invalid name) as well as on shapes git would reject.
+ */
+async function isValidBranchName(cwd: string, name: string): Promise<boolean> {
+  if (!name || name.startsWith('-')) return false;
+  try {
+    await execFileAsync('git', ['check-ref-format', '--branch', name], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pushSetUpstream(
+  cwd: string,
+  remote: string,
+  branch: string,
+  remoteBranch = branch,
+): Promise<CommitResult> {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  // Use an explicit `local:remote` refspec only when the names differ, so the
+  // branch is created under the requested name on the remote.
+  const refspec = remoteBranch === branch ? branch : `${branch}:${remoteBranch}`;
+  try {
+    await execFileAsync('git', ['push', '--set-upstream', remote, refspec], { cwd, env });
     return { status: 'ok' };
   } catch (err) {
     return { status: 'error', message: pushErrorMessage(err) };
@@ -1430,11 +1580,54 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.push,
-    async (_event, repoPath: unknown): Promise<CommitResult> => {
+    async (_event, repoPath: unknown): Promise<PushResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
       }
       return pushCurrent(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.pushSetUpstream,
+    async (
+      _event,
+      repoPath: unknown,
+      remote: unknown,
+      branch: unknown,
+      remoteBranch: unknown,
+    ): Promise<CommitResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof remote !== 'string' || typeof branch !== 'string') {
+        return { status: 'error', message: 'Invalid push target.' };
+      }
+      // The remote branch name is optional; empty/undefined means "same as local".
+      // Validate it as a git ref before letting it near the push refspec.
+      const targetBranch =
+        typeof remoteBranch === 'string' && remoteBranch.trim() ? remoteBranch.trim() : branch;
+      if (!(await isValidBranchName(repoPath, targetBranch))) {
+        return { status: 'error', message: `“${targetBranch}” is not a valid branch name.` };
+      }
+      // Re-validate the untrusted args against the repo's own state: the remote
+      // must be configured, and the branch must still be the checked-out one.
+      // This keeps arbitrary strings out of the git invocation.
+      const remotes = (await runGit(repoPath, ['remote']))
+        .split('\n')
+        .map((name) => name.trim())
+        .filter(Boolean);
+      if (!remotes.includes(remote)) {
+        return { status: 'error', message: `Unknown remote “${remote}”.` };
+      }
+      const current = (await runGit(repoPath, ['symbolic-ref', '--short', 'HEAD'])).trim();
+      if (!current || current !== branch) {
+        return {
+          status: 'error',
+          message: 'The branch to publish has changed. Push again to retry.',
+        };
+      }
+      return pushSetUpstream(repoPath, remote, branch, targetBranch);
     },
   );
 
@@ -1486,6 +1679,143 @@ function registerRepoIpc(): void {
         };
       }
       return { status: 'ok', refs: await readRefs(repoPath) };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.createBranch,
+    async (
+      _event,
+      repoPath: unknown,
+      name: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Keep the name to a safe, ref-legal slug so it can't inject flags/paths.
+      const branch = typeof name === 'string' ? name.trim() : '';
+      if (!branch || !/^[A-Za-z0-9._/-]+$/.test(branch) || branch.startsWith('-')) {
+        return { status: 'error', message: 'Enter a valid branch name.' };
+      }
+      if (await localBranchExists(repoPath, branch)) {
+        return { status: 'error', message: `Branch “${branch}” already exists.` };
+      }
+      // Create at HEAD and switch to it. The slug regex already forbids a leading
+      // dash, so the name can't be read as a flag (matching the checkout handler).
+      return mutateRepo(
+        repoPath,
+        [['checkout', '-b', branch]],
+        `Could not create “${branch}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.deleteBranch,
+    async (_event, repoPath: unknown, branch: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof branch !== 'string' || branch.length === 0) {
+        return { status: 'error', message: 'No branch was specified.' };
+      }
+      // Re-validate against the repo's own state: the branch must exist locally,
+      // and must not be the checked-out one (git refuses, and it's a footgun).
+      if (!(await localBranchExists(repoPath, branch))) {
+        return { status: 'error', message: `Branch “${branch}” doesn’t exist.` };
+      }
+      if ((await currentBranchName(repoPath)) === branch) {
+        return {
+          status: 'error',
+          message: `“${branch}” is checked out. Switch to another branch, then delete it.`,
+        };
+      }
+      // `-D` force-deletes: the user confirmed in the UI, so we don't want git to
+      // block on "not fully merged". `--` terminates options; the name can't be a flag.
+      return mutateRepo(
+        repoPath,
+        [['branch', '-D', '--', branch]],
+        `Could not delete “${branch}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.deleteRemoteBranch,
+    async (
+      _event,
+      repoPath: unknown,
+      remote: unknown,
+      branch: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof remote !== 'string' || typeof branch !== 'string' || branch.length === 0) {
+        return { status: 'error', message: 'No branch was specified.' };
+      }
+      // The remote must be one the repo actually has configured.
+      const remotes = new Set(nonEmptyLines(await runGit(repoPath, ['remote'])));
+      if (!remotes.has(remote)) {
+        return { status: 'error', message: `Unknown remote “${remote}”.` };
+      }
+      // `git push <remote> --delete <branch>` removes the branch on the remote and
+      // prunes the local remote-tracking ref. It hits the network, so use the
+      // push error mapper and keep GIT_TERMINAL_PROMPT=0 (via mutateRepo's env).
+      const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+      try {
+        await execFileAsync('git', ['push', remote, '--delete', '--', branch], {
+          cwd: repoPath,
+          env,
+        });
+      } catch (err) {
+        return { status: 'error', message: pushErrorMessage(err) };
+      }
+      return { status: 'ok', refs: await readRefs(repoPath) };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.merge,
+    async (
+      _event,
+      repoPath: unknown,
+      source: unknown,
+      target: unknown,
+    ): Promise<RefsMutationResult> => {
+      const invalid = await validateBranchPair(repoPath, source, target);
+      if (invalid) return { status: 'error', message: invalid };
+      // Land the merge on `target`: switch to it, then merge `source` in. A
+      // conflicting merge aborts and surfaces git's message.
+      return integrateBranch(
+        repoPath as string,
+        target as string,
+        source as string,
+        'merge',
+        `Could not merge “${source as string}” into “${target as string}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.rebase,
+    async (
+      _event,
+      repoPath: unknown,
+      source: unknown,
+      target: unknown,
+    ): Promise<RefsMutationResult> => {
+      const invalid = await validateBranchPair(repoPath, source, target);
+      if (invalid) return { status: 'error', message: invalid };
+      // Switch to `target`, then replay its commits on top of `source`. A
+      // conflicting rebase aborts and surfaces git's message.
+      return integrateBranch(
+        repoPath as string,
+        target as string,
+        source as string,
+        'rebase',
+        `Could not rebase “${source as string}” into “${target as string}”.`,
+      );
     },
   );
 
@@ -2199,7 +2529,104 @@ function applyDockIcon(): void {
   if (!icon.isEmpty()) app.dock.setIcon(icon);
 }
 
+// ---- Boot debug logging ---------------------------------------------------
+// Diagnostics for the intermittent blank window on startup. Traces the window
+// load lifecycle and forwards renderer console output to boot-debug.log in the
+// project root, mirrored to the main-process console.
+//
+// Dev only: gated on `!app.isPackaged`, so a packaged build attaches no
+// listeners and never writes a file (no runtime cost, and no attempt to write
+// to a non-writable packaged cwd). Writes are async and serialized on one
+// promise chain, so they keep their order without ever blocking the main thread.
+const BOOT_DEBUG = !app.isPackaged;
+const BOOT_LOG_PATH = path.join(process.cwd(), 'boot-debug.log');
+let bootLogChain: Promise<unknown> = Promise.resolve();
+
+function bootLog(...parts: unknown[]): void {
+  if (!BOOT_DEBUG) return;
+  const line = `[${new Date().toISOString()}] ${parts
+    .map((p) => (typeof p === 'string' ? p : JSON.stringify(p)))
+    .join(' ')}`;
+  console.log(`[boot] ${line}`);
+  bootLogChain = bootLogChain
+    .then(() => fs.promises.appendFile(BOOT_LOG_PATH, `${line}\n`))
+    .catch(() => undefined /* logging must never break boot */);
+}
+
+/** Verbose lifecycle + renderer-console logging for one window's web contents. */
+function instrumentWindow(win: BrowserWindow, label: string): void {
+  if (!BOOT_DEBUG) return;
+  const wc = win.webContents;
+  wc.on('did-start-loading', () => bootLog(label, 'did-start-loading'));
+  wc.on('dom-ready', () => bootLog(label, 'dom-ready', wc.getURL()));
+  wc.on('did-finish-load', () => bootLog(label, 'did-finish-load', wc.getURL()));
+  wc.on('did-stop-loading', () => bootLog(label, 'did-stop-loading'));
+  wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) =>
+    bootLog(label, 'did-fail-load', { code, desc, url, isMainFrame }),
+  );
+  wc.on('did-fail-provisional-load', (_e, code, desc, url, isMainFrame) =>
+    bootLog(label, 'did-fail-provisional-load', { code, desc, url, isMainFrame }),
+  );
+  wc.on('preload-error', (_e, preloadFile, err) =>
+    bootLog(label, 'preload-error', preloadFile, String(err)),
+  );
+  wc.on('render-process-gone', (_e, details) =>
+    bootLog(label, 'render-process-gone', details),
+  );
+  wc.on('unresponsive', () => bootLog(label, 'unresponsive'));
+  wc.on('responsive', () => bootLog(label, 'responsive'));
+  // Forward the renderer's console so page-side logs/errors land in the same
+  // file. The signature changed across Electron versions (positional args vs a
+  // single details object), so read whichever this build emits.
+  wc.on('console-message', (...args: unknown[]) => {
+    const first = args[0] as
+      | { level?: unknown; message?: unknown; lineNumber?: unknown; sourceId?: unknown }
+      | undefined;
+    if (first && typeof first === 'object' && 'message' in first) {
+      bootLog(label, 'console', {
+        level: first.level,
+        message: first.message,
+        line: first.lineNumber,
+        source: first.sourceId,
+      });
+    } else {
+      const [, level, message, line, source] = args as unknown[];
+      bootLog(label, 'console', { level, message, line, source });
+    }
+  });
+}
+
 // ---- Windows --------------------------------------------------------------
+
+/**
+ * Load a renderer's Vite dev-server URL, retrying on a failed navigation. In dev
+ * the server can briefly refuse or 504 a request — right after launch before
+ * it's accepting connections, or while it pre-bundles dependencies — which
+ * otherwise strands the window on a blank error page that never recovers, then
+ * gets revealed empty by the boot fallback (an empty app on roughly every other
+ * `npm start`). A handful of retries rides over that window. ERR_ABORTED (-3) is
+ * a superseded load — e.g. Vite's own full reload after optimizing — not a
+ * failure, so it's ignored. Packaged builds use `loadFile` and never come here.
+ */
+function loadDevUrlWithRetry(win: BrowserWindow, url: string): void {
+  const MAX_ATTEMPTS = 20;
+  const RETRY_DELAY_MS = 250;
+  let attempts = 0;
+  const load = (): void => {
+    if (win.isDestroyed()) return;
+    // A rejected loadURL also fires `did-fail-load`; swallow it to avoid an
+    // unhandled rejection and let the single retry path below drive re-loads.
+    void win.loadURL(url).catch(() => undefined);
+  };
+  win.webContents.on(
+    'did-fail-load',
+    (_event, errorCode, _desc, _validatedURL, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3 || win.isDestroyed()) return;
+      if (attempts++ < MAX_ATTEMPTS) setTimeout(load, RETRY_DELAY_MS);
+    },
+  );
+  load();
+}
 
 function createSplashWindow(): BrowserWindow {
   const splash = new BrowserWindow({
@@ -2214,8 +2641,9 @@ function createSplashWindow(): BrowserWindow {
     webPreferences: { preload: preloadPath },
   });
 
+  instrumentWindow(splash, 'splash');
   if (SPLASH_WINDOW_VITE_DEV_SERVER_URL) {
-    splash.loadURL(SPLASH_WINDOW_VITE_DEV_SERVER_URL);
+    loadDevUrlWithRetry(splash, SPLASH_WINDOW_VITE_DEV_SERVER_URL);
   } else {
     splash.loadFile(
       path.join(__dirname, `../renderer/${SPLASH_WINDOW_VITE_NAME}/index.html`),
@@ -2246,8 +2674,17 @@ function createMainWindow(): BrowserWindow {
       // Hand the app version to the preload synchronously (works packaged too,
       // where npm_package_version is absent). Read back off process.argv.
       additionalArguments: [`--app-version=${app.getVersion()}`],
+      // The window boots hidden (show: false) behind the splash, and we reveal it
+      // only once the renderer signals app:ready from a double requestAnimationFrame
+      // (see main.tsx). Chromium throttles/pauses rAF and timers for hidden windows
+      // by default, so that signal would fire late or not at all — leaving the
+      // window stuck on the splash until the reveal fallback. Keep the hidden
+      // window running at full speed so it paints and signals promptly.
+      backgroundThrottling: false,
     },
   });
+
+  instrumentWindow(win, 'main');
 
   if (settings.windowMaximized) {
     win.maximize();
@@ -2269,7 +2706,7 @@ function createMainWindow(): BrowserWindow {
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    win.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+    loadDevUrlWithRetry(win, MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
     win.loadFile(
       path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
@@ -2288,12 +2725,17 @@ const REVEAL_FALLBACK_MS = 10_000;
 
 /** Show the splash, load the main window behind it, then hand off. */
 function boot(): void {
+  bootLog('=== boot() start ===', {
+    devServer: MAIN_WINDOW_VITE_DEV_SERVER_URL || '(packaged)',
+    openTabs: settings.openTabs?.length ?? 0,
+  });
   const splash = createSplashWindow();
   const shownAt = Date.now();
   const mainWindow = createMainWindow();
 
   let revealed = false;
-  const reveal = (): void => {
+  const reveal = (via: string): void => {
+    bootLog('reveal() called', { via, alreadyRevealed: revealed });
     if (revealed || mainWindow.isDestroyed()) return;
     revealed = true;
     // Keep the splash up for at least MIN_SPLASH_MS so it never just flashes.
@@ -2305,6 +2747,12 @@ function boot(): void {
       }
       mainWindow.show();
       mainWindow.focus();
+      bootLog('main window shown', {
+        via,
+        url: mainWindow.webContents.getURL(),
+        crashed: mainWindow.webContents.isCrashed(),
+        loading: mainWindow.webContents.isLoading(),
+      });
     }, remaining);
   };
 
@@ -2313,13 +2761,15 @@ function boot(): void {
   // shell — prevents revealing a blank window when the Vite dev server reloads
   // (e.g. after dependency pre-bundling) mid-boot.
   ipcMain.once(AppChannels.ready, (event) => {
-    if (event.sender === mainWindow.webContents) {
-      reveal();
+    const fromMain = event.sender === mainWindow.webContents;
+    bootLog('received app:ready', { fromMainWindow: fromMain });
+    if (fromMain) {
+      reveal('app:ready');
     }
   });
 
   // Safety net: never leave the window stuck hidden if the signal is missed.
-  setTimeout(reveal, REVEAL_FALLBACK_MS);
+  setTimeout(() => reveal('fallback-timeout'), REVEAL_FALLBACK_MS);
 }
 
 function registerAppIpc(): void {
@@ -2432,6 +2882,11 @@ function registerUpdateIpc(): void {
 }
 
 app.on('ready', () => {
+  bootLog('\n########## app ready — new session', {
+    pid: process.pid,
+    electron: process.versions.electron,
+    platform: process.platform,
+  });
   loadSettings();
   reconcileIntegrations();
   applyDockIcon();

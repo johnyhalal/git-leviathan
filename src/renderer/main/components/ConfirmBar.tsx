@@ -2,12 +2,23 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useState,
   type ReactNode,
 } from 'react';
 
 /** Button color, chosen per action by the caller (the bar itself is neutral). */
 export type ConfirmTone = 'default' | 'primary' | 'danger';
+
+/** An optional single-line text input rendered between the message and actions. */
+export interface ConfirmInput {
+  /** Placeholder shown when the field is empty. */
+  placeholder?: string;
+  /** Value the field starts with (default empty). */
+  defaultValue?: string;
+  /** Accessible label for the field. */
+  ariaLabel?: string;
+}
 
 /** One action button in the confirm bar; a request may carry several. */
 export interface ConfirmAction {
@@ -18,10 +29,11 @@ export interface ConfirmAction {
   /** Label shown on this button while its `onClick` is in flight. */
   busyLabel?: string;
   /**
-   * Run when this button is pressed; awaited, and the bar closes once it
-   * resolves. Throwing leaves the bar open so the failure stays visible.
+   * Run when this button is pressed; receives the current input value (empty
+   * string when the request has no `input`). Awaited, and the bar closes once
+   * it resolves. Throwing leaves the bar open so the failure stays visible.
    */
-  onClick: () => void | Promise<void>;
+  onClick: (input: string) => void | Promise<void>;
 }
 
 /** A pending confirmation, raised by any descendant via {@link useConfirm}. */
@@ -30,6 +42,8 @@ export interface ConfirmRequest {
   message: string;
   /** Label for the dismiss button (default "Cancel"). */
   cancelLabel?: string;
+  /** Optional text field whose value is passed to each action's `onClick`. */
+  input?: ConfirmInput;
   /** The action buttons, each independently colored via its own `tone`. */
   actions: ConfirmAction[];
 }
@@ -52,6 +66,13 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [request, setRequest] = useState<ConfirmRequest | null>(null);
   // Index of the action currently running (disables the whole bar), or null.
   const [busyIndex, setBusyIndex] = useState<number | null>(null);
+  // Current value of the optional input field.
+  const [inputValue, setInputValue] = useState('');
+
+  // Seed the input from the new request's default whenever a request opens.
+  useEffect(() => {
+    setInputValue(request?.input?.defaultValue ?? '');
+  }, [request]);
 
   const close = useCallback(() => {
     setRequest(null);
@@ -62,14 +83,14 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     async (action: ConfirmAction, index: number) => {
       setBusyIndex(index);
       try {
-        await action.onClick();
+        await action.onClick(inputValue);
         close();
       } catch {
         // Leave the bar open so the failure is visible and retryable.
         setBusyIndex(null);
       }
     },
-    [close],
+    [close, inputValue],
   );
 
   const busy = busyIndex !== null;
@@ -80,6 +101,18 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       {request && (
         <div className="confirm-bar" role="alertdialog" aria-label="Confirm action">
           <span className="confirm-bar-text">{request.message}</span>
+          {request.input && (
+            <input
+              type="text"
+              className="confirm-bar-input"
+              value={inputValue}
+              placeholder={request.input.placeholder}
+              aria-label={request.input.ariaLabel ?? request.message}
+              disabled={busy}
+              autoFocus
+              onChange={(event) => setInputValue(event.target.value)}
+            />
+          )}
           <div className="confirm-bar-actions">
             <button
               type="button"

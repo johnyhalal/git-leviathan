@@ -215,6 +215,7 @@ export function App() {
             title={activeTab.title}
             repoPath={activeTab.repoPath}
             onError={(title, message) => showToast(title, message, 'error')}
+            onNotice={(title, message) => showToast(title, message, 'info')}
           />
         ) : (
           <RepoStart

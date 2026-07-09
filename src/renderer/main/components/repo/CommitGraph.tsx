@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { GRAPH_COLORS, type GraphNode } from './graph';
 
 const LANE_GAP = 20;
@@ -100,11 +101,15 @@ export function CommitGraph({
       height={rowHeight}
       viewBox={`0 0 ${width} ${rowHeight}`}
       aria-hidden="true"
+      // Expose the lane color so CSS can restyle the wash on row hover.
+      style={{ '--lane': nodeColor } as CSSProperties}
     >
       {/* Faint wash in the node's lane color, from the avatar centre out to the
           cell's right edge — the same hue as the lane line at 10% alpha, capped
-          on the right by a solid line in the full lane color. */}
+          on the right by a solid line in the full lane color. The inline `fill`
+          is the resting state; a CSS rule brightens it when the row is hovered. */}
       <rect
+        className="commit-graph-wash"
         x={nodeX}
         y={PADDING}
         width={Math.max(0, width - nodeX)}
@@ -112,9 +117,9 @@ export function CommitGraph({
         fill={`${nodeColor}1a`}
       />
       <line
-        x1={width - 13}
+        x1={width - 1}
         y1={PADDING}
-        x2={width - 13}
+        x2={width - 1}
         y2={rowHeight-PADDING}
         stroke={nodeColor}
         strokeWidth={STROKE_W}

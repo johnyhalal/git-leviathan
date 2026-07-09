@@ -17,6 +17,8 @@ interface RepoViewProps {
   repoPath: string;
   /** Surface a failure (e.g. a checkout or commit that couldn't complete). */
   onError?: (title: string, message: string) => void;
+  /** Surface an informational note (e.g. a merge that was already up to date). */
+  onNotice?: (title: string, message: string) => void;
 }
 
 /**
@@ -27,7 +29,7 @@ interface RepoViewProps {
 /** How many commits to fetch per page (initial load and each "load more"). */
 const PAGE_SIZE = 500;
 
-export function RepoView({ title, repoPath, onError }: RepoViewProps) {
+export function RepoView({ title, repoPath, onError, onNotice }: RepoViewProps) {
   void title;
 
   const [refs, setRefs] = useState<RepoRefs | null>(null);
@@ -52,11 +54,14 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
   const [pushing, setPushing] = useState(false);
   // True while a pull/fetch is in flight, to disable the toolbar button.
   const [pulling, setPulling] = useState(false);
+  // True while the inline "new branch" input is shown at the HEAD commit.
+  const [creatingBranch, setCreatingBranch] = useState(false);
 
   // A typed-but-uncommitted message belongs to one repo; drop it when the tab
   // switches to another (this view is reused across repos, not remounted).
   useEffect(() => {
     setCommitMessage('');
+    setCreatingBranch(false);
   }, [repoPath]);
 
   useEffect(() => {
@@ -160,14 +165,38 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
 
   // Push the current branch to its upstream; on success reload so the branch's
   // ahead/behind counts refresh, on failure surface git's message via a toast.
-  const push = useCallback(async () => {
-    if (pushing) return;
+  // When the branch has no upstream yet, resolve the pending remote/branch so the
+  // toolbar can raise a confirm before publishing it (handled in `publishBranch`).
+  const push = useCallback(async (): Promise<{ remote: string; branch: string } | null> => {
+    if (pushing) return null;
     setPushing(true);
     const result = await window.api.repo.push(repoPath);
     setPushing(false);
     if (result.status === 'ok') reload();
+    else if (result.status === 'needs-upstream')
+      return { remote: result.remote, branch: result.branch };
     else onError?.('Push failed', result.message);
+    return null;
   }, [pushing, repoPath, reload, onError]);
+
+  // Publish a branch that has no upstream to `remote`, setting it as the upstream.
+  // Runs after the user confirms the toolbar's "publish branch" bar. Reloads on
+  // success; on failure surfaces git's message and throws so the confirm bar stays
+  // open (its contract: a throwing action keeps the bar visible for a retry).
+  const publishBranch = useCallback(
+    async (remote: string, branch: string, remoteBranch: string) => {
+      setPushing(true);
+      const result = await window.api.repo.pushSetUpstream(repoPath, remote, branch, remoteBranch);
+      setPushing(false);
+      if (result.status === 'ok') {
+        reload();
+        return;
+      }
+      onError?.('Push failed', result.message);
+      throw new Error(result.message);
+    },
+    [repoPath, reload, onError],
+  );
 
   // Pull/fetch the current branch; reload on success (HEAD, log and ahead/behind
   // all move), surface git's message on failure.
@@ -192,18 +221,37 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
     [repoPath, onError, reload],
   );
 
-  // Stash / gitflow all mutate the repo and hand back fresh refs; on success we
-  // just reload, on failure we surface git's message via the toast channel.
+  // Create a branch at HEAD from the inline toolbar input and check it out; on
+  // success close the input and reload so the new branch becomes HEAD, on failure
+  // keep the input open and surface git's message.
+  const createBranch = useCallback(
+    async (name: string) => {
+      const result = await window.api.repo.createBranch(repoPath, name);
+      if (result.status === 'ok') {
+        setCreatingBranch(false);
+        reload();
+      } else onError?.('Branch failed', result.message);
+    },
+    [repoPath, reload, onError],
+  );
+
+  // Stash / gitflow / branch deletion all mutate the repo and hand back fresh
+  // refs; on success we just reload, on failure we surface git's message via the
+  // toast channel.
   const runMutation = useCallback(
     async (
       failureTitle: string,
       run: () => Promise<RefsMutationResult>,
     ) => {
       const result = await run();
-      if (result.status === 'ok') reload();
-      else onError?.(failureTitle, result.message);
+      if (result.status === 'ok') {
+        reload();
+        // A successful-but-no-op mutation (e.g. an already-up-to-date merge)
+        // carries a note so the user isn't left wondering what happened.
+        if (result.notice) onNotice?.('Nothing to do', result.notice);
+      } else onError?.(failureTitle, result.message);
     },
-    [onError, reload],
+    [onError, onNotice, reload],
   );
 
   const stashPush = useCallback(
@@ -240,6 +288,39 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
     () =>
       runMutation('Gitflow finish failed', () =>
         window.api.repo.gitflowFinish(repoPath),
+      ),
+    [repoPath, runMutation],
+  );
+
+  // Dragging one branch badge onto another integrates the dragged (source)
+  // branch into the drop target: both check out the target first, then merge /
+  // rebase the source into it.
+  const mergeBranch = useCallback(
+    (source: string, target: string) =>
+      runMutation('Merge failed', () =>
+        window.api.repo.merge(repoPath, source, target),
+      ),
+    [repoPath, runMutation],
+  );
+
+  const rebaseBranch = useCallback(
+    (source: string, target: string) =>
+      runMutation('Rebase failed', () =>
+        window.api.repo.rebase(repoPath, source, target),
+      ),
+    [repoPath, runMutation],
+  );
+
+  const deleteBranch = useCallback(
+    (branch: string) =>
+      runMutation('Delete failed', () => window.api.repo.deleteBranch(repoPath, branch)),
+    [repoPath, runMutation],
+  );
+
+  const deleteRemoteBranch = useCallback(
+    (remote: string, branch: string) =>
+      runMutation('Delete failed', () =>
+        window.api.repo.deleteRemoteBranch(repoPath, remote, branch),
       ),
     [repoPath, runMutation],
   );
@@ -287,7 +368,8 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
           branch={branchLabel}
           branches={branchNames}
           onCheckout={(branch) => void checkout(branch)}
-          onPush={() => void push()}
+          onPush={push}
+          onPublishBranch={publishBranch}
           pushing={pushing}
           onPull={(mode) => void pull(mode)}
           pulling={pulling}
@@ -295,6 +377,8 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
           canStash={hasChanges}
           hasStash={(refs?.stashes.length ?? 0) > 0}
           onPop={() => void stashPop(0)}
+          onBranch={() => setCreatingBranch((on) => !on)}
+          branching={creatingBranch}
         />
         <RepoColumns
           repoPath={repoPath}
@@ -309,6 +393,13 @@ export function RepoView({ title, repoPath, onError }: RepoViewProps) {
           onLoadMore={() => void loadMore()}
           onCommitted={reload}
           onCheckout={(branch, remote) => void checkout(branch, remote)}
+          creatingBranch={creatingBranch}
+          onCreateBranch={(name) => void createBranch(name)}
+          onCancelCreateBranch={() => setCreatingBranch(false)}
+          onMergeBranch={(source, target) => void mergeBranch(source, target)}
+          onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
+          onDeleteBranch={(branch) => void deleteBranch(branch)}
+          onDeleteRemoteBranch={(remote, branch) => void deleteRemoteBranch(remote, branch)}
           onStashPop={(index) => void stashPop(index)}
           onStashDrop={(index) => void stashDrop(index)}
           onGitflowStart={(kind, name) => void gitflowStart(kind, name)}

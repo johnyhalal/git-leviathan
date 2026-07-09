@@ -37,6 +37,20 @@ interface RepoColumnsProps {
    * remote branch so a tracking branch is created off that specific remote.
    */
   onCheckout: (branch: string, remote?: string) => void;
+  /** Whether the inline "new branch" input is shown at the HEAD commit. */
+  creatingBranch: boolean;
+  /** Create a branch at HEAD with the entered name (Enter in the inline input). */
+  onCreateBranch: (name: string) => void;
+  /** Dismiss the inline "new branch" input without creating (Escape / blur). */
+  onCancelCreateBranch: () => void;
+  /** Merge one local branch into another (dragging a branch badge onto another). */
+  onMergeBranch: (source: string, target: string) => void;
+  /** Rebase one local branch onto another (dragging a branch badge onto another). */
+  onRebaseBranch: (source: string, target: string) => void;
+  /** Delete a local branch (`git branch -D`), from a branch's context menu. */
+  onDeleteBranch: (branch: string) => void;
+  /** Delete a branch on its remote (`git push <remote> --delete`). */
+  onDeleteRemoteBranch: (remote: string, branch: string) => void;
   /** Apply & drop a stash by index (`git stash pop`). */
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
@@ -68,6 +82,13 @@ export function RepoColumns({
   onLoadMore,
   onCommitted,
   onCheckout,
+  creatingBranch,
+  onCreateBranch,
+  onCancelCreateBranch,
+  onMergeBranch,
+  onRebaseBranch,
+  onDeleteBranch,
+  onDeleteRemoteBranch,
   onStashPop,
   onStashDrop,
   onGitflowStart,
@@ -103,6 +124,24 @@ export function RepoColumns({
   // excluded from what counts as the selected commit.
   const selectedCommit =
     commits?.find((commit) => commit.hash === selectedHash && !commit.working) ?? null;
+
+  // After a successful commit, close the working staging view and select the
+  // freshly created commit. The new hash isn't known until history reloads, so
+  // flag the intent and pick the newest real commit once the next `commits`
+  // arrive.
+  const selectTipAfterReload = useRef(false);
+  const handleCommitted = () => {
+    selectTipAfterReload.current = true;
+    onCommitted();
+  };
+  useEffect(() => {
+    if (!selectTipAfterReload.current) return;
+    const tip = commits?.find((commit) => !commit.working && commit.stashIndex === undefined);
+    if (tip) {
+      setSelectedHash(tip.hash);
+      selectTipAfterReload.current = false;
+    }
+  }, [commits]);
 
   // Clicking the selected row again clears it, returning to the working view.
   const toggleSelect = (hash: string) =>
@@ -142,6 +181,8 @@ export function RepoColumns({
           onSelectRef={selectRefTip}
           onSelectStash={selectStash}
           onCheckout={onCheckout}
+          onDeleteBranch={onDeleteBranch}
+          onDeleteRemoteBranch={onDeleteRemoteBranch}
           onStashPop={onStashPop}
           onStashDrop={onStashDrop}
           onGitflowStart={onGitflowStart}
@@ -172,6 +213,13 @@ export function RepoColumns({
             loadingMore={loadingMore}
             onSelect={toggleSelect}
             onCheckout={onCheckout}
+            creatingBranch={creatingBranch}
+            onCreateBranch={onCreateBranch}
+            onCancelCreateBranch={onCancelCreateBranch}
+            onMergeBranch={onMergeBranch}
+            onRebaseBranch={onRebaseBranch}
+            onDeleteBranch={onDeleteBranch}
+            onDeleteRemoteBranch={onDeleteRemoteBranch}
           />
         )}
       </div>
@@ -187,7 +235,7 @@ export function RepoColumns({
           onWorkingStatusChange={onWorkingStatusChange}
           commitMessage={commitMessage}
           onCommitMessageChange={onCommitMessageChange}
-          onCommitted={onCommitted}
+          onCommitted={handleCommitted}
           onViewWorking={() => setSelectedHash(commits?.[0]?.hash ?? null)}
           onSelectCommit={setSelectedHash}
           onOpenDiff={setDiffTarget}

@@ -168,7 +168,16 @@ export interface RepoRefs {
  * (checkout, stash pop/drop, gitflow start/finish).
  */
 export type RefsMutationResult =
-  | { status: 'ok'; refs: RepoRefs }
+  | {
+      status: 'ok';
+      refs: RepoRefs;
+      /**
+       * An informational note about a successful-but-no-op mutation, surfaced as
+       * an info toast (e.g. a merge/rebase where the target was already up to
+       * date). Absent when the mutation changed something.
+       */
+      notice?: string;
+    }
   | { status: 'error'; message: string };
 
 /** Outcome of a branch checkout. On success it carries the repo's fresh refs. */
@@ -288,6 +297,17 @@ export interface FileDiff {
 /** Outcome of a commit. */
 export type CommitResult = { status: 'ok' } | { status: 'error'; message: string };
 
+/**
+ * Outcome of a push. Beyond ok/error it can report `needs-upstream`: the current
+ * branch has no upstream yet, so the caller should confirm publishing it to
+ * `remote` under `branch` (via `pushSetUpstream`) before the branch is created
+ * on the remote.
+ */
+export type PushResult =
+  | { status: 'ok' }
+  | { status: 'error'; message: string }
+  | { status: 'needs-upstream'; remote: string; branch: string };
+
 export const RepoChannels = {
   /** Renderer -> main (invoke): pick a folder and open it as a repository. */
   open: 'repo:open',
@@ -321,10 +341,22 @@ export const RepoChannels = {
   rewordCount: 'repo:reword-count',
   /** Renderer -> main (invoke): push the current branch to its upstream. */
   push: 'repo:push',
+  /** Renderer -> main (invoke): publish the current branch to a remote, setting upstream. */
+  pushSetUpstream: 'repo:push-set-upstream',
   /** Renderer -> main (invoke): pull/fetch the current branch from its upstream. */
   pull: 'repo:pull',
   /** Renderer -> main (invoke): check out a branch; returns fresh refs. */
   checkout: 'repo:checkout',
+  /** Renderer -> main (invoke): create a branch at HEAD; returns fresh refs. */
+  createBranch: 'repo:create-branch',
+  /** Renderer -> main (invoke): delete a local branch; returns fresh refs. */
+  deleteBranch: 'repo:delete-branch',
+  /** Renderer -> main (invoke): delete a branch on a remote; returns fresh refs. */
+  deleteRemoteBranch: 'repo:delete-remote-branch',
+  /** Renderer -> main (invoke): merge one branch into another; returns fresh refs. */
+  merge: 'repo:merge',
+  /** Renderer -> main (invoke): rebase one branch onto another; returns fresh refs. */
+  rebase: 'repo:rebase',
   /** Renderer -> main (invoke): stash uncommitted changes (`git stash push`). */
   stashPush: 'repo:stash-push',
   /** Renderer -> main (invoke): apply & drop a stash (`git stash pop`). */
@@ -552,11 +584,26 @@ export interface RepoApi {
    */
   rewordCount(path: string, hash: string): Promise<number>;
   /**
-   * Push the current branch to its upstream. When the branch has no upstream and
-   * exactly one remote exists (or an "origin"), it's set as the upstream. Resolves
-   * ok on success, or an error message (detached HEAD, no remote, auth failure…).
+   * Push the current branch to its upstream. When the branch already tracks an
+   * upstream, a plain push follows it. When it has no upstream yet, this does not
+   * publish silently: it resolves `needs-upstream` (carrying the target remote and
+   * branch) so the UI can confirm before creating the branch on the remote. Also
+   * resolves ok on success, or an error message (detached HEAD, no remote, auth…).
    */
-  push(path: string): Promise<CommitResult>;
+  push(path: string): Promise<PushResult>;
+  /**
+   * Publish the current branch to `remote`, setting it as the upstream
+   * (`git push --set-upstream`). Called after the user confirms a
+   * `needs-upstream` result from `push`. `branch` is the local branch;
+   * `remoteBranch` is the name it takes on the remote (defaults to `branch`
+   * when omitted/empty). Resolves ok, or an error message.
+   */
+  pushSetUpstream(
+    path: string,
+    remote: string,
+    branch: string,
+    remoteBranch?: string,
+  ): Promise<CommitResult>;
   /**
    * Pull the current branch from its upstream using `mode` (or, for `fetch-all`,
    * fetch every remote without moving the branch). Resolves ok on success, or an
@@ -575,6 +622,38 @@ export interface RepoApi {
    * name already exists (that local branch is simply switched to).
    */
   checkout(path: string, branch: string, remote?: string): Promise<CheckoutResult>;
+  /**
+   * Create a new branch named `name` at HEAD and check it out
+   * (`git checkout -b <name>`). Resolves with the repo's fresh refs on success,
+   * or an error message (invalid name, a branch of that name already exists,
+   * empty HEAD…).
+   */
+  createBranch(path: string, name: string): Promise<RefsMutationResult>;
+  /**
+   * Delete the local branch `branch` (`git branch -D`). Refuses to delete the
+   * checked-out branch. Resolves with the repo's fresh refs on success, or an
+   * error message.
+   */
+  deleteBranch(path: string, branch: string): Promise<RefsMutationResult>;
+  /**
+   * Delete `branch` on `remote` (`git push <remote> --delete <branch>`), which
+   * also prunes the local remote-tracking ref. Resolves with the repo's fresh
+   * refs on success, or an error message (unknown remote, auth failure…).
+   */
+  deleteRemoteBranch(path: string, remote: string, branch: string): Promise<RefsMutationResult>;
+  /**
+   * Merge `source` into `target`: check out `target`, then `git merge source`.
+   * Both must be existing local branches. Resolves with fresh refs on success,
+   * or an error message (e.g. merge conflicts, which abort the merge).
+   */
+  merge(path: string, source: string, target: string): Promise<RefsMutationResult>;
+  /**
+   * Rebase `source` into `target`: check out `target`, then `git rebase source`,
+   * replaying `target`'s commits on top of `source` for a linear history. Both
+   * must be existing local branches. Resolves with fresh refs, or an error
+   * message (e.g. conflicts, which abort the rebase).
+   */
+  rebase(path: string, source: string, target: string): Promise<RefsMutationResult>;
   /**
    * Stash the working tree's uncommitted changes (`git stash push`, including
    * untracked files). Resolves with fresh refs, or an error (e.g. when there is

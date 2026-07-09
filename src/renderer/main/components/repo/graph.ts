@@ -72,7 +72,7 @@ interface GraphInput {
 /**
  * Assign each commit a lane and the edges connecting it to the rows above and
  * below. Commits must be in display order (newest first) with children before
- * parents (git's --topo-order). Lanes are not compacted, so pass-through branch
+ * parents (git's --date-order / --topo-order). Lanes are not compacted, so pass-through branch
  * lines stay vertical; a lane simply stays open until its commit is reached.
  */
 export function computeGraph(commits: GraphInput[]): GraphNode[] {

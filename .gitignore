@@ -90,3 +90,6 @@ typings/
 
 # Electron-Forge
 out/
+
+# temporary boot diagnostics
+boot-debug.log

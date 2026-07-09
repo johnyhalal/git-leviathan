@@ -73,6 +73,26 @@ const joinMessage = (subject: string, body: string) => {
 const composeMessage = (subject: string, body: string) =>
   body ? `${subject}\n\n${body}` : subject;
 
+/** Conventional soft limit for a commit summary line. */
+const SUMMARY_LIMIT = 72;
+
+/**
+ * Countdown of characters remaining against {@link SUMMARY_LIMIT}. Goes negative
+ * once the summary runs long, turning yellow as a soft warning (never blocks).
+ */
+function SummaryCounter({ length }: { length: number }) {
+  const remaining = SUMMARY_LIMIT - length;
+  return (
+    <span
+      className={`commit-summary-counter${remaining < 0 ? ' is-over' : ''}`}
+      title={`${SUMMARY_LIMIT}-character summary guideline`}
+      aria-hidden="true"
+    >
+      {remaining}
+    </span>
+  );
+}
+
 /** A row in the file list: a real change, or (in "View all files" mode) an
  * unchanged file from the commit snapshot, marked by a null status. */
 type DisplayFile = { path: string; status: FileStatus | null };
@@ -87,7 +107,13 @@ function sameSource(a: DiffSource, b: DiffSource): boolean {
 interface FileRowProps {
   file: DisplayFile;
   /** Optional stage/unstage control; omitted in the read-only detail view. */
-  action?: { label: string; title: string; onClick: () => void };
+  action?: {
+    label: string;
+    title: string;
+    onClick: () => void;
+    /** Pill color modifier (see `.pill-btn-*` in the stylesheet). */
+    variant?: 'green' | 'red' | 'yellow' | 'gray';
+  };
   /** Hide the directory suffix (tree view already conveys the folder). */
   showDir?: boolean;
   /** Left indent in px, for nesting a file under its folder in tree view. */
@@ -139,7 +165,7 @@ function FileRow({ file, action, showDir = true, indent, onOpen, selected }: Fil
       {action && (
         <button
           type="button"
-          className="commit-file-action"
+          className={`pill-btn commit-file-action${action.variant ? ` pill-btn-${action.variant}` : ''}`}
           title={action.title}
           aria-label={action.title}
           // Don't let the stage/unstage control also open the diff.
@@ -594,14 +620,17 @@ function CommitDetail({
         {editing ? (
           <div className="commit-amend">
             <div className="commit-amend-fields">
-              <input
-                className="commit-amend-subject"
-                value={subject}
-                onChange={(event) => setSubject(event.target.value)}
-                placeholder="Summary"
-                aria-label="Commit summary"
-                autoFocus
-              />
+              <div className="commit-message-subject-row">
+                <input
+                  className="commit-amend-subject"
+                  value={subject}
+                  onChange={(event) => setSubject(event.target.value)}
+                  placeholder="Summary"
+                  aria-label="Commit summary"
+                  autoFocus
+                />
+                <SummaryCounter length={subject.length} />
+              </div>
               <textarea
                 className="commit-amend-body"
                 value={body}
@@ -915,16 +944,17 @@ function WorkingChanges({
   return (
     <aside className="commit-panel" aria-label="Commit changes">
       <header className="commit-panel-header commit-changes-header">
-        <button
-          type="button"
-          className="commit-discard-btn tooltip-host"
-          data-tooltip="Discard all changes"
-          aria-label="Discard all changes"
-          disabled={!hasChanges}
-          onClick={discardAll}
-        >
-          <TrashIcon size={16} />
-        </button>
+        {hasChanges && (
+          <button
+            type="button"
+            className="commit-discard-btn tooltip-host"
+            data-tooltip="Discard all changes"
+            aria-label="Discard all changes"
+            onClick={discardAll}
+          >
+            <TrashIcon size={16} />
+          </button>
+        )}
         <span className="commit-changes-summary">
           {changedCount} {changedCount === 1 ? 'file' : 'files'} changed
           {branch && (
@@ -979,10 +1009,10 @@ function WorkingChanges({
             {unstaged.length > 0 && (
               <button
                 type="button"
-                className="commit-files-bulk"
+                className="pill-btn pill-btn-green commit-files-bulk"
                 onClick={() => void stage(null)}
               >
-                Stage all
+                Stage All Changes
               </button>
             )}
           </div>
@@ -993,8 +1023,9 @@ function WorkingChanges({
               asc={asc}
               emptyText="No unstaged changes"
               action={(file) => ({
-                label: '+',
+                label: 'Stage',
                 title: 'Stage file',
+                variant: 'green',
                 onClick: () => void stage(file.path),
               })}
               onOpenFile={(file) =>
@@ -1023,10 +1054,10 @@ function WorkingChanges({
             {staged.length > 0 && (
               <button
                 type="button"
-                className="commit-files-bulk"
+                className="pill-btn pill-btn-red commit-files-bulk"
                 onClick={() => void unstage(null)}
               >
-                Unstage all
+                Unstage All Changes
               </button>
             )}
           </div>
@@ -1037,8 +1068,9 @@ function WorkingChanges({
               asc={asc}
               emptyText="Nothing staged"
               action={(file) => ({
-                label: '−',
+                label: 'Unstage',
                 title: 'Unstage file',
+                variant: 'red',
                 onClick: () => void unstage(file.path),
               })}
               onOpenFile={(file) =>
@@ -1056,13 +1088,16 @@ function WorkingChanges({
 
       <div className="commit-message-box">
         <div className="commit-message-fields">
-          <input
-            className="commit-message-subject"
-            placeholder="Summary"
-            aria-label="Commit summary"
-            value={subject}
-            onChange={(event) => onMessageChange(composeMessage(event.target.value, body))}
-          />
+          <div className="commit-message-subject-row">
+            <input
+              className="commit-message-subject"
+              placeholder="Summary"
+              aria-label="Commit summary"
+              value={subject}
+              onChange={(event) => onMessageChange(composeMessage(event.target.value, body))}
+            />
+            <SummaryCounter length={subject.length} />
+          </div>
           <textarea
             className="commit-message-description"
             placeholder="Description"
