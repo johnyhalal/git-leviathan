@@ -1,7 +1,7 @@
 {
   "name": "gitleviathan",
   "productName": "GitLeviathan",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "GitLeviathan — a cross-platform desktop GUI for Git",
   "main": ".vite/build/main.js",
   "private": true,
@@ -46,6 +46,7 @@
     "vite": "^5.4.21"
   },
   "dependencies": {
+    "dugite": "^3.2.2",
     "electron-squirrel-startup": "^1.0.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"

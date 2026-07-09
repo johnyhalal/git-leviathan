@@ -93,3 +93,6 @@ out/
 
 # temporary boot diagnostics
 boot-debug.log
+
+# Per-arch bundled git staged during the macOS universal release build
+.git-bundle/

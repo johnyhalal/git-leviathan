@@ -88,11 +88,30 @@ jobs:
           # fail loudly here if the identity didn't land, rather than mid-make
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
+      # The universal app carries both arm64 and x64 Electron slices, but
+      # dugite's postinstall only fetched the host arch's git. Cross-fetch the
+      # other arch too and stage both under .git-bundle/, so forge.config (via
+      # MAC_UNIVERSAL_GIT) ships resources/git-arm64 + resources/git-x64 and
+      # src/git.ts picks the slice's arch at runtime. `file` asserts each binary
+      # is the arch we expect, so a silently-wrong download fails the build here.
+      - name: Bundle git for both macOS arches
+        run: |
+          mkdir -p .git-bundle
+          npm_config_arch=arm64 node node_modules/dugite/script/download-git.js
+          cp -R node_modules/dugite/git .git-bundle/git-arm64
+          npm_config_arch=x64 node node_modules/dugite/script/download-git.js
+          cp -R node_modules/dugite/git .git-bundle/git-x64
+          file .git-bundle/git-arm64/bin/git | grep -q arm64
+          file .git-bundle/git-x64/bin/git | grep -q x86_64
+
       # Universal build: one DMG carrying both arm64 and x64 slices, so it runs
       # natively on Apple Silicon and Intel Macs. The arm64 runner builds this
       # fine — Forge pulls the x64 Electron and merges via @electron/universal,
-      # then signs/notarizes the merged app.
+      # then signs/notarizes the merged app. MAC_UNIVERSAL_GIT switches
+      # forge.config's extraResource to the two per-arch git dirs staged above.
       - name: Build macOS distributable
+        env:
+          MAC_UNIVERSAL_GIT: '1'
         run: npm run make:universal
 
       - name: Resolve release tag
@@ -135,6 +154,13 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # dugite's postinstall fetched win32-x64 git during `npm ci`; fail loudly
+      # here if it's missing rather than shipping an installer with no bundled
+      # git. resolveGitBinary() matches exactly what src/git.ts resolves at runtime.
+      - name: Verify bundled git present
+        run: >
+          node -e "const {resolveGitBinary}=require('dugite');const fs=require('fs');const p=resolveGitBinary();if(!fs.existsSync(p)){console.error('bundled git missing: '+p);process.exit(1)}console.log('bundled git OK: '+p)"
 
       # Same reason as the macOS job: Vite bakes the OAuth client IDs into the
       # main bundle at build time, so they must be on `.env` before `make`. No
@@ -220,6 +246,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
 
       - run: npm ci
+
+      # This job cross-builds both arches on the amd64 runner, but dugite's
+      # postinstall only fetched x64 git. Re-fetch the matrix arch (dugite selects
+      # the tarball from npm_config_arch) so the arm64 package ships arm64 git — a
+      # no-op re-download for x64. extraResource then copies node_modules/dugite/git
+      # → resources/git. resolveGitBinary() matches what src/git.ts resolves at runtime.
+      - name: Bundle git for ${{ matrix.arch }}
+        run: |
+          npm_config_arch=${{ matrix.arch }} node node_modules/dugite/script/download-git.js
+          node -e "const {resolveGitBinary}=require('dugite');const fs=require('fs');const p=resolveGitBinary();if(!fs.existsSync(p)){console.error('bundled git missing: '+p);process.exit(1)}console.log('bundled git OK: '+p)"
 
       # Same as the other jobs: Vite bakes the OAuth client IDs into the main
       # bundle at build time, so they must be on `.env` before `make`.

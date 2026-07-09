@@ -138,6 +138,20 @@ export function App() {
     }
   };
 
+  /** Move the tab with `id` so it occupies `toIndex` in the new order. */
+  const reorderTab = (id: string, toIndex: number) => {
+    setTabs((prev) => {
+      const from = prev.findIndex((tab) => tab.id === id);
+      if (from === -1) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      // toIndex was computed against the original array; account for the
+      // removed element when it sat before the drop position.
+      next.splice(from < toIndex ? toIndex - 1 : toIndex, 0, moved);
+      return next;
+    });
+  };
+
   /** Bind a repository to the active tab, turning it into an open-repo tab. */
   const openRepo = (repo: RepoInfo) => {
     setTabs((prev) =>
@@ -195,6 +209,7 @@ export function App() {
           onSelect={setActiveId}
           onClose={closeTab}
           onAdd={addTab}
+          onReorder={reorderTab}
         />
         <div className="topbar-actions">
           <button

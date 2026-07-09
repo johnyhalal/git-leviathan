@@ -139,10 +139,62 @@ body {
   box-shadow: 0 0 3px rgba(0, 0, 0, 0.95);
 }
 
+/* Fade the tab being dragged so the insertion cue reads clearly. */
+.tab.dragging {
+  opacity: 0.4;
+}
+
+/* Insertion cue: a vertical bar on the side the drop would land. */
+.tab.drop-before {
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
+.tab.drop-after {
+  box-shadow: inset -2px 0 0 var(--primary);
+}
+
+/* Branch icon marking a tab that holds an open repository. */
+.tab-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  opacity: 0.7;
+}
+
 .tab-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Custom tooltip showing the repo's local path (fixed so it escapes the
+   tab strip's overflow clipping). */
+.tab-tooltip {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 60vw;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.tab-tooltip svg {
+  flex: none;
+  opacity: 0.7;
+}
+
+.tab-tooltip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tab-close {

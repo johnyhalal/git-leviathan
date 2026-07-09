@@ -15,6 +15,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import started from 'electron-squirrel-startup';
+import { gitBin, gitEnv } from './git';
 import {
   AppChannels,
   IntegrationChannels,
@@ -419,9 +420,9 @@ const execFileAsync = promisify(execFile);
  */
 async function runGit(cwd: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('git', args, {
+    const { stdout } = await execFileAsync(gitBin, args, {
       cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
       maxBuffer: 16 * 1024 * 1024,
     });
     return stdout;
@@ -612,10 +613,10 @@ async function mutateRepo(
   steps: string[][],
   fallback: string,
 ): Promise<RefsMutationResult> {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
   try {
     for (const args of steps) {
-      await execFileAsync('git', args, { cwd, env });
+      await execFileAsync(gitBin, args, { cwd, env });
     }
   } catch (err) {
     return { status: 'error', message: gitErrorMessage(err, fallback) };
@@ -638,11 +639,11 @@ async function integrateBranch(
   op: 'merge' | 'rebase',
   fallback: string,
 ): Promise<RefsMutationResult> {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
   let output = '';
   try {
-    await execFileAsync('git', ['checkout', target], { cwd, env });
-    const result = await execFileAsync('git', [op, source], { cwd, env });
+    await execFileAsync(gitBin, ['checkout', target], { cwd, env });
+    const result = await execFileAsync(gitBin, [op, source], { cwd, env });
     output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   } catch (err) {
     return { status: 'error', message: gitErrorMessage(err, fallback) };
@@ -927,9 +928,9 @@ function fileDiffArgs(source: DiffSource, file: string): string[] {
  */
 async function runGitDiff(cwd: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('git', args, {
+    const { stdout } = await execFileAsync(gitBin, args, {
       cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
       maxBuffer: 16 * 1024 * 1024,
     });
     return stdout;
@@ -1045,14 +1046,14 @@ async function rewordCommit(
   hash: string,
   message: string,
 ): Promise<CommitResult> {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
   const head = (await runGit(cwd, ['rev-parse', 'HEAD'])).trim();
 
   // Rewording HEAD is a plain amend; `--only` with no paths ignores the index,
   // so any staged work the user is preparing is left out of the reword.
   if (head === hash) {
     try {
-      await execFileAsync('git', ['commit', '--amend', '--only', '-m', message], { cwd, env });
+      await execFileAsync(gitBin, ['commit', '--amend', '--only', '-m', message], { cwd, env });
       return { status: 'ok' };
     } catch (err) {
       return { status: 'error', message: gitErrorMessage(err, 'Amend failed.') };
@@ -1084,13 +1085,13 @@ async function rewordCommit(
 
   try {
     await execFileAsync(
-      'git',
+      gitBin,
       ['-c', 'rebase.abbreviateCommands=false', 'rebase', '-i', '--autostash', base],
       { cwd, env: rebaseEnv },
     );
     return { status: 'ok' };
   } catch (err) {
-    await execFileAsync('git', ['rebase', '--abort'], { cwd, env }).catch(() => undefined);
+    await execFileAsync(gitBin, ['rebase', '--abort'], { cwd, env }).catch(() => undefined);
     return { status: 'error', message: gitErrorMessage(err, 'Reword failed.') };
   } finally {
     fs.rmSync(msgDir, { recursive: true, force: true });
@@ -1125,7 +1126,7 @@ function pushErrorMessage(err: unknown): string {
  * from hanging the app — an auth-required HTTPS remote surfaces as an error.
  */
 async function pushCurrent(cwd: string): Promise<PushResult> {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
   const branch = (await runGit(cwd, ['symbolic-ref', '--short', 'HEAD'])).trim();
   if (!branch) {
     return { status: 'error', message: 'HEAD is detached — check out a branch before pushing.' };
@@ -1136,7 +1137,7 @@ async function pushCurrent(cwd: string): Promise<PushResult> {
 
   if (upstream) {
     try {
-      await execFileAsync('git', ['push'], { cwd, env });
+      await execFileAsync(gitBin, ['push'], { cwd, env });
       return { status: 'ok' };
     } catch (err) {
       return { status: 'error', message: pushErrorMessage(err) };
@@ -1181,7 +1182,10 @@ async function pushCurrent(cwd: string): Promise<PushResult> {
 async function isValidBranchName(cwd: string, name: string): Promise<boolean> {
   if (!name || name.startsWith('-')) return false;
   try {
-    await execFileAsync('git', ['check-ref-format', '--branch', name], { cwd });
+    await execFileAsync(gitBin, ['check-ref-format', '--branch', name], {
+      cwd,
+      env: gitEnv(),
+    });
     return true;
   } catch {
     return false;
@@ -1194,12 +1198,12 @@ async function pushSetUpstream(
   branch: string,
   remoteBranch = branch,
 ): Promise<CommitResult> {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
   // Use an explicit `local:remote` refspec only when the names differ, so the
   // branch is created under the requested name on the remote.
   const refspec = remoteBranch === branch ? branch : `${branch}:${remoteBranch}`;
   try {
-    await execFileAsync('git', ['push', '--set-upstream', remote, refspec], { cwd, env });
+    await execFileAsync(gitBin, ['push', '--set-upstream', remote, refspec], { cwd, env });
     return { status: 'ok' };
   } catch (err) {
     return { status: 'error', message: pushErrorMessage(err) };
@@ -1235,7 +1239,7 @@ function pullErrorMessage(err: unknown): string {
  * auth-required remote from hanging the app.
  */
 async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
   const args =
     mode === 'fetch-all'
       ? ['fetch', '--all']
@@ -1245,7 +1249,7 @@ async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
           ? ['pull', '--rebase']
           : ['pull'];
   try {
-    await execFileAsync('git', args, { cwd, env });
+    await execFileAsync(gitBin, args, { cwd, env });
     return { status: 'ok' };
   } catch (err) {
     return { status: 'error', message: pullErrorMessage(err) };
@@ -1533,9 +1537,9 @@ function registerRepoIpc(): void {
       const text = typeof message === 'string' ? message.trim() : '';
       if (!text) return { status: 'error', message: 'Enter a commit message.' };
       try {
-        await execFileAsync('git', ['commit', '-m', text], {
+        await execFileAsync(gitBin, ['commit', '-m', text], {
           cwd: repoPath,
-          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+          env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
         });
       } catch (err) {
         return { status: 'error', message: gitErrorMessage(err, 'Commit failed.') };
@@ -1656,7 +1660,7 @@ function registerRepoIpc(): void {
       if (typeof branch !== 'string' || branch.length === 0) {
         return { status: 'error', message: 'No branch was specified.' };
       }
-      const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
       try {
         // A remote was named and no local branch of this name exists yet: create
         // a tracking branch off that specific remote. This disambiguates the case
@@ -1671,7 +1675,7 @@ function registerRepoIpc(): void {
             : ['checkout', branch];
         // Array args (no shell) avoid injection; branch/remote come from the
         // repo's own ref list. GIT_TERMINAL_PROMPT=0 fails fast instead of prompting.
-        await execFileAsync('git', args, { cwd: repoPath, env: gitEnv });
+        await execFileAsync(gitBin, args, { cwd: repoPath, env });
       } catch (err) {
         return {
           status: 'error',
@@ -1762,9 +1766,9 @@ function registerRepoIpc(): void {
       // `git push <remote> --delete <branch>` removes the branch on the remote and
       // prunes the local remote-tracking ref. It hits the network, so use the
       // push error mapper and keep GIT_TERMINAL_PROMPT=0 (via mutateRepo's env).
-      const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
       try {
-        await execFileAsync('git', ['push', remote, '--delete', '--', branch], {
+        await execFileAsync(gitBin, ['push', remote, '--delete', '--', branch], {
           cwd: repoPath,
           env,
         });
@@ -2143,14 +2147,13 @@ function registerRepoIpc(): void {
         // command-exec transports (ext::/fd::). GIT_TERMINAL_PROMPT=0 makes an
         // unauthorized clone fail fast instead of hanging on a prompt.
         const child = spawn(
-          'git',
+          gitBin,
           ['clone', '--progress', '--', cloneUrl, target],
           {
-            env: {
-              ...process.env,
+            env: gitEnv({
               GIT_TERMINAL_PROMPT: '0',
               GIT_ALLOW_PROTOCOL: 'https:http:git:ssh:file',
-            },
+            }),
           },
         );
 

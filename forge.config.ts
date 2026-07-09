@@ -12,9 +12,26 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
+// The bundled git shipped as `extraResource` (see src/git.ts). Single-arch
+// platforms ship dugite's own `git` folder as `resources/git`. The macOS
+// universal build can't use a single-arch git, so its workflow prepares
+// per-arch copies and sets MAC_UNIVERSAL_GIT — we then ship both as
+// `resources/git-arm64` + `resources/git-x64` and pick by arch at runtime.
+const bundledGit = process.env.MAC_UNIVERSAL_GIT
+  ? ['./.git-bundle/git-arm64', './.git-bundle/git-x64']
+  : ['./node_modules/dugite/git'];
+
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    // Ship a self-contained git so the app runs on machines with no git
+    // installed. This is dugite's platform build (~140MB/arch); Packager copies
+    // it into `resources/`, where src/git.ts points `LOCAL_GIT_DIRECTORY` at
+    // runtime. dugite's postinstall only fetches the *host* platform's git, so
+    // each platform's distributable must be built on (or cross-fetched for) that
+    // platform — the release CI runs a job per OS/arch. If the folder is absent
+    // the app falls back to the system git on PATH.
+    extraResource: bundledGit,
     // Base path — Packager appends .icns (macOS) / .ico (Windows) per platform.
     // Generate those from assets/icon.svg; assets/icon.png is a placeholder.
     icon: './assets/icon',
