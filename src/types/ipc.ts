@@ -528,6 +528,45 @@ export const IntegrationChannels = {
   changed: 'integrations:changed',
 } as const;
 
+// ---- Claude Code (local AI helper) ----------------------------------------
+
+/**
+ * The user's Claude Code connection. There is no OAuth/token here (unlike the
+ * Git hosts): "connecting" simply detects the *locally installed* `claude`
+ * binary once and remembers its path, so its own auth does the real work. The
+ * saved path is persisted; `connect` re-detects, `disconnect` forgets it.
+ */
+export interface ClaudeStatus {
+  /** Whether a `claude` binary path is saved (i.e. the user has connected). */
+  connected: boolean;
+  /** Absolute path to the saved binary, when connected. */
+  binaryPath?: string;
+  /** `claude --version` output captured at connect time, when available. */
+  version?: string;
+  /** Message from the most recent failed connect attempt. */
+  error?: string;
+}
+
+/**
+ * Outcome of asking Claude to write a commit message. `not-connected` tells the
+ * renderer to send the user to Settings to connect first.
+ */
+export type GenerateCommitResult =
+  | { status: 'ok'; message: string }
+  | { status: 'not-connected' }
+  | { status: 'error'; message: string };
+
+export const ClaudeChannels = {
+  /** Renderer -> main (invoke): read the saved connection state (no detection). */
+  status: 'claude:status',
+  /** Renderer -> main (invoke): detect + save the `claude` binary path. */
+  connect: 'claude:connect',
+  /** Renderer -> main (invoke): forget the saved `claude` binary path. */
+  disconnect: 'claude:disconnect',
+  /** Renderer -> main (invoke): generate a commit message from the staged diff. */
+  generateCommitMessage: 'claude:generate-commit-message',
+} as const;
+
 // ---- Bridge surface exposed on `window.api` (see preload.ts) --------------
 
 export interface ThemeApi {
@@ -849,6 +888,17 @@ export interface UpdateApi {
   openRelease(url: string): void;
 }
 
+export interface ClaudeApi {
+  /** Read the saved Claude Code connection state. */
+  status(): Promise<ClaudeStatus>;
+  /** Detect the local `claude` binary and remember its path. */
+  connect(): Promise<ClaudeStatus>;
+  /** Forget the saved `claude` binary path. */
+  disconnect(): Promise<ClaudeStatus>;
+  /** Ask Claude to write a commit message for the repo's staged changes. */
+  generateCommitMessage(path: string): Promise<GenerateCommitResult>;
+}
+
 export interface ExposedApi {
   /** Host OS platform, mirrored from the main process' `process.platform`. */
   platform: NodeJS.Platform;
@@ -858,5 +908,6 @@ export interface ExposedApi {
   app: AppApi;
   repo: RepoApi;
   integrations: IntegrationsApi;
+  claude: ClaudeApi;
   update: UpdateApi;
 }

@@ -23,9 +23,21 @@ permissions:
   contents: write # allow creating the Release + uploading assets via GITHUB_TOKEN
 
 jobs:
+  # One DMG per macOS arch instead of a single universal image. Each arch builds
+  # on its native runner — Apple Silicon on macos-latest (arm64), Intel on
+  # macos-13 (the last Intel runner image) — so there's no @electron/universal
+  # stitching step and each app ships a single-arch resources/git.
   build-macos:
     if: ${{ inputs.target == 'all' || inputs.target == 'macos' }}
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -88,31 +100,22 @@ jobs:
           # fail loudly here if the identity didn't land, rather than mid-make
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-      # The universal app carries both arm64 and x64 Electron slices, but
-      # dugite's postinstall only fetched the host arch's git. Cross-fetch the
-      # other arch too and stage both under .git-bundle/, so forge.config (via
-      # MAC_UNIVERSAL_GIT) ships resources/git-arm64 + resources/git-x64 and
-      # src/git.ts picks the slice's arch at runtime. `file` asserts each binary
-      # is the arch we expect, so a silently-wrong download fails the build here.
-      - name: Bundle git for both macOS arches
+      # Re-fetch git for this matrix arch (dugite selects the tarball from
+      # npm_config_arch) so the app ships the matching resources/git — a no-op
+      # re-download when it equals the runner's native arch. `file` asserts the
+      # binary is the arch we expect, so a silently-wrong download fails here.
+      # extraResource then copies node_modules/dugite/git → resources/git.
+      - name: Bundle git for ${{ matrix.arch }}
         run: |
-          mkdir -p .git-bundle
-          npm_config_arch=arm64 node node_modules/dugite/script/download-git.js
-          cp -R node_modules/dugite/git .git-bundle/git-arm64
-          npm_config_arch=x64 node node_modules/dugite/script/download-git.js
-          cp -R node_modules/dugite/git .git-bundle/git-x64
-          file .git-bundle/git-arm64/bin/git | grep -q arm64
-          file .git-bundle/git-x64/bin/git | grep -q x86_64
+          npm_config_arch=${{ matrix.arch }} node node_modules/dugite/script/download-git.js
+          EXPECT=$([ "${{ matrix.arch }}" = "arm64" ] && echo arm64 || echo x86_64)
+          file node_modules/dugite/git/bin/git | grep -q "$EXPECT"
 
-      # Universal build: one DMG carrying both arm64 and x64 slices, so it runs
-      # natively on Apple Silicon and Intel Macs. The arm64 runner builds this
-      # fine — Forge pulls the x64 Electron and merges via @electron/universal,
-      # then signs/notarizes the merged app. MAC_UNIVERSAL_GIT switches
-      # forge.config's extraResource to the two per-arch git dirs staged above.
+      # Per-arch build: one DMG carrying only this arch's slice, signed and
+      # notarized. No MAC_UNIVERSAL_GIT, so forge.config ships the single
+      # resources/git staged above and there's no universal merge step.
       - name: Build macOS distributable
-        env:
-          MAC_UNIVERSAL_GIT: '1'
-        run: npm run make:universal
+        run: npm run make -- --arch=${{ matrix.arch }}
 
       - name: Resolve release tag
         id: meta
@@ -123,18 +126,19 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      # Only this arch's DMG exists under out/make, so the first match is it.
       - name: Stage asset with a stable name
         run: |
           DMG=$(find out/make -name '*.dmg' | head -n1)
           [ -z "$DMG" ] && { echo "No macOS .dmg produced under out/make"; exit 1; }
-          cp "$DMG" "GitLeviathan-macOS.dmg"
+          cp "$DMG" "GitLeviathan-macOS-${{ matrix.arch }}.dmg"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: GitLeviathan ${{ steps.meta.outputs.version }}
-          files: GitLeviathan-macOS.dmg
+          files: GitLeviathan-macOS-${{ matrix.arch }}.dmg
           fail_on_unmatched_files: true
 
   build-windows:

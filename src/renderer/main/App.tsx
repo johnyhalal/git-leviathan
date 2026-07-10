@@ -22,6 +22,7 @@ export function App() {
   ]);
   const [activeId, setActiveId] = useState('tab-1');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<string | undefined>();
   const [cloneOpen, setCloneOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
@@ -217,7 +218,10 @@ export function App() {
             className="icon-button"
             aria-label="Settings"
             title="Settings"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => {
+              setSettingsSection(undefined);
+              setSettingsOpen(true);
+            }}
           >
             <GearIcon />
           </button>
@@ -231,6 +235,10 @@ export function App() {
             repoPath={activeTab.repoPath}
             onError={(title, message) => showToast(title, message, 'error')}
             onNotice={(title, message) => showToast(title, message, 'info')}
+            onOpenSettings={(section) => {
+              setSettingsSection(section);
+              setSettingsOpen(true);
+            }}
           />
         ) : (
           <RepoStart
@@ -258,7 +266,12 @@ export function App() {
         <span className="statusbar-version">v{window.api.version}</span>
       </footer>
 
-      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <Settings
+          initialSection={settingsSection}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
 
       {cloneOpen && (
         <CloneDialog

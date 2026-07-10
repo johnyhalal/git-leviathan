@@ -3,9 +3,11 @@ import type { ComponentType } from 'react';
 import {
   GithubIcon,
   GitlabIcon,
+  SparkleIcon,
   type IconProps,
 } from '../../../../../../assets/icons';
 import type {
+  ClaudeStatus,
   DeviceCodePrompt,
   IntegrationConnection,
   IntegrationProvider,
@@ -134,6 +136,93 @@ const DISCONNECTED = (provider: IntegrationProvider): IntegrationConnection => (
   status: 'disconnected',
 });
 
+/**
+ * Claude Code isn't an OAuth account like the Git hosts — "connecting" detects
+ * the user's locally installed `claude` binary and remembers its path (its own
+ * auth does the work). Connected shows the path/version + a Disconnect; otherwise
+ * a Connect button that runs detection, surfacing an error if none is found.
+ */
+function ClaudeSection() {
+  const [status, setStatus] = useState<ClaudeStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    window.api.claude.status().then((next) => {
+      if (active) setStatus(next);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const connect = () => {
+    setBusy(true);
+    window.api.claude
+      .connect()
+      .then(setStatus)
+      .finally(() => setBusy(false));
+  };
+
+  const disconnect = () => {
+    setBusy(true);
+    window.api.claude
+      .disconnect()
+      .then(setStatus)
+      .finally(() => setBusy(false));
+  };
+
+  const connected = status?.connected ?? false;
+  const label = 'Claude Code';
+  let detail: string;
+  if (connected) {
+    detail = status?.version
+      ? `Connected · ${status.version}`
+      : `Connected · ${status?.binaryPath ?? ''}`;
+  } else if (status?.error) {
+    detail = status.error;
+  } else {
+    detail =
+      'Connect your local Claude Code to generate commit messages — no account needed here.';
+  }
+
+  return (
+    <SettingsSection title={label}>
+      <div className="settings-row">
+        <div className="integration-identity">
+          <span className="integration-icon">
+            <SparkleIcon size={22} />
+          </span>
+          <div className="settings-row-text">
+            <span className="settings-label">{label}</span>
+            <span
+              className={
+                status?.error && !connected
+                  ? 'settings-desc integration-error'
+                  : 'settings-desc'
+              }
+            >
+              {detail}
+            </span>
+          </div>
+        </div>
+        <div className="settings-control">
+          <button
+            type="button"
+            className={
+              connected ? 'pill-btn pill-btn-red' : 'pill-btn pill-btn-green'
+            }
+            disabled={busy}
+            onClick={connected ? disconnect : connect}
+          >
+            {connected ? 'Disconnect' : 'Connect'}
+          </button>
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
 /** Integrations settings — connect external Git hosts. */
 export function IntegrationsPanel() {
   const [state, setState] = useState<IntegrationsState | null>(null);
@@ -210,6 +299,7 @@ export function IntegrationsPanel() {
           />
         );
       })}
+      <ClaudeSection />
     </>
   );
 }

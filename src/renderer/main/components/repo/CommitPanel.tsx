@@ -18,6 +18,7 @@ import {
   PencilIcon,
   PlusIcon,
   SortIcon,
+  SparkleIcon,
   TrashIcon,
   TreeIcon,
 } from '../../../../../assets/icons';
@@ -830,6 +831,8 @@ interface WorkingChangesProps {
   /** The diff target currently shown, so its row can be highlighted. */
   activeDiff: DiffTarget | null;
   onError?: (title: string, message: string) => void;
+  /** Open the settings modal, optionally to a specific section id. */
+  onOpenSettings?: (section?: string) => void;
 }
 
 /** Working-tree staging + commit, backed by real git status/add/reset/commit. */
@@ -844,8 +847,10 @@ function WorkingChanges({
   onOpenDiff,
   activeDiff,
   onError,
+  onOpenSettings,
 }: WorkingChangesProps) {
   const [busy, setBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
   // Shared across both sections: sort direction and list-vs-tree presentation.
   const [asc, setAsc] = useState(true);
   const [mode, setMode] = useState<'list' | 'tree'>('list');
@@ -915,6 +920,22 @@ function WorkingChanges({
       ],
     });
   }, [requestConfirm, repoPath, onStatusChange]);
+
+  const generate = useCallback(async () => {
+    setGenerating(true);
+    const result = await window.api.claude.generateCommitMessage(repoPath);
+    setGenerating(false);
+    if (result.status === 'not-connected') {
+      // Not connected yet — send the user to connect Claude Code in Settings.
+      onOpenSettings?.('integrations');
+      return;
+    }
+    if (result.status === 'error') {
+      onError?.('Generate failed', result.message);
+      return;
+    }
+    onMessageChange(result.message);
+  }, [repoPath, onMessageChange, onError, onOpenSettings]);
 
   const commit = useCallback(async () => {
     setBusy(true);
@@ -1135,6 +1156,26 @@ function WorkingChanges({
             rows={3}
           />
         </div>
+        <div className="commit-message-actions">
+          <button
+              type="button"
+              className="pill-btn pill-btn-rainbow commit-generate-btn tooltip-host"
+              data-tooltip={
+                generating
+                    ? 'Generating…'
+                    : 'Generate a commit message from the staged changes with Claude'
+              }
+              aria-label="Generate commit message with Claude"
+              disabled={generating || staged.length === 0}
+              onClick={() => void generate()}
+          >
+            {generating ? (
+                <span className="mini-spinner" aria-hidden="true" />
+            ) : (
+                <SparkleIcon size={14} />
+            )}
+          </button>
+        </div>
         <button
           type="button"
           className="commit-submit"
@@ -1172,6 +1213,8 @@ interface CommitPanelProps {
   /** The diff target currently shown, so its file row can be highlighted. */
   activeDiff: DiffTarget | null;
   onError?: (title: string, message: string) => void;
+  /** Open the settings modal, optionally to a specific section id. */
+  onOpenSettings?: (section?: string) => void;
 }
 
 /**
@@ -1192,6 +1235,7 @@ export function CommitPanel({
   onOpenDiff,
   activeDiff,
   onError,
+  onOpenSettings,
 }: CommitPanelProps) {
   return commit ? (
     <CommitDetail
@@ -1217,6 +1261,7 @@ export function CommitPanel({
       onOpenDiff={onOpenDiff}
       activeDiff={activeDiff}
       onError={onError}
+      onOpenSettings={onOpenSettings}
     />
   );
 }

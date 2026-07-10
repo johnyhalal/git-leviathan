@@ -20,6 +20,8 @@ interface RepoViewProps {
   onError?: (title: string, message: string) => void;
   /** Surface an informational note (e.g. a merge that was already up to date). */
   onNotice?: (title: string, message: string) => void;
+  /** Open the settings modal, optionally to a specific section id. */
+  onOpenSettings?: (section?: string) => void;
 }
 
 /**
@@ -30,7 +32,13 @@ interface RepoViewProps {
 /** How many commits to fetch per page (initial load and each "load more"). */
 const PAGE_SIZE = 500;
 
-export function RepoView({ title, repoPath, onError, onNotice }: RepoViewProps) {
+export function RepoView({
+  title,
+  repoPath,
+  onError,
+  onNotice,
+  onOpenSettings,
+}: RepoViewProps) {
   void title;
 
   const [refs, setRefs] = useState<RepoRefs | null>(null);
@@ -429,6 +437,7 @@ export function RepoView({ title, repoPath, onError, onNotice }: RepoViewProps) 
           onGitflowStart={(kind, name) => void gitflowStart(kind, name)}
           onGitflowFinish={() => void gitflowFinish()}
           onError={onError}
+          onOpenSettings={onOpenSettings}
         />
       </ConfirmProvider>
     </div>

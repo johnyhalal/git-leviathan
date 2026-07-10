@@ -18,11 +18,20 @@ import { createHash } from 'node:crypto';
 import started from 'electron-squirrel-startup';
 import { gitBin, gitEnv } from './git';
 import {
+  probeClaude,
+  generateCommitMessage,
+  claudeErrorMessage,
+  isRunnable,
+} from './claude';
+import {
   AppChannels,
+  ClaudeChannels,
   IntegrationChannels,
   RepoChannels,
   ThemeChannels,
   UpdateChannels,
+  type ClaudeStatus,
+  type GenerateCommitResult,
   type CloneProgress,
   type CloneRequest,
   type CloneResult,
@@ -164,6 +173,14 @@ interface Settings {
   integrations?: Partial<Record<IntegrationProvider, IntegrationConnection>>;
   /** SSH keys generated and uploaded from this app, keyed by provider id. */
   sshKeys?: Partial<Record<IntegrationProvider, SshKeyInfo[]>>;
+  /** Saved Claude Code connection (detected `claude` binary), when connected. */
+  claudeConnection?: ClaudeConnection;
+}
+
+/** The persisted Claude Code connection: the binary we detected on connect. */
+interface ClaudeConnection {
+  binaryPath: string;
+  version?: string;
 }
 
 const DEFAULT_WINDOW = { width: 1100, height: 720 } as const;
@@ -240,6 +257,15 @@ function isSshKeyInfo(value: unknown): value is SshKeyInfo {
   );
 }
 
+function isClaudeConnection(value: unknown): value is ClaudeConnection {
+  if (!value || typeof value !== 'object') return false;
+  const c = value as Record<string, unknown>;
+  return (
+    typeof c.binaryPath === 'string' &&
+    (c.version === undefined || typeof c.version === 'string')
+  );
+}
+
 function loadSettings(): void {
   try {
     const parsed = JSON.parse(
@@ -304,6 +330,9 @@ function loadSettings(): void {
         }
       }
       settings.sshKeys = valid;
+    }
+    if (isClaudeConnection(parsed.claudeConnection)) {
+      settings.claudeConnection = parsed.claudeConnection;
     }
   } catch {
     // No settings file yet or it is unreadable — fall back to defaults.
@@ -441,6 +470,63 @@ function redactSecrets(text: string, token: string | null): string {
   let out = text;
   if (token) out = out.split(token).join('***');
   return out.replace(/\/\/[^@\s/]+@/g, '//');
+}
+
+/**
+ * Leading `-c` git options that authenticate an HTTPS github.com / gitlab.com
+ * remote with the stored OAuth token, by adding a host-scoped `Authorization`
+ * header — so push/pull/fetch don't hit a credential prompt (which
+ * `GIT_TERMINAL_PROMPT=0` turns into a hard failure). Empty when the URL isn't
+ * an authenticatable HTTPS host or no token is stored, letting git fall back to
+ * its own credential lookup. Unlike embedding the token in the URL, the header
+ * approach leaves the command's refspecs untouched.
+ */
+function remoteAuthConfigArgs(remoteUrl: string): string[] {
+  try {
+    const parsed = new URL(remoteUrl);
+    if (parsed.protocol !== 'https:') return [];
+    const provider = providerForHost(parsed.hostname);
+    if (!provider) return [];
+    const token = getToken(provider);
+    if (!token) return [];
+    const basic = Buffer.from(
+      `${CLONE_AUTH_USERNAME[provider]}:${token}`,
+    ).toString('base64');
+    // Scope the header to this remote's host so it's never sent elsewhere.
+    const base = `${parsed.protocol}//${parsed.host}/`;
+    return ['-c', `http.${base}.extraheader=Authorization: Basic ${basic}`];
+  } catch {
+    // Not a standard URL (e.g. an scp-like SSH remote) — nothing to inject.
+    return [];
+  }
+}
+
+/**
+ * Auth `-c` args for the given remotes (deduped by host), for prefixing a
+ * push/pull/fetch that talks to them. Reads each remote's fetch URL to decide.
+ */
+async function authArgsForRemotes(
+  cwd: string,
+  remotes: string[],
+): Promise<string[]> {
+  const args: string[] = [];
+  const seen = new Set<string>();
+  for (const remote of remotes) {
+    const url = (await runGit(cwd, ['remote', 'get-url', remote])).trim();
+    if (!url) continue;
+    const configArg = remoteAuthConfigArgs(url)[1];
+    if (configArg && !seen.has(configArg)) {
+      seen.add(configArg);
+      args.push('-c', configArg);
+    }
+  }
+  return args;
+}
+
+/** The remote name embedded in an upstream ref like `origin/main` (before the first `/`). */
+function remoteOfUpstream(upstream: string): string {
+  const slash = upstream.indexOf('/');
+  return slash === -1 ? upstream : upstream.slice(0, slash);
 }
 
 interface RunningClone {
@@ -1333,8 +1419,9 @@ async function pushCurrent(cwd: string): Promise<PushResult> {
   ).trim();
 
   if (upstream) {
+    const authArgs = await authArgsForRemotes(cwd, [remoteOfUpstream(upstream)]);
     try {
-      await execFileAsync(gitBin, ['push'], { cwd, env });
+      await execFileAsync(gitBin, [...authArgs, 'push'], { cwd, env });
       return { status: 'ok' };
     } catch (err) {
       return { status: 'error', message: pushErrorMessage(err) };
@@ -1399,8 +1486,9 @@ async function pushSetUpstream(
   // Use an explicit `local:remote` refspec only when the names differ, so the
   // branch is created under the requested name on the remote.
   const refspec = remoteBranch === branch ? branch : `${branch}:${remoteBranch}`;
+  const authArgs = await authArgsForRemotes(cwd, [remote]);
   try {
-    await execFileAsync(gitBin, ['push', '--set-upstream', remote, refspec], { cwd, env });
+    await execFileAsync(gitBin, [...authArgs, 'push', '--set-upstream', remote, refspec], { cwd, env });
     return { status: 'ok' };
   } catch (err) {
     return { status: 'error', message: pushErrorMessage(err) };
@@ -1445,8 +1533,25 @@ async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
         : mode === 'rebase'
           ? ['pull', '--rebase']
           : ['pull'];
+
+  // `fetch --all` touches every remote; the pull modes talk to the current
+  // branch's upstream. Authenticate whichever remotes are involved.
+  let remotes: string[];
+  if (mode === 'fetch-all') {
+    remotes = (await runGit(cwd, ['remote']))
+      .split('\n')
+      .map((name) => name.trim())
+      .filter(Boolean);
+  } else {
+    const upstream = (
+      await runGit(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
+    ).trim();
+    remotes = upstream ? [remoteOfUpstream(upstream)] : [];
+  }
+  const authArgs = await authArgsForRemotes(cwd, remotes);
+
   try {
-    await execFileAsync(gitBin, args, { cwd, env });
+    await execFileAsync(gitBin, [...authArgs, ...args], { cwd, env });
     return { status: 'ok' };
   } catch (err) {
     return { status: 'error', message: pullErrorMessage(err) };
@@ -2014,11 +2119,13 @@ function registerRepoIpc(): void {
       // prunes the local remote-tracking ref. It hits the network, so use the
       // push error mapper and keep GIT_TERMINAL_PROMPT=0 (via mutateRepo's env).
       const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+      const authArgs = await authArgsForRemotes(repoPath, [remote]);
       try {
-        await execFileAsync(gitBin, ['push', remote, '--delete', '--', branch], {
-          cwd: repoPath,
-          env,
-        });
+        await execFileAsync(
+          gitBin,
+          [...authArgs, 'push', remote, '--delete', '--', branch],
+          { cwd: repoPath, env },
+        );
       } catch (err) {
         return { status: 'error', message: pushErrorMessage(err) };
       }
@@ -3171,6 +3278,97 @@ function boot(): void {
   setTimeout(() => reveal('fallback-timeout'), REVEAL_FALLBACK_MS);
 }
 
+/**
+ * Local Claude Code integration. No token/OAuth: "connecting" detects the user's
+ * own `claude` binary once and remembers its path in settings; its own auth does
+ * the work. `status`/`connect`/`disconnect` back the Integrations settings row;
+ * `generateCommitMessage` (which uses the saved path, no re-detection) backs the
+ * commit panel.
+ */
+function registerClaudeIpc(): void {
+  const currentStatus = (error?: string): ClaudeStatus => ({
+    connected: Boolean(settings.claudeConnection),
+    binaryPath: settings.claudeConnection?.binaryPath,
+    version: settings.claudeConnection?.version,
+    error,
+  });
+
+  ipcMain.handle(ClaudeChannels.status, (): ClaudeStatus => currentStatus());
+
+  ipcMain.handle(
+    ClaudeChannels.connect,
+    async (): Promise<ClaudeStatus> => {
+      const probe = await probeClaude(null);
+      if (!probe.installed || !probe.binaryPath) {
+        return currentStatus(
+          'Claude Code was not found. Install it and sign in, then try again.',
+        );
+      }
+      settings.claudeConnection = {
+        binaryPath: probe.binaryPath,
+        version: probe.version,
+      };
+      saveSettings();
+      return currentStatus();
+    },
+  );
+
+  ipcMain.handle(ClaudeChannels.disconnect, (): ClaudeStatus => {
+    if (settings.claudeConnection) {
+      delete settings.claudeConnection;
+      saveSettings();
+    }
+    return currentStatus();
+  });
+
+  ipcMain.handle(
+    ClaudeChannels.generateCommitMessage,
+    async (_event, repoPath: unknown): Promise<GenerateCommitResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Use the saved path directly — no per-click detection. A stale path
+      // (binary moved/uninstalled) drops back to "not connected" so the user
+      // is nudged to reconnect rather than shown a cryptic spawn error.
+      const bin = settings.claudeConnection?.binaryPath;
+      if (!bin || !isRunnable(bin)) {
+        if (bin) {
+          delete settings.claudeConnection;
+          saveSettings();
+        }
+        return { status: 'not-connected' };
+      }
+      const diff = await runGitDiff(repoPath, ['diff', '--cached']);
+      if (!diff.trim()) {
+        return {
+          status: 'error',
+          message: 'Nothing staged to describe. Stage some changes first.',
+        };
+      }
+      const recentSubjects = (
+        await runGit(repoPath, ['log', '-n', '10', '--format=%s'])
+      )
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      try {
+        const message = await generateCommitMessage(
+          bin,
+          diff,
+          recentSubjects,
+          repoPath,
+        );
+        if (!message.trim()) {
+          return { status: 'error', message: 'Claude returned an empty message.' };
+        }
+        return { status: 'ok', message: message.trim() };
+      } catch (err) {
+        return { status: 'error', message: claudeErrorMessage(err) };
+      }
+    },
+  );
+}
+
 function registerAppIpc(): void {
   ipcMain.handle(
     AppChannels.getSidebarSections,
@@ -3293,6 +3491,7 @@ app.on('ready', () => {
   registerThemeIpc();
   registerRepoIpc();
   registerIntegrationsIpc();
+  registerClaudeIpc();
   registerAppIpc();
   registerUpdateIpc();
   console.log(

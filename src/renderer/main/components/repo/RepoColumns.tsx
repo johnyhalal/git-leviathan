@@ -60,6 +60,8 @@ interface RepoColumnsProps {
   /** Finish the current gitflow topic branch. */
   onGitflowFinish: () => void;
   onError?: (title: string, message: string) => void;
+  /** Open the settings modal, optionally to a specific section id. */
+  onOpenSettings?: (section?: string) => void;
 }
 
 /**
@@ -94,6 +96,7 @@ export function RepoColumns({
   onGitflowStart,
   onGitflowFinish,
   onError,
+  onOpenSettings,
 }: RepoColumnsProps) {
   const { leftWidth, rightWidth, startResize } = useResizableColumns(240, 320);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
@@ -248,6 +251,7 @@ export function RepoColumns({
           onOpenDiff={setDiffTarget}
           activeDiff={diffTarget}
           onError={onError}
+          onOpenSettings={onOpenSettings}
         />
       </div>
     </div>

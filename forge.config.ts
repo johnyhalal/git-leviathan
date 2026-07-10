@@ -32,6 +32,16 @@ const config: ForgeConfig = {
     // platform — the release CI runs a job per OS/arch. If the folder is absent
     // the app falls back to the system git on PATH.
     extraResource: bundledGit,
+    // Universal (x64+arm64) stitching: @electron/universal lipo-merges Mach-O
+    // binaries that differ per arch, but errors on a Mach-O file that's
+    // byte-identical in both builds unless it's declared single-arch. We ship
+    // BOTH per-arch gits (git-arm64 + git-x64) in every build and pick by arch
+    // at runtime (see src/git.ts), so each git folder's binaries are identical
+    // across the x64 and arm64 builds — declare them here so stitching accepts
+    // them instead of failing with "not covered by the x64ArchFiles rule".
+    osxUniversal: {
+      x64ArchFiles: '**/git-{arm64,x64}/**',
+    },
     // Base path — Packager appends .icns (macOS) / .ico (Windows) per platform.
     // Generate those from assets/icon.svg; assets/icon.png is a placeholder.
     icon: './assets/icon',

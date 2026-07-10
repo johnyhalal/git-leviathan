@@ -381,6 +381,37 @@ h1 {
   --pill-color: var(--fg-muted);
 }
 
+/* Gradient variant. Unlike the single-tint variants above (which flow through
+   `--pill-color`), rainbow paints a translucent gradient fill (padding-box)
+   inside a solid gradient border (border-box). Adjust the stops to taste;
+   purple → pink for now. */
+.pill-btn-rainbow {
+  --rainbow-from: #a855f7;
+  --rainbow-to: #ec4899;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--rainbow-from) 22%, var(--bg)),
+        color-mix(in srgb, var(--rainbow-to) 22%, var(--bg))
+      )
+      padding-box,
+    linear-gradient(135deg, var(--rainbow-from), var(--rainbow-to)) border-box;
+  color: var(--fg);
+}
+
+.pill-btn-rainbow:hover {
+  border-color: transparent;
+  background:
+    linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--rainbow-from) 38%, var(--bg)),
+        color-mix(in srgb, var(--rainbow-to) 38%, var(--bg))
+      )
+      padding-box,
+    linear-gradient(135deg, var(--rainbow-from), var(--rainbow-to)) border-box;
+}
+
 /* ---- Repo start (empty tab: open / clone / create + recents) ------------- */
 
 .repo-start {
@@ -806,6 +837,8 @@ h1 {
 
 .settings-control {
   flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
 }
 
 .settings-empty {
@@ -3814,6 +3847,7 @@ body.is-row-resizing {
 
 /* --- Commit message box (working-tree view) --- */
 .commit-message-box {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -3882,6 +3916,49 @@ body.is-row-resizing {
 /* Over the guideline: soft yellow warning, never a hard block. */
 .commit-summary-counter.is-over {
   color: #d29922;
+}
+
+/* Right-aligned action row for the "Generate with Claude" pill. In normal flow
+   (not floated) so the button is always visible and its tooltip isn't clipped. */
+.commit-message-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* The panel sits at the window's bottom edge, so open the bubble upward and
+   point its arrow down, rather than the default downward placement. */
+.commit-generate-btn.tooltip-host::after {
+  top: auto;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%) translateY(-4px);
+}
+
+.commit-generate-btn.tooltip-host:hover::after,
+.commit-generate-btn.tooltip-host:focus-visible::after {
+  transform: translateX(-50%) translateY(0);
+}
+
+.commit-generate-btn.tooltip-host::before {
+  top: auto;
+  bottom: calc(100% + 3px);
+  border-bottom-color: transparent;
+  border-top-color: var(--bg-elev);
+}
+
+/* Small inline loading spinner (icon-sized). */
+.mini-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: mini-spin 0.6s linear infinite;
+}
+
+@keyframes mini-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .commit-message-description {

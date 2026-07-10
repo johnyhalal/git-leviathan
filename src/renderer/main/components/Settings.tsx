@@ -4,11 +4,17 @@ import { SETTINGS_SECTIONS } from './settings/sections';
 
 interface SettingsProps {
   onClose: () => void;
+  /** Section to open on mount; defaults to the first (General). */
+  initialSection?: string;
 }
 
 /** Modal settings dialog: a category rail on the left, the active panel on the right. */
-export function Settings({ onClose }: SettingsProps) {
-  const [activeId, setActiveId] = useState(SETTINGS_SECTIONS[0].id);
+export function Settings({ onClose, initialSection }: SettingsProps) {
+  const [activeId, setActiveId] = useState(
+    () =>
+      SETTINGS_SECTIONS.find((section) => section.id === initialSection)?.id ??
+      SETTINGS_SECTIONS[0].id,
+  );
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

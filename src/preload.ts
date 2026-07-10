@@ -1,10 +1,13 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   AppChannels,
+  ClaudeChannels,
   IntegrationChannels,
   RepoChannels,
   ThemeChannels,
   UpdateChannels,
+  type ClaudeStatus,
+  type GenerateCommitResult,
   type CheckoutResult,
   type RefsMutationResult,
   type UndoRedoState,
@@ -221,6 +224,17 @@ const api: ExposedApi = {
       return () =>
         ipcRenderer.removeListener(IntegrationChannels.changed, listener);
     },
+  },
+  claude: {
+    status: () => ipcRenderer.invoke(ClaudeChannels.status) as Promise<ClaudeStatus>,
+    connect: () => ipcRenderer.invoke(ClaudeChannels.connect) as Promise<ClaudeStatus>,
+    disconnect: () =>
+      ipcRenderer.invoke(ClaudeChannels.disconnect) as Promise<ClaudeStatus>,
+    generateCommitMessage: (path: string) =>
+      ipcRenderer.invoke(
+        ClaudeChannels.generateCommitMessage,
+        path,
+      ) as Promise<GenerateCommitResult>,
   },
   update: {
     check: () =>
