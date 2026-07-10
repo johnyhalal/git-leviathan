@@ -23,10 +23,14 @@ permissions:
   contents: write # allow creating the Release + uploading assets via GITHUB_TOKEN
 
 jobs:
-  # One DMG per macOS arch instead of a single universal image. Each arch builds
-  # on its native runner — Apple Silicon on macos-latest (arm64), Intel on
-  # macos-13 (the last Intel runner image) — so there's no @electron/universal
-  # stitching step and each app ships a single-arch resources/git.
+  # One DMG per macOS arch instead of a single universal image. Both arches build
+  # on Apple Silicon runners (macos-latest): arm64 natively, x64 cross-compiled
+  # via `--arch=x64`. Nothing here is host-arch-bound — Electron's binary is
+  # picked by --arch (not the host), resources/git is re-fetched per arch from
+  # dugite below, and codesign/notarization are arch-agnostic — so there's no
+  # need for the retired Intel `macos-13` image (its label never gets a runner,
+  # hanging the job forever). No @electron/universal stitching; each app ships a
+  # single-arch resources/git.
   build-macos:
     if: ${{ inputs.target == 'all' || inputs.target == 'macos' }}
     strategy:
@@ -36,7 +40,7 @@ jobs:
           - arch: arm64
             runner: macos-latest
           - arch: x64
-            runner: macos-13
+            runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
