@@ -10,15 +10,16 @@ Grab the latest build for your platform from the
 
 | Platform | Download |
 | --- | --- |
-| **macOS** (Intel & Apple Silicon) | [GitLeviathan-macOS.dmg](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-macOS.dmg) |
+| **macOS** | [Apple Silicon](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-macOS-arm64.dmg) · [Intel](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-macOS-x64.dmg) |
 | **Windows** | [GitLeviathan-Windows-Setup.exe](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-Windows-Setup.exe) |
 | **Linux — Debian/Ubuntu** (`.deb`) | [x64](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-Linux-x64.deb) · [arm64](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-Linux-arm64.deb) |
 | **Linux — Fedora/RHEL** (`.rpm`) | [x64](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-Linux-x64.rpm) · [arm64](https://github.com/johnyhalal/git-leviathan/releases/latest/download/GitLeviathan-Linux-arm64.rpm) |
 
 ### macOS
 
-The `.dmg` is a single universal build that runs natively on both Intel and
-Apple Silicon. Open it and drag **GitLeviathan** onto the **Applications**
+There's a separate `.dmg` per architecture — pick **Apple Silicon** for M1 or
+newer Macs and **Intel** for older ones (if unsure, check  → About This
+Mac). Open the `.dmg` and drag **GitLeviathan** onto the **Applications**
 shortcut. The app is Developer ID signed and notarized by Apple, so it launches
 without any Gatekeeper warnings — no `xattr` workaround needed.
 
