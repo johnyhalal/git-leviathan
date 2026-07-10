@@ -851,6 +851,13 @@ function WorkingChanges({
 }: WorkingChangesProps) {
   const [busy, setBusy] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // When set, a successful commit is immediately pushed to its upstream.
+  const [pushAfterCommit, setPushAfterCommit] = useState(false);
+  // When set, the commit rewrites HEAD in place instead of adding a new one.
+  const [amendCommit, setAmendCommit] = useState(false);
+  // The message the user had typed before ticking "Amend", restored on untick so
+  // loading HEAD's message doesn't destroy their in-progress draft.
+  const preAmendMessage = useRef('');
   // Shared across both sections: sort direction and list-vs-tree presentation.
   const [asc, setAsc] = useState(true);
   const [mode, setMode] = useState<'list' | 'tree'>('list');
@@ -939,16 +946,47 @@ function WorkingChanges({
 
   const commit = useCallback(async () => {
     setBusy(true);
-    const result = await window.api.repo.commit(repoPath, message);
-    setBusy(false);
+    const result = await window.api.repo.commit(repoPath, message, amendCommit);
     if (result.status === 'error') {
+      setBusy(false);
       onError?.('Commit failed', result.message);
       return;
     }
     onMessageChange('');
     onStatusChange(await window.api.repo.status(repoPath));
+    // Optionally push the fresh commit to its upstream before finishing. An amend
+    // rewrites history, so force (with lease) to get past the non-fast-forward.
+    if (pushAfterCommit) {
+      const pushed = await window.api.repo.push(repoPath, amendCommit);
+      if (pushed.status === 'needs-upstream') {
+        onError?.(
+          'Push skipped',
+          `Committed, but "${pushed.branch}" has no upstream yet. Push it from the toolbar to publish the branch.`,
+        );
+      } else if (pushed.status === 'error') {
+        onError?.('Push failed', pushed.message);
+      }
+    }
+    setBusy(false);
+    setAmendCommit(false);
     onCommitted();
-  }, [repoPath, message, onMessageChange, onStatusChange, onCommitted, onError]);
+  }, [repoPath, message, amendCommit, pushAfterCommit, onMessageChange, onStatusChange, onCommitted, onError]);
+
+  // Ticking "Amend" loads HEAD's message into the fields (stashing the current
+  // draft first); unticking restores the draft.
+  const toggleAmend = useCallback(
+    async (checked: boolean) => {
+      setAmendCommit(checked);
+      if (checked) {
+        preAmendMessage.current = message;
+        const head = await window.api.repo.headMessage(repoPath);
+        if (head) onMessageChange(head);
+      } else {
+        onMessageChange(preAmendMessage.current);
+      }
+    },
+    [repoPath, message, onMessageChange],
+  );
 
   // Drag the divider: convert the pointer's Y within the body to a top/bottom
   // split ratio, clamped so neither section fully collapses.
@@ -988,7 +1026,8 @@ function WorkingChanges({
   // The shared message is one string; split it into the subject + description
   // fields and recompose on edit so the working row's inline input stays mirrored.
   const { subject, body } = splitMessage(message);
-  const canCommit = staged.length > 0 && subject.trim().length > 0 && !busy;
+  // Amending can rewrite just the message, so it doesn't require staged files.
+  const canCommit = (staged.length > 0 || amendCommit) && subject.trim().length > 0 && !busy;
 
   return (
     <aside className="commit-panel" aria-label="Commit changes">
@@ -1137,7 +1176,7 @@ function WorkingChanges({
 
       <div className="commit-message-box">
         <div className="commit-message-fields">
-          <div className="commit-message-subject-row">
+          <div className="commit-message-subject-row commit-message-subject-row--generate">
             <input
               className="commit-message-subject"
               placeholder="Summary"
@@ -1145,7 +1184,35 @@ function WorkingChanges({
               value={subject}
               onChange={(event) => onMessageChange(composeMessage(event.target.value, body))}
             />
-            <SummaryCounter length={subject.length} />
+            <div className="commit-subject-trailing">
+              <SummaryCounter length={subject.length} />
+              {/* Tooltip lives on the wrapper span: a disabled button gets no
+                  hover, so the "stage first" hint would never show otherwise. */}
+              <span
+                className="commit-generate-tip tooltip-host"
+                data-tooltip={
+                  generating
+                    ? 'Generating…'
+                    : staged.length === 0
+                      ? 'You must stage the changes'
+                      : 'Generate a commit message from the staged changes with Claude'
+                }
+              >
+                <button
+                  type="button"
+                  className="pill-btn pill-btn-rainbow commit-generate-btn"
+                  aria-label="Generate commit message with Claude"
+                  disabled={generating || staged.length === 0}
+                  onClick={() => void generate()}
+                >
+                  {generating ? (
+                    <span className="mini-spinner" aria-hidden="true" />
+                  ) : (
+                    <SparkleIcon size={14} />
+                  )}
+                </button>
+              </span>
+            </div>
           </div>
           <textarea
             className="commit-message-description"
@@ -1157,24 +1224,22 @@ function WorkingChanges({
           />
         </div>
         <div className="commit-message-actions">
-          <button
-              type="button"
-              className="pill-btn pill-btn-rainbow commit-generate-btn tooltip-host"
-              data-tooltip={
-                generating
-                    ? 'Generating…'
-                    : 'Generate a commit message from the staged changes with Claude'
-              }
-              aria-label="Generate commit message with Claude"
-              disabled={generating || staged.length === 0}
-              onClick={() => void generate()}
-          >
-            {generating ? (
-                <span className="mini-spinner" aria-hidden="true" />
-            ) : (
-                <SparkleIcon size={14} />
-            )}
-          </button>
+          <label className="commit-action-check">
+            <input
+              type="checkbox"
+              checked={pushAfterCommit}
+              onChange={(event) => setPushAfterCommit(event.target.checked)}
+            />
+            Push after commit
+          </label>
+          <label className="commit-action-check">
+            <input
+              type="checkbox"
+              checked={amendCommit}
+              onChange={(event) => void toggleAmend(event.target.checked)}
+            />
+            Amend commit
+          </label>
         </div>
         <button
           type="button"
@@ -1182,7 +1247,8 @@ function WorkingChanges({
           disabled={!canCommit}
           onClick={() => void commit()}
         >
-          Commit{staged.length > 0 ? ` (${staged.length})` : ''}
+          {amendCommit ? 'Amend' : 'Commit'}
+          {staged.length > 0 ? ` (${staged.length})` : ''}
         </button>
       </div>
     </aside>

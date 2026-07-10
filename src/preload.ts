@@ -92,8 +92,10 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.unstage, path, file) as Promise<WorkingStatus>,
     discardAll: (path: string) =>
       ipcRenderer.invoke(RepoChannels.discardAll, path) as Promise<WorkingStatus>,
-    commit: (path: string, message: string) =>
-      ipcRenderer.invoke(RepoChannels.commit, path, message) as Promise<CommitResult>,
+    commit: (path: string, message: string, amend?: boolean) =>
+      ipcRenderer.invoke(RepoChannels.commit, path, message, amend) as Promise<CommitResult>,
+    headMessage: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.headMessage, path) as Promise<string>,
     reword: (path: string, hash: string, message: string) =>
       ipcRenderer.invoke(RepoChannels.reword, path, hash, message) as Promise<CommitResult>,
     rewordCount: (path: string, hash: string) =>
@@ -104,8 +106,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.undo, path) as Promise<RefsMutationResult>,
     redo: (path: string) =>
       ipcRenderer.invoke(RepoChannels.redo, path) as Promise<RefsMutationResult>,
-    push: (path: string) =>
-      ipcRenderer.invoke(RepoChannels.push, path) as Promise<PushResult>,
+    push: (path: string, force?: boolean) =>
+      ipcRenderer.invoke(RepoChannels.push, path, force) as Promise<PushResult>,
     pushSetUpstream: (path: string, remote: string, branch: string, remoteBranch?: string) =>
       ipcRenderer.invoke(
         RepoChannels.pushSetUpstream,

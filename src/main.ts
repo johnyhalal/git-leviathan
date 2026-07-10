@@ -83,7 +83,10 @@ import { generateSshKeyPair } from './ssh/keygen';
 // notifications and the About panel all say "GitLeviathan" rather than
 // Electron's default. (In dev the dock/menu label additionally comes from the
 // Electron.app bundle's Info.plist — see scripts/rename-dev-app.mjs.)
-app.setName('GitLeviathan');
+// The unpackaged (dev) build gets a distinct name so it resolves a separate
+// userData dir ("GitLeviathan Dev") and never shares settings.json /
+// integration-tokens.json with an installed production app.
+app.setName(app.isPackaged ? 'GitLeviathan' : 'GitLeviathan Dev');
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -1538,7 +1541,7 @@ function pushErrorMessage(err: unknown): string {
  * remote is missing or ambiguous. GIT_TERMINAL_PROMPT=0 keeps a credential prompt
  * from hanging the app — an auth-required HTTPS remote surfaces as an error.
  */
-async function pushCurrent(cwd: string): Promise<PushResult> {
+async function pushCurrent(cwd: string, force = false): Promise<PushResult> {
   const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
   const branch = (await runGit(cwd, ['symbolic-ref', '--short', 'HEAD'])).trim();
   if (!branch) {
@@ -1550,8 +1553,11 @@ async function pushCurrent(cwd: string): Promise<PushResult> {
 
   if (upstream) {
     const authArgs = await authArgsForRemotes(cwd, [remoteOfUpstream(upstream)]);
+    // A rewritten history (e.g. after an amend) is not a fast-forward; force with
+    // lease so the push still aborts if the remote moved under us.
+    const pushArgs = force ? ['push', '--force-with-lease'] : ['push'];
     try {
-      await spawnGit(cwd, [...authArgs, 'push'], 'push', env);
+      await spawnGit(cwd, [...authArgs, ...pushArgs], 'push', env);
       return { status: 'ok' };
     } catch (err) {
       return { status: 'error', message: pushErrorMessage(err) };
@@ -1970,18 +1976,27 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.commit,
-    async (_event, repoPath: unknown, message: unknown): Promise<CommitResult> => {
+    async (_event, repoPath: unknown, message: unknown, amend: unknown): Promise<CommitResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
       }
       const text = typeof message === 'string' ? message.trim() : '';
       if (!text) return { status: 'error', message: 'Enter a commit message.' };
+      const args = amend === true ? ['commit', '--amend', '-m', text] : ['commit', '-m', text];
       try {
-        await spawnGit(repoPath, ['commit', '-m', text], 'commit');
+        await spawnGit(repoPath, args, 'commit');
       } catch (err) {
         return { status: 'error', message: gitErrorMessage(err, 'Commit failed.') };
       }
       return { status: 'ok' };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.headMessage,
+    async (_event, repoPath: unknown): Promise<string> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return '';
+      return (await runGit(repoPath, ['log', '-1', '--pretty=%B'])).replace(/\n+$/, '');
     },
   );
 
@@ -2071,11 +2086,11 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.push,
-    async (_event, repoPath: unknown): Promise<PushResult> => {
+    async (_event, repoPath: unknown, force: unknown): Promise<PushResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
       }
-      return pushCurrent(repoPath);
+      return pushCurrent(repoPath, force === true);
     },
   );
 

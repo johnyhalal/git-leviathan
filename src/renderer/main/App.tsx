@@ -5,6 +5,7 @@ import { ToastStack, type ToastData, type ToastVariant } from './components/Toas
 import { Settings } from './components/Settings';
 import { CloneDialog } from './components/CloneDialog';
 import { RepoView } from './components/repo/RepoView';
+import { ActivityLog } from './components/repo/ActivityLog';
 import { GearIcon } from '../../../assets/icons';
 import type { RepoInfo, UpdateInfo, UpdateStatus } from '../../types/ipc';
 
@@ -311,6 +312,7 @@ export function App() {
       </main>
 
       <footer className="statusbar">
+        {activeTab.repoPath && <ActivityLog repoPath={activeTab.repoPath} />}
         {renderUpdateButton(update, updateStatus)}
         <span className="statusbar-version">v{window.api.version}</span>
       </footer>

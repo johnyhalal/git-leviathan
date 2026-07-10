@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { CloseIcon, ListIcon } from '../../../../../assets/icons';
 import type { RepoActivityEvent } from '../../../../types/ipc';
 
 interface ActivityLogProps {
-  /** The repo whose git activity this footer shows; events for others are ignored. */
+  /** The repo whose git activity this indicator shows; events for others are ignored. */
   repoPath: string;
 }
 
@@ -22,19 +23,19 @@ interface LogRecord {
 const MAX_RECORDS = 1000;
 
 /**
- * A footer activity log for the open repository. Subscribes to the main
- * process' live git activity stream and shows each mutation's output —
- * including the output of repository hooks (a `pre-commit` test run, a
- * `pre-push` check) — line by line as it happens. Collapsed, it shows a status
- * dot and the latest line; expanded, the full session transcript. State is
- * in-memory and per session: it resets when the tab switches to another repo.
+ * The live git activity indicator for the open repository. It lives in the
+ * status bar's left corner as an icon plus a one-line status summary, and opens
+ * a modal popup (styled like the Settings dialog) with the full session
+ * transcript — each mutation's output line by line, including repository hook
+ * output (a `pre-commit` test run, a `pre-push` check). State is in-memory and
+ * per session: it resets when the tab switches to another repo.
  */
 export function ActivityLog({ repoPath }: ActivityLogProps) {
   const [records, setRecords] = useState<LogRecord[]>([]);
   const [running, setRunning] = useState<string | null>(null);
-  // The outcome of the last finished command, for the collapsed status dot.
+  // The outcome of the last finished command, for the status color.
   const [lastOk, setLastOk] = useState<boolean | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
   const idRef = useRef(0);
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
@@ -60,12 +61,22 @@ export function ActivityLog({ repoPath }: ActivityLogProps) {
     });
   }, [repoPath]);
 
-  // Keep the newest output in view while the panel is open.
+  // Keep the newest output in view while the popup is open.
   useLayoutEffect(() => {
-    if (expanded && bodyRef.current) {
+    if (open && bodyRef.current) {
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
     }
-  }, [records, expanded]);
+  }, [records, open]);
+
+  // Escape closes the popup, matching the Settings dialog.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open]);
 
   const last = records[records.length - 1];
   const summary = running
@@ -73,38 +84,54 @@ export function ActivityLog({ repoPath }: ActivityLogProps) {
     : last?.text?.trim() ||
       (lastOk === false ? 'Last command failed' : records.length ? 'Done' : 'No activity yet');
 
-  const dotClass = running
-    ? 'activity-dot activity-dot--running'
-    : lastOk === false
-      ? 'activity-dot activity-dot--error'
-      : lastOk
-        ? 'activity-dot activity-dot--ok'
-        : 'activity-dot';
+  const state = running ? 'running' : lastOk === false ? 'error' : lastOk ? 'ok' : 'idle';
 
   return (
-    <div className={`activity-log${expanded ? ' activity-log--expanded' : ''}`}>
-      {expanded && (
-        <div className="activity-log__body" ref={bodyRef}>
-          {records.length === 0 ? (
-            <div className="activity-line activity-line--muted">
-              Git output — including hook output like a pre-commit test run — appears here.
-            </div>
-          ) : (
-            records.map((record) => <ActivityRow key={record.id} record={record} />)
-          )}
-        </div>
-      )}
+    <>
       <button
         type="button"
-        className="activity-log__bar"
-        onClick={() => setExpanded((on) => !on)}
-        title={expanded ? 'Hide activity log' : 'Show activity log'}
+        className={`activity-indicator activity-indicator--${state}`}
+        onClick={() => setOpen(true)}
+        title="Show activity log"
       >
-        <span className={dotClass} />
-        <span className="activity-log__summary">{summary}</span>
-        <span className="activity-log__chevron">{expanded ? '▾' : '▴'}</span>
+        <ListIcon />
+        <span className="activity-indicator__summary">{summary}</span>
       </button>
-    </div>
+
+      {open && (
+        <div className="settings-overlay" onClick={() => setOpen(false)}>
+          <div
+            className="settings-panel activity-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Activity log"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="settings-header">
+              <h2>Activity</h2>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Close activity log"
+                onClick={() => setOpen(false)}
+              >
+                <CloseIcon />
+              </button>
+            </header>
+
+            <div className="activity-log__body" ref={bodyRef}>
+              {records.length === 0 ? (
+                <div className="activity-line activity-line--muted">
+                  Git output — including hook output like a pre-commit test run — appears here.
+                </div>
+              ) : (
+                records.map((record) => <ActivityRow key={record.id} record={record} />)
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -124,7 +151,7 @@ function ActivityRow({ record }: { record: LogRecord }) {
   }
   return (
     <div className={`activity-line${record.stream === 'stderr' ? ' activity-line--err' : ''}`}>
-      {record.text || ' '}
+      {record.text || ' '}
     </div>
   );
 }

@@ -379,6 +379,8 @@ export const RepoChannels = {
   discardAll: 'repo:discard-all',
   /** Renderer -> main (invoke): commit the staged changes. */
   commit: 'repo:commit',
+  /** Renderer -> main (invoke): read HEAD's full commit message (for amend prefill). */
+  headMessage: 'repo:head-message',
   /** Renderer -> main (invoke): reword a commit's message (amend / rebase). */
   reword: 'repo:reword',
   /** Renderer -> main (invoke): count the commits a reword of a commit would rebase. */
@@ -721,8 +723,13 @@ export interface RepoApi {
    * clean -fd`). Irreversible. Resolves with the (now clean) working status.
    */
   discardAll(path: string): Promise<WorkingStatus>;
-  /** Commit the currently staged changes with `message`. */
-  commit(path: string, message: string): Promise<CommitResult>;
+  /**
+   * Commit the currently staged changes with `message`. When `amend` is true,
+   * rewrites HEAD in place (`git commit --amend`) instead of adding a new commit.
+   */
+  commit(path: string, message: string, amend?: boolean): Promise<CommitResult>;
+  /** Read HEAD's full commit message (empty string if none / not a repo). */
+  headMessage(path: string): Promise<string>;
   /**
    * Rewrite the message of the commit `hash` to `message`. Amends HEAD directly;
    * for older commits it replays the history above them via a non-interactive
@@ -755,8 +762,9 @@ export interface RepoApi {
    * publish silently: it resolves `needs-upstream` (carrying the target remote and
    * branch) so the UI can confirm before creating the branch on the remote. Also
    * resolves ok on success, or an error message (detached HEAD, no remote, auth…).
+   * Pass `force` to push with `--force-with-lease` (e.g. after amending history).
    */
-  push(path: string): Promise<PushResult>;
+  push(path: string, force?: boolean): Promise<PushResult>;
   /**
    * Publish the current branch to `remote`, setting it as the upstream
    * (`git push --set-upstream`). Called after the user confirms a

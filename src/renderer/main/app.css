@@ -287,7 +287,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  height: 22px;
+  height: 28px;
   padding: 0 12px;
   background: var(--panel-bg);
   border-top: 1px solid var(--border);
@@ -3440,13 +3440,14 @@ body.is-row-resizing {
 .commit-files-sort,
 .commit-files-viewswitch button {
   display: inline-flex;
+  gap: 6px;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border);
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 4px;
+  padding: 4px 6px;
   border-radius: 6px;
 }
 
@@ -3474,7 +3475,7 @@ body.is-row-resizing {
    controls row between the sort control and the "View all files" checkbox. */
 .commit-files-viewswitch {
   display: inline-flex;
-  gap: 4px;
+  gap: 6px;
 }
 
 .commit-files-viewswitch button.active {
@@ -3922,7 +3923,19 @@ body.is-row-resizing {
   flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 8px;
-  overflow: hidden;
+  /* No `overflow: hidden` here — it would clip the generate button's tooltip,
+     which pops above the top field. The first/last fields round their own outer
+     corners instead so the box still reads as one rounded shape. */
+}
+
+.commit-message-subject {
+  border-top-left-radius: 7px;
+  border-top-right-radius: 7px;
+}
+
+.commit-message-description {
+  border-bottom-left-radius: 7px;
+  border-bottom-right-radius: 7px;
 }
 
 .commit-message-fields:focus-within {
@@ -3961,6 +3974,37 @@ body.is-row-resizing {
   padding-right: 40px;
 }
 
+/* Working commit box: the subject field carries the inline "Generate with
+   Claude" button beside its counter, so it needs more trailing clearance. */
+.commit-message-subject-row--generate > input {
+  padding-right: 72px;
+}
+
+/* Groups the generate button and the char counter at the field's trailing edge.
+   The counter's own absolute positioning is neutralised so it flows in here. */
+.commit-subject-trailing {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.commit-subject-trailing .commit-summary-counter {
+  position: static;
+  top: auto;
+  right: auto;
+  transform: none;
+}
+
+/* Compact the pill so it sits comfortably within the field's height. */
+.commit-subject-trailing .commit-generate-btn {
+  padding: 3px;
+  line-height: 0;
+}
+
 .commit-summary-counter {
   position: absolute;
   top: 50%;
@@ -3977,27 +4021,50 @@ body.is-row-resizing {
   color: #d29922;
 }
 
-/* Right-aligned action row for the "Generate with Claude" pill. In normal flow
-   (not floated) so the button is always visible and its tooltip isn't clipped. */
+/* Action row below the message fields, holding the "Push after commit" toggle. */
 .commit-message-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.commit-action-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.commit-action-check input {
+  cursor: pointer;
+  margin: 0;
+}
+
+/* Wraps the generate button so its tooltip still shows while the button is
+   disabled (a disabled control gets no hover). Sits inline in the trailing row. */
+.commit-generate-tip {
+  display: inline-flex;
 }
 
 /* The panel sits at the window's bottom edge, so open the bubble upward and
    point its arrow down, rather than the default downward placement. */
-.commit-generate-btn.tooltip-host::after {
+.commit-generate-tip.tooltip-host::after {
   top: auto;
   bottom: calc(100% + 8px);
   transform: translateX(-50%) translateY(-4px);
 }
 
-.commit-generate-btn.tooltip-host:hover::after,
-.commit-generate-btn.tooltip-host:focus-visible::after {
+.commit-generate-tip.tooltip-host:hover::after,
+.commit-generate-tip.tooltip-host:focus-visible::after {
   transform: translateX(-50%) translateY(0);
 }
 
-.commit-generate-btn.tooltip-host::before {
+.commit-generate-tip.tooltip-host::before {
   top: auto;
   bottom: calc(100% + 3px);
   border-bottom-color: transparent;
@@ -4022,6 +4089,7 @@ body.is-row-resizing {
 
 .commit-message-description {
   resize: none;
+  height: 80px;
 }
 
 .commit-submit {
@@ -4042,41 +4110,42 @@ body.is-row-resizing {
   cursor: default;
 }
 
-/* ---- Activity log (footer) ----------------------------------------------
-   A footer strip under the repo columns that streams the live output of git
-   mutations — including repository hook output (a pre-commit test run, etc.).
-   Collapsed it's a single status bar; clicking expands a scrollable transcript. */
-.activity-log {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--border);
-  background: var(--toolbar-bg);
-}
-
-.activity-log__bar {
+/* ---- Activity indicator (status bar, left corner) ------------------------
+   A compact icon + one-line summary pinned to the left of the status bar. It
+   reflects the live state of git mutations — including repository hook output
+   (a pre-commit test run, etc.) — and opens the activity popup on click. */
+.activity-indicator {
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 26px;
-  padding: 0 12px;
+  gap: 6px;
+  /* Pin to the left corner; push the centered update notice and right-pinned
+     version away, so the status bar's flex-end layout keeps them in place. */
+  margin-right: auto;
+  max-width: 45%;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px 0 0;
   border: none;
   background: transparent;
   color: var(--fg-muted);
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   text-align: left;
   cursor: pointer;
   -webkit-app-region: no-drag;
 }
 
-.activity-log__bar:hover {
+.activity-indicator:hover {
   color: var(--fg);
 }
 
-.activity-log__summary {
-  flex: 1;
+.activity-indicator svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+
+.activity-indicator__summary {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4084,48 +4153,35 @@ body.is-row-resizing {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-.activity-log__chevron {
-  flex: none;
-  font-size: 10px;
-  opacity: 0.7;
-}
-
-/* Status dot: idle (grey), running (pulsing amber), ok (green), error (red). */
-.activity-dot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--fg-muted);
-  opacity: 0.5;
-}
-
-.activity-dot--running {
-  background: #f59e0b;
-  opacity: 1;
+/* Icon color tracks status: running (pulsing amber), ok (green), error (red). */
+.activity-indicator--running svg {
+  color: #f59e0b;
   animation: activity-pulse 1s ease-in-out infinite;
 }
 
-.activity-dot--ok {
-  background: var(--current);
-  opacity: 1;
+.activity-indicator--ok svg {
+  color: var(--current);
 }
 
-.activity-dot--error {
-  background: var(--danger);
-  opacity: 1;
+.activity-indicator--error svg {
+  color: var(--danger);
 }
 
 @keyframes activity-pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  50% { opacity: 0.35; }
+}
+
+/* ---- Activity popup (reuses the Settings modal shell) -------------------- */
+.activity-panel {
+  height: 480px;
 }
 
 .activity-log__body {
-  height: 180px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 16px;
   background: var(--bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
