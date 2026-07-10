@@ -138,9 +138,15 @@ export async function probeClaude(
 const COMMIT_INSTRUCTION = [
   'You are writing a git commit message for the staged changes provided on stdin.',
   'Output ONLY the commit message — no preamble, no markdown, no code fences, no backticks.',
-  'First line: a concise imperative summary, under 72 characters, no trailing period.',
-  'If the change is non-trivial, add a blank line then a short body (wrapped ~72 cols) explaining what changed and why.',
-  'Match the style/convention of the recent commit subjects listed on stdin (e.g. Conventional Commits prefixes if they use them).',
+  'Follow the Conventional Commits 1.0.0 specification:',
+  'The first line MUST be "<type>[optional scope][optional !]: <description>".',
+  'The type is a lowercase noun such as feat (a new feature), fix (a bug fix), docs, style, refactor, perf, test, build, ci, chore, or revert.',
+  'An optional scope in parentheses may follow the type to give extra context, e.g. "feat(parser): ...".',
+  'After the type/scope comes a colon, a single space, then a short imperative description; keep the whole first line under 72 characters with no trailing period.',
+  'If the change is non-trivial, add a blank line then a body (wrapped ~72 cols) explaining what changed and why, in one or more paragraphs.',
+  'For breaking changes, either append "!" before the colon (e.g. "feat!:") and/or add a footer starting with "BREAKING CHANGE: " describing the break.',
+  'Other footers use the "Token: value" form (e.g. "Refs: #123", "Reviewed-by: name"), one per line after a blank line.',
+  'Prefer a type/scope consistent with the recent commit subjects listed on stdin when they already follow this convention.',
 ].join(' ');
 
 /**

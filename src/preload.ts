@@ -38,6 +38,7 @@ import {
   type ThemeSource,
   type ThemeState,
   type UpdateInfo,
+  type UpdateStatus,
 } from './types/ipc';
 
 // The main process passes the app version via webPreferences.additionalArguments
@@ -241,6 +242,20 @@ const api: ExposedApi = {
       ipcRenderer.invoke(UpdateChannels.check) as Promise<UpdateInfo | null>,
     openRelease: (url: string) =>
       ipcRenderer.send(UpdateChannels.openRelease, url),
+    download: () => ipcRenderer.send(UpdateChannels.download),
+    install: () => ipcRenderer.send(UpdateChannels.install),
+    onStatus: (callback: (status: UpdateStatus) => void) => {
+      const listener = (_event: IpcRendererEvent, status: UpdateStatus) =>
+        callback(status);
+      ipcRenderer.on(UpdateChannels.statusChanged, listener);
+      // Prime the caller with the current snapshot right away.
+      void (ipcRenderer.invoke(UpdateChannels.status) as Promise<UpdateStatus>).then(
+        callback,
+      );
+      return () => {
+        ipcRenderer.removeListener(UpdateChannels.statusChanged, listener);
+      };
+    },
   },
 };
 

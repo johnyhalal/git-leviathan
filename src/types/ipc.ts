@@ -43,6 +43,14 @@ export const UpdateChannels = {
   check: 'update:check',
   /** Renderer -> main (send): open the release page in the browser. */
   openRelease: 'update:open',
+  /** Renderer -> main (send): download the newest release in the background. */
+  download: 'update:download',
+  /** Renderer -> main (send): quit and install a downloaded update. */
+  install: 'update:install',
+  /** Renderer -> main (invoke): read the current auto-update status. */
+  status: 'update:status',
+  /** Main -> renderer (send): the auto-update status changed. */
+  statusChanged: 'update:status-changed',
 } as const;
 
 /** A newer published release than the one currently running. */
@@ -51,6 +59,32 @@ export interface UpdateInfo {
   version: string;
   /** GitHub release page URL to open in the browser. */
   releaseUrl: string;
+}
+
+/**
+ * Lifecycle of an in-app auto-update:
+ * - `idle`        — nothing in flight.
+ * - `downloading` — `autoUpdater` is fetching + staging the new version.
+ * - `ready`       — downloaded; `install()` will swap and relaunch.
+ * - `error`       — the check/download failed; fall back to a manual download.
+ */
+export type UpdateState = 'idle' | 'downloading' | 'ready' | 'error';
+
+/** Snapshot of the in-app auto-updater, broadcast on every change. */
+export interface UpdateStatus {
+  /** Where we are in the download → ready → install cycle. */
+  state: UpdateState;
+  /**
+   * Whether this build can update itself in place at all. In-app update
+   * (download + swap + relaunch, no manual reinstall) needs Electron's
+   * `autoUpdater`, which only works on a packaged, code-signed build on
+   * macOS/Windows. When false the UI falls back to opening the release page.
+   */
+  supported: boolean;
+  /** The version being downloaded/installed, once known. */
+  version?: string;
+  /** Human-readable failure reason when `state === 'error'`. */
+  message?: string;
 }
 
 // ---- Repositories ---------------------------------------------------------
@@ -886,6 +920,23 @@ export interface UpdateApi {
   check(): Promise<UpdateInfo | null>;
   /** Open a release page (github.com URL) in the default browser. */
   openRelease(url: string): void;
+  /**
+   * Start downloading the newest release in the background via `autoUpdater`.
+   * Progress arrives through `onStatus`. A no-op on builds where auto-update
+   * is unsupported (see {@link UpdateStatus.supported}).
+   */
+  download(): void;
+  /**
+   * Quit and relaunch into a downloaded update. Only acts once `onStatus`
+   * reports `state: 'ready'`.
+   */
+  install(): void;
+  /**
+   * Read the current auto-update status and subscribe to changes: the callback
+   * fires once with the current snapshot, then on every change. Returns an
+   * unsubscribe function.
+   */
+  onStatus(callback: (status: UpdateStatus) => void): () => void;
 }
 
 export interface ClaudeApi {

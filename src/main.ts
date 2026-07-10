@@ -1,5 +1,6 @@
 import {
   app,
+  autoUpdater,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -70,6 +71,7 @@ import {
   type ThemeSource,
   type ThemeState,
   type UpdateInfo,
+  type UpdateStatus,
 } from './types/ipc';
 import type { DeviceAuthorization } from './oauth/deviceFlow';
 import * as github from './oauth/github';
@@ -3446,7 +3448,104 @@ function isNewerVersion(remote: string, current: string): boolean {
   return false;
 }
 
+// ---- In-app auto-update (macOS/Windows) ----------------------------------
+//
+// Electron's `autoUpdater` (Squirrel under the hood) downloads a newer signed
+// build in the background and swaps + relaunches on `quitAndInstall()`. It only
+// works on a packaged, code-signed build on macOS/Windows, so on any other
+// build the renderer sees `supported: false` and falls back to opening the
+// release page for a manual download. We point Squirrel at the free hosted
+// update.electronjs.org feed, which reads this repo's GitHub Releases directly
+// (it needs the per-arch `.zip` asset the release CI uploads alongside the
+// installer). The feed URL carries the running version so it only ever returns
+// something newer.
+
+/** Whether this build can update itself in place (see UpdateStatus.supported). */
+function autoUpdateSupported(): boolean {
+  return (
+    app.isPackaged &&
+    (process.platform === 'darwin' || process.platform === 'win32')
+  );
+}
+
+let updateStatus: UpdateStatus = { state: 'idle', supported: false };
+let autoUpdaterWired = false;
+
+function setUpdateStatus(next: UpdateStatus): void {
+  updateStatus = next;
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(UpdateChannels.statusChanged, next);
+  }
+}
+
+/**
+ * Point `autoUpdater` at the hosted feed and wire its events to `updateStatus`.
+ * Safe to call once; a no-op (leaving `supported: false`) where auto-update
+ * can't run, so `download()`/`install()` degrade to the manual fallback.
+ */
+function setupAutoUpdater(): void {
+  if (autoUpdaterWired || !autoUpdateSupported()) return;
+  const feedUrl =
+    `https://update.electronjs.org/${GITHUB_RELEASES_REPO}` +
+    `/${process.platform}-${process.arch}/${app.getVersion()}`;
+  try {
+    autoUpdater.setFeedURL({ url: feedUrl });
+  } catch {
+    // A malformed feed / unsupported platform: leave supported false.
+    return;
+  }
+  autoUpdater.on('error', (err) => {
+    setUpdateStatus({
+      state: 'error',
+      supported: true,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  });
+  autoUpdater.on('update-available', () => {
+    setUpdateStatus({ state: 'downloading', supported: true, version: updateStatus.version });
+  });
+  autoUpdater.on('update-not-available', () => {
+    // Only reachable after a manual download() with nothing newer to fetch.
+    setUpdateStatus({ state: 'idle', supported: true, version: updateStatus.version });
+  });
+  // Squirrel.Mac gives (event, notes, releaseName); releaseName is the version.
+  autoUpdater.on('update-downloaded', (_event, _notes, releaseName?: string) => {
+    setUpdateStatus({
+      state: 'ready',
+      supported: true,
+      version: releaseName ?? updateStatus.version,
+    });
+  });
+  autoUpdaterWired = true;
+  updateStatus = { state: 'idle', supported: true };
+}
+
 function registerUpdateIpc(): void {
+  setupAutoUpdater();
+
+  ipcMain.on(UpdateChannels.download, (): void => {
+    if (!autoUpdateSupported()) return;
+    // Keep the version the check already surfaced so the UI can label progress.
+    setUpdateStatus({ state: 'downloading', supported: true, version: updateStatus.version });
+    try {
+      autoUpdater.checkForUpdates();
+    } catch (err) {
+      setUpdateStatus({
+        state: 'error',
+        supported: true,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  ipcMain.on(UpdateChannels.install, (): void => {
+    if (updateStatus.state !== 'ready') return;
+    // Swaps in the staged build and relaunches the app.
+    autoUpdater.quitAndInstall();
+  });
+
+  ipcMain.handle(UpdateChannels.status, (): UpdateStatus => updateStatus);
+
   ipcMain.handle(UpdateChannels.check, async (): Promise<UpdateInfo | null> => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -3470,8 +3569,12 @@ function registerUpdateIpc(): void {
         return null;
       }
       if (!isNewerVersion(data.tag_name, app.getVersion())) return null;
+      const version = data.tag_name.replace(/^v/, '');
+      // Remember it so a later download()'s progress can be labelled with the
+      // target version before autoUpdater reports the downloaded release name.
+      if (updateStatus.state === 'idle') updateStatus = { ...updateStatus, version };
       return {
-        version: data.tag_name.replace(/^v/, ''),
+        version,
         releaseUrl: data.html_url,
       };
     } catch {

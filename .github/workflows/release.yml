@@ -126,19 +126,28 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      # Only this arch's DMG exists under out/make, so the first match is it.
-      - name: Stage asset with a stable name
+      # Only this arch's DMG/ZIP exist under out/make, so the first match is it.
+      # The DMG is the first-install image; the ZIP (MakerZIP) is the in-app
+      # auto-update payload that update.electronjs.org serves to running apps.
+      # Its name must match the feed's darwin regex .*-(mac|darwin|osx).*.zip and
+      # carry the arch token (-arm64 → arm64, else x64), so "-macOS-<arch>" fits.
+      - name: Stage assets with stable names
         run: |
           DMG=$(find out/make -name '*.dmg' | head -n1)
           [ -z "$DMG" ] && { echo "No macOS .dmg produced under out/make"; exit 1; }
           cp "$DMG" "GitLeviathan-macOS-${{ matrix.arch }}.dmg"
+          ZIP=$(find out/make -name '*.zip' | head -n1)
+          [ -z "$ZIP" ] && { echo "No macOS .zip produced under out/make"; exit 1; }
+          cp "$ZIP" "GitLeviathan-macOS-${{ matrix.arch }}.zip"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: GitLeviathan ${{ steps.meta.outputs.version }}
-          files: GitLeviathan-macOS-${{ matrix.arch }}.dmg
+          files: |
+            GitLeviathan-macOS-${{ matrix.arch }}.dmg
+            GitLeviathan-macOS-${{ matrix.arch }}.zip
           fail_on_unmatched_files: true
 
   build-windows:

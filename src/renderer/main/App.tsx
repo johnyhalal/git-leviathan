@@ -6,7 +6,7 @@ import { Settings } from './components/Settings';
 import { CloneDialog } from './components/CloneDialog';
 import { RepoView } from './components/repo/RepoView';
 import { GearIcon } from '../../../assets/icons';
-import type { RepoInfo, UpdateInfo } from '../../types/ipc';
+import type { RepoInfo, UpdateInfo, UpdateStatus } from '../../types/ipc';
 
 let nextTabId = 2;
 let nextToastId = 1;
@@ -14,6 +14,58 @@ let nextToastId = 1;
 /** Last path segment, tolerant of both POSIX and Windows separators. */
 const folderName = (fullPath: string) =>
   fullPath.split(/[\\/]/).filter(Boolean).pop() ?? fullPath;
+
+/**
+ * The status-bar update control. When the build can auto-update itself
+ * (macOS/Windows, packaged + signed) it walks the click flow: download in the
+ * background → "Restart to update" (swap + relaunch). Otherwise, and on any
+ * download error, it falls back to opening the release page for a manual
+ * download. Renders nothing when there's nothing to offer.
+ */
+function renderUpdateButton(update: UpdateInfo | null, status: UpdateStatus) {
+  const version = update?.version ?? status.version;
+  const api = window.api.update;
+
+  // Downloaded and staged — a click swaps in the new build and relaunches.
+  if (status.state === 'ready') {
+    return (
+      <button
+        type="button"
+        className="statusbar-update"
+        title="Restart to finish updating"
+        onClick={() => api.install()}
+      >
+        Restart to update{version ? ` (v${version})` : ''}
+      </button>
+    );
+  }
+
+  // Fetching in the background — show progress, no action.
+  if (status.state === 'downloading') {
+    return (
+      <button type="button" className="statusbar-update" disabled title="Downloading the update">
+        Downloading update{version ? ` (v${version})` : ''}…
+      </button>
+    );
+  }
+
+  // Nothing to offer unless a newer release was found.
+  if (!update) return null;
+
+  // Auto-update available: a click downloads it in place. Where auto-update
+  // isn't supported (or a prior attempt errored), fall back to the release page.
+  const canAutoUpdate = status.supported && status.state !== 'error';
+  return (
+    <button
+      type="button"
+      className="statusbar-update"
+      title={canAutoUpdate ? 'Download and install the update' : 'Open the release page'}
+      onClick={() => (canAutoUpdate ? api.download() : api.openRelease(update.releaseUrl))}
+    >
+      Update available (v{update.version})
+    </button>
+  );
+}
 
 export function App() {
   const isMac = window.api.platform === 'darwin';
@@ -27,6 +79,10 @@ export function App() {
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
+    state: 'idle',
+    supported: false,
+  });
   // Gate tab persistence until the initial restore has run, so the default
   // empty tab can't overwrite the saved list before it's loaded.
   const tabsHydrated = useRef(false);
@@ -44,9 +100,8 @@ export function App() {
     };
   }, []);
 
-  // Check GitHub for a newer release on mount, every 6 hours, and whenever the
-  // window regains focus. A failed check resolves null, so this quietly shows
-  // nothing when offline.
+  // Check GitHub for a newer release on mount and every hour. A failed check
+  // resolves null, so this quietly shows nothing when offline.
   useEffect(() => {
     let alive = true;
     const run = () =>
@@ -54,14 +109,17 @@ export function App() {
         if (alive) setUpdate(info);
       });
     run();
-    const id = setInterval(run, 6 * 60 * 60 * 1000);
-    const unsubscribe = window.api.app.onWindowFocus(run);
+    const id = setInterval(run, 60 * 60 * 1000);
     return () => {
       alive = false;
       clearInterval(id);
-      unsubscribe();
     };
   }, []);
+
+  // Track the in-app auto-updater (download → ready → install) so the status-bar
+  // button can drive it. On builds where auto-update isn't supported this stays
+  // `supported: false` and the button falls back to opening the release page.
+  useEffect(() => window.api.update.onStatus(setUpdateStatus), []);
 
   // Restore the repositories that were open as tabs last session (paths only;
   // titles are derived from the folder name).
@@ -253,16 +311,7 @@ export function App() {
       </main>
 
       <footer className="statusbar">
-        {update && (
-          <button
-            type="button"
-            className="statusbar-update"
-            title="Open the release page"
-            onClick={() => window.api.update.openRelease(update.releaseUrl)}
-          >
-            Update available (v{update.version})
-          </button>
-        )}
+        {renderUpdateButton(update, updateStatus)}
         <span className="statusbar-version">v{window.api.version}</span>
       </footer>
 

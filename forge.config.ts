@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerDMG } from '@electron-forge/maker-dmg';
+import { MakerZIP } from '@electron-forge/maker-zip';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
 import { VitePlugin } from '@electron-forge/plugin-vite';
@@ -127,6 +128,14 @@ const config: ForgeConfig = {
       },
       ['darwin'],
     ),
+    // macOS in-app auto-update payload. Electron's `autoUpdater` (Squirrel.Mac)
+    // updates from a **.zip** of the signed .app, not the .dmg — the dmg is the
+    // first-install image, the zip is what update.electronjs.org serves to
+    // running apps. The release CI uploads this zip alongside the dmg, named so
+    // the hosted feed can match it to platform+arch. macOS-only: Windows updates
+    // through Squirrel's own .nupkg/RELEASES (MakerSquirrel) and Linux through
+    // its deb/rpm repos.
+    new MakerZIP({}, ['darwin']),
     // `bin` must match the packaged executable's name. Packager names the Linux
     // binary after productName ("GitLeviathan"), but these makers otherwise look
     // for one named after package.json's `name` ("gitleviathan") and fail with
