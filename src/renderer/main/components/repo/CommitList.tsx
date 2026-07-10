@@ -221,6 +221,46 @@ function isDeletable(target: BranchMenuTarget): boolean {
   return (target.local && !target.isCurrent) || (target.remote && !!target.remoteName);
 }
 
+/**
+ * The branch a commit's own decorations name, for lane labelling: the checked-out
+ * branch wins, then any local branch, then any branch at all. Undefined when the
+ * commit carries no branch (only tags, or nothing).
+ */
+function ownBranchName(refs: CommitRefDecoration[]): string | undefined {
+  const groups = groupRefs(refs);
+  return (
+    groups.find((group) => group.kind === 'branch' && group.isHead)?.name ??
+    groups.find((group) => group.kind === 'branch' && group.local)?.name ??
+    groups.find((group) => group.kind === 'branch')?.name
+  );
+}
+
+/**
+ * Map every commit hash to the branch its lane belongs to. A branch label is
+ * seeded at its tip and propagated down to its parents, so a commit with no ref
+ * of its own still knows which branch it sits under. The first parent (the
+ * lineage the graph keeps in one lane) is claimed first; merge parents inherit
+ * the same label too, so a merged-in branch with no surviving ref still shows a
+ * ghost. The topmost (newest) claimant of a shared ancestor wins, and a commit's
+ * own branch always overrides an inherited one. Newest-first order (children
+ * before parents) makes this a single top-down pass.
+ */
+function laneBranchByHash(commits: CommitLogEntry[]): Map<string, string> {
+  const byHash = new Map<string, string>();
+  for (const commit of commits) {
+    if (commit.working || commit.stashIndex !== undefined) continue;
+    const name = ownBranchName(commit.refs) ?? byHash.get(commit.hash);
+    if (!name) continue;
+    byHash.set(commit.hash, name);
+    // parents[0] first so the first-parent lineage takes precedence, then merge
+    // parents pick up the label only if nothing nearer has already claimed them.
+    for (const parent of commit.parents) {
+      if (!byHash.has(parent)) byHash.set(parent, name);
+    }
+  }
+  return byHash;
+}
+
 /** Human-readable location suffix for a group's tooltip. */
 function refWhere(group: RefGroup): string {
   if (group.kind === 'tag') return 'tag';
@@ -249,6 +289,7 @@ function RefBadge({
   remoteUrl,
   onCheckout,
   dnd,
+  ghost = false,
 }: {
   group: RefGroup;
   color: string;
@@ -256,11 +297,15 @@ function RefBadge({
   onCheckout?: (branch: string, remote?: string) => void;
   /** Branch drag-and-drop plumbing; absent disables merge/rebase dragging. */
   dnd?: BranchDnd;
+  /** A hover-revealed placeholder for the commit's lane branch, not a real ref:
+   *  it looks like a local-branch badge but takes part in no interaction. */
+  ghost?: boolean;
 }) {
   // Whether the badge is highlighted as the drop target under the cursor mid-drag.
   const [dropHover, setDropHover] = useState(false);
 
   const classes = ['commit-ref-badge'];
+  if (ghost) classes.push('commit-ref-ghost');
   if (group.kind === 'tag') classes.push('commit-ref-tag');
   else if (group.isHead) classes.push('commit-ref-head');
   else if (group.local && group.remote) classes.push('commit-ref-both');
@@ -269,13 +314,15 @@ function RefBadge({
 
   // A branch that isn't already checked out can be checked out by double-click:
   // a local branch by name, a remote-only one off its remote (creating a tracker).
-  const checkoutable = group.kind === 'branch' && !group.isHead && (group.local || group.remote);
+  // A ghost placeholder is inert — it's not a real ref to act on.
+  const checkoutable =
+    !ghost && group.kind === 'branch' && !group.isHead && (group.local || group.remote);
   if (checkoutable) classes.push('is-checkoutable');
 
   // Only local branches take part in merge/rebase dragging: they're what git can
   // check out and merge/rebase into. A local branch can be dragged as the source,
   // and is a valid drop target for any *other* local branch being dragged.
-  const isLocalBranch = group.kind === 'branch' && group.local;
+  const isLocalBranch = !ghost && group.kind === 'branch' && group.local;
   const draggable = isLocalBranch && !!dnd;
   const isDropTarget =
     isLocalBranch && !!dnd && dnd.dragSource !== null && dnd.dragSource !== group.name;
@@ -487,6 +534,9 @@ interface CellContext {
   maxLane: number;
   /** Remote name → fetch URL, for resolving a remote badge's avatar. */
   urlByRemote: Map<string, string>;
+  /** The branch this commit's lane belongs to (propagated from the tip), shown as
+   *  a hover-revealed ghost badge when the commit carries no branch of its own. */
+  laneBranch?: string;
   /** Check out a branch by double-clicking its ref badge. */
   onCheckout?: (branch: string, remote?: string) => void;
   /** Branch drag-and-drop plumbing for the ref badges (merge/rebase). */
@@ -618,6 +668,18 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
       // The commit sits on this graph node, so its refs adopt the node's lane color.
       const laneColor = GRAPH_COLORS[ctx.graph.color] ?? GRAPH_COLORS[0];
       const groups = groupRefs(commit.refs);
+      // Any commit carrying a ref (branch or tag) gets a horizontal leader line
+      // from its badge across to the graph column, tying the label to its node.
+      // The checked-out (HEAD) branch draws its line at full strength; every
+      // other branch or tag line is dimmed.
+      const hasRef = groups.length > 0;
+      const isHead = groups.some((group) => group.isHead);
+      // A commit with no ref at all shows a hover-revealed ghost of its lane's
+      // branch — a dimmed placeholder that looks like a real badge — so every
+      // row reads as belonging to some branch. A commit that already carries a
+      // tag keeps just its tag, no ghost. Its own connector line rides along, so
+      // the real one is skipped when the ghost is showing.
+      const ghostBranch = !hasRef ? ctx.laneBranch : undefined;
       // With more than one ref, collapse to the first badge plus a `+N` counter;
       // hovering the cell reveals every ref wrapped over multiple lines (see the
       // `.has-overflow` rules in app.css).
@@ -639,6 +701,30 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
               <span className="commit-ref-more" aria-hidden="true">
                 +{overflow}
               </span>
+            )}
+            {ghostBranch && (
+              <div className="commit-ref-ghost-line" style={{ '--ref-line': laneColor } as CSSProperties}>
+                <RefBadge
+                  group={{
+                    key: `ghost:${ghostBranch}`,
+                    name: ghostBranch,
+                    kind: 'branch',
+                    isHead: false,
+                    local: true,
+                    remote: false,
+                  }}
+                  color={laneColor}
+                  ghost
+                />
+                <span className="commit-ref-connector is-ghost" aria-hidden="true" />
+              </div>
+            )}
+            {hasRef && !ghostBranch && (
+              <span
+                className={`commit-ref-connector${isHead ? ' is-head' : ''}`}
+                style={{ '--ref-line': laneColor } as CSSProperties}
+                aria-hidden="true"
+              />
             )}
           </div>
         </td>
@@ -699,6 +785,7 @@ export function CommitList({
 }: CommitListProps) {
   const graph = useMemo(() => computeGraph(commits ?? []), [commits]);
   const maxLane = useMemo(() => maxLaneOf(graph), [graph]);
+  const laneBranches = useMemo(() => laneBranchByHash(commits ?? []), [commits]);
   const urlByRemote = useMemo(
     () => new Map((remotes ?? []).map((r) => [r.name, r.url])),
     [remotes],
@@ -883,6 +970,7 @@ export function CommitList({
             graph: graph[index],
             maxLane,
             urlByRemote,
+            laneBranch: laneBranches.get(commit.hash),
             onCheckout,
             branchDnd,
             newBranch,

@@ -20,8 +20,7 @@ Grab the latest build for your platform from the
 There's a separate `.dmg` per architecture — pick **Apple Silicon** for M1 or
 newer Macs and **Intel** for older ones (if unsure, check  → About This
 Mac). Open the `.dmg` and drag **GitLeviathan** onto the **Applications**
-shortcut. The app is Developer ID signed and notarized by Apple, so it launches
-without any Gatekeeper warnings — no `xattr` workaround needed.
+shortcut.
 
 ### Windows
 

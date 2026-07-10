@@ -2484,6 +2484,9 @@ body.is-col-resizing .commit-th {
 .commit-row.is-selected td.commit-refs {
   background: transparent;
 }
+.commit-refs {
+  padding-right: 0 !important;
+}
 
 /* Hovering (or selecting) a row brightens the graph's lane wash — the same lane
    hue as its resting `fill`, just at a higher alpha. `--lane` is set inline on
@@ -2545,6 +2548,62 @@ body.is-col-resizing .commit-th {
 
 .commit-table td.commit-refs {
   overflow: visible;
+}
+
+/* Leader line for a branch: a thin horizontal rule, vertically centred, that
+   grows from the branch badge across to the end of the refs cell, visually
+   connecting the branch to its node in the graph. As the last flex item it
+   absorbs the leftover width, so it runs from the badge's trailing edge exactly
+   to the cell's edge. Non-HEAD branches draw it dimmed; the checked-out branch
+   (the `.is-head` variant) draws it at full strength. */
+.commit-ref-connector {
+  flex: 1 1 auto;
+  min-width: 12px;
+  align-self: center;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ref-line);
+  opacity: 0.25;
+}
+
+.commit-ref-connector.is-head {
+  opacity: 1;
+}
+
+/* When the cell expands on hover to reveal every ref, the leader line would
+   just add clutter — drop it. */
+.commit-refs-inner:has(> .commit-ref-badge:hover) .commit-ref-connector,
+.commit-refs-inner.has-overflow:hover .commit-ref-connector {
+  display: none;
+}
+
+/* Ghost branch: a commit with no branch of its own shows a placeholder of its
+   lane's branch — a badge + leader line that look exactly like a real one, but
+   dimmed and hidden until the row is hovered, so every commit reads as belonging
+   to a branch. Laid out as a flex item so its own connector fills to the cell
+   edge (the connector's own opacity is neutralised — the whole ghost carries the
+   0.5 dim). */
+.commit-ref-ghost-line {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  opacity: 0;
+  transition: opacity 0.08s ease;
+}
+
+.commit-ref-connector.is-ghost {
+  opacity: 1;
+}
+
+/* Revealed while the row is hovered — but not when the pointer is over the refs
+   cell itself, so the ghost only shows when hovering the rest of the commit. */
+.commit-row:hover .commit-ref-ghost-line {
+  opacity: 0.5;
+}
+.commit-row td.commit-refs:hover .commit-ref-ghost-line {
+  opacity: 0;
 }
 
 /* Multi-ref cells collapse to the first badge plus a `+N` counter; every badge

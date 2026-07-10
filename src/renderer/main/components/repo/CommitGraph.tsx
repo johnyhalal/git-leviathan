@@ -4,7 +4,7 @@ import { GRAPH_COLORS, type GraphNode } from './graph';
 const LANE_GAP = 20;
 /** Horizontal gutter before lane 0 and past the last lane. Sized to fully clear
  *  the avatar node (radius + ring ≈ 11px), which is wider than a plain lane dot. */
-const PAD_X = 13;
+const PAD_X = 11;
 const NODE_R = 4.5;
 /** Dash pattern for stash lines (dot-dot). */
 const DASH = '4 2';
