@@ -107,8 +107,9 @@ interface ProviderClient {
   /** Public OAuth client id, or empty when unconfigured. */
   clientId: string;
   /**
-   * Scopes to request — enough to list and clone repos, read the handle, and
-   * upload an SSH key (`write:public_key` on GitHub, write `api` on GitLab).
+   * Scopes to request — enough to list and clone repos, read the handle,
+   * push changes to GitHub Actions workflow files (`workflow`), and upload an
+   * SSH key (`write:public_key` on GitHub, write `api` on GitLab).
    */
   scope: string;
   requestDeviceAuthorization: typeof github.requestDeviceAuthorization;
@@ -123,7 +124,7 @@ interface ProviderClient {
 const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
   github: {
     clientId: GITHUB_CLIENT_ID,
-    scope: 'repo read:user write:public_key',
+    scope: 'repo workflow read:user write:public_key',
     requestDeviceAuthorization: github.requestDeviceAuthorization,
     pollForAccessToken: github.pollForAccessToken,
     fetchAccount: github.fetchAccount,

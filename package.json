@@ -1,7 +1,7 @@
 {
   "name": "gitleviathan",
   "productName": "GitLeviathan",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "GitLeviathan — a cross-platform desktop GUI for Git",
   "main": ".vite/build/main.js",
   "private": true,
