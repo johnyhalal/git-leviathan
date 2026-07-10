@@ -41,6 +41,7 @@ import {
   type IntegrationProvider,
   type CheckoutResult,
   type RefsMutationResult,
+  type RepoActivityEvent,
   type UndoRedoState,
   type GitflowKind,
   type StashInfo,
@@ -748,12 +749,126 @@ async function mutateRepo(
   const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
   try {
     for (const args of steps) {
-      await execFileAsync(gitBin, args, { cwd, env });
+      await spawnGit(cwd, args, activityOp(args), env);
     }
   } catch (err) {
     return { status: 'error', message: gitErrorMessage(err, fallback) };
   }
   return { status: 'ok', refs: await readRefs(cwd) };
+}
+
+// --- Live activity stream ---------------------------------------------------
+//
+// Mutating git commands run through `spawnGit` instead of `execFileAsync` so
+// their output — crucially, the output of repository hooks like a `pre-commit`
+// test run — can be streamed to a footer activity log line by line while the
+// command is still running, rather than buffered and thrown away on success.
+
+/** Buffered result of a git run, mirroring `execFileAsync`'s resolve shape. */
+interface GitRun {
+  stdout: string;
+  stderr: string;
+}
+
+/** Broadcast one activity event to every open window (renderers filter by repo). */
+function emitActivity(event: RepoActivityEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(RepoChannels.activity, event);
+  }
+}
+
+/**
+ * A short activity label for a git step: its subcommand, skipping any leading
+ * global options (`-c key=val`, `-C dir`) and their values so an auth-injecting
+ * `-c http.…extraheader=…` prefix doesn't mask the real verb (`push`).
+ */
+function activityOp(args: string[]): string {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '-c' || arg === '-C') {
+      i++; // skip this flag's value too
+      continue;
+    }
+    if (arg.startsWith('-')) continue;
+    return arg;
+  }
+  return 'git';
+}
+
+/** Strip inline URL credentials and any injected auth header from a log line. */
+function redactActivity(text: string): string {
+  return redactSecrets(text, null).replace(
+    /Authorization: Basic \S+/gi,
+    'Authorization: Basic ***',
+  );
+}
+
+/**
+ * Run a mutating git command via `spawn`, streaming its stdout/stderr to the
+ * renderer's activity log line by line as it arrives, while still behaving like
+ * `execFileAsync`: resolves with the buffered `{ stdout, stderr }` on a clean
+ * exit and rejects with an execFile-shaped error (carrying `stdout`, `stderr`,
+ * `code`) otherwise, so `gitErrorMessage`/`pushErrorMessage`/`pullErrorMessage`
+ * keep working unchanged. `op` is the short label shown in the footer.
+ */
+function spawnGit(
+  cwd: string,
+  args: string[],
+  op: string,
+  env: NodeJS.ProcessEnv = gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
+): Promise<GitRun> {
+  return new Promise((resolve, reject) => {
+    emitActivity({ repoPath: cwd, op, kind: 'start', ts: Date.now() });
+    const child = spawn(gitBin, args, { cwd, env });
+    let stdout = '';
+    let stderr = '';
+    // Carry the tail of a chunk that didn't end on a newline into the next one,
+    // so a line split across chunks is emitted once, whole.
+    const partial: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' };
+    const pump = (stream: 'stdout' | 'stderr') => (chunk: Buffer) => {
+      const text = chunk.toString();
+      if (stream === 'stdout') stdout += text;
+      else stderr += text;
+      const lines = (partial[stream] + text).split('\n');
+      partial[stream] = lines.pop() ?? '';
+      for (const line of lines) {
+        emitActivity({ repoPath: cwd, op, kind: 'line', stream, text: redactActivity(line), ts: Date.now() });
+      }
+    };
+    child.stdout?.on('data', pump('stdout'));
+    child.stderr?.on('data', pump('stderr'));
+    // Emit any unterminated trailing text (git often ends without a newline).
+    const flush = () => {
+      for (const stream of ['stdout', 'stderr'] as const) {
+        if (partial[stream]) {
+          emitActivity({ repoPath: cwd, op, kind: 'line', stream, text: redactActivity(partial[stream]), ts: Date.now() });
+          partial[stream] = '';
+        }
+      }
+    };
+    child.on('error', (err) => {
+      flush();
+      emitActivity({ repoPath: cwd, op, kind: 'end', ok: false, ts: Date.now() });
+      reject(err);
+    });
+    child.on('close', (code) => {
+      flush();
+      emitActivity({ repoPath: cwd, op, kind: 'end', ok: code === 0, exitCode: code ?? undefined, ts: Date.now() });
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      const err = new Error(`git ${op} exited with code ${code ?? 'null'}`) as Error & {
+        stdout: string;
+        stderr: string;
+        code: number | null;
+      };
+      err.stdout = stdout;
+      err.stderr = stderr;
+      err.code = code;
+      reject(err);
+    });
+  });
 }
 
 // --- Undo / redo over the HEAD reflog ---------------------------------------
@@ -893,7 +1008,7 @@ async function travelHistory(
       ? ['checkout', step.target]
       : ['reset', step.mode === 'mixed' ? '--mixed' : '--keep', step.target];
   try {
-    await execFileAsync(gitBin, args, { cwd, env });
+    await spawnGit(cwd, args, activityOp(args), env);
   } catch (err) {
     const stderr =
       err && typeof err === 'object' && 'stderr' in err
@@ -928,8 +1043,8 @@ async function integrateBranch(
   const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
   let output = '';
   try {
-    await execFileAsync(gitBin, ['checkout', target], { cwd, env });
-    const result = await execFileAsync(gitBin, [op, source], { cwd, env });
+    await spawnGit(cwd, ['checkout', target], 'checkout', env);
+    const result = await spawnGit(cwd, [op, source], op, env);
     output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   } catch (err) {
     return { status: 'error', message: gitErrorMessage(err, fallback) };
@@ -1339,7 +1454,7 @@ async function rewordCommit(
   // so any staged work the user is preparing is left out of the reword.
   if (head === hash) {
     try {
-      await execFileAsync(gitBin, ['commit', '--amend', '--only', '-m', message], { cwd, env });
+      await spawnGit(cwd, ['commit', '--amend', '--only', '-m', message], 'reword', env);
       return { status: 'ok' };
     } catch (err) {
       return { status: 'error', message: gitErrorMessage(err, 'Amend failed.') };
@@ -1370,10 +1485,11 @@ async function rewordCommit(
   };
 
   try {
-    await execFileAsync(
-      gitBin,
+    await spawnGit(
+      cwd,
       ['-c', 'rebase.abbreviateCommands=false', 'rebase', '-i', '--autostash', base],
-      { cwd, env: rebaseEnv },
+      'reword',
+      rebaseEnv,
     );
     return { status: 'ok' };
   } catch (err) {
@@ -1435,7 +1551,7 @@ async function pushCurrent(cwd: string): Promise<PushResult> {
   if (upstream) {
     const authArgs = await authArgsForRemotes(cwd, [remoteOfUpstream(upstream)]);
     try {
-      await execFileAsync(gitBin, [...authArgs, 'push'], { cwd, env });
+      await spawnGit(cwd, [...authArgs, 'push'], 'push', env);
       return { status: 'ok' };
     } catch (err) {
       return { status: 'error', message: pushErrorMessage(err) };
@@ -1502,7 +1618,7 @@ async function pushSetUpstream(
   const refspec = remoteBranch === branch ? branch : `${branch}:${remoteBranch}`;
   const authArgs = await authArgsForRemotes(cwd, [remote]);
   try {
-    await execFileAsync(gitBin, [...authArgs, 'push', '--set-upstream', remote, refspec], { cwd, env });
+    await spawnGit(cwd, [...authArgs, 'push', '--set-upstream', remote, refspec], 'push', env);
     return { status: 'ok' };
   } catch (err) {
     return { status: 'error', message: pushErrorMessage(err) };
@@ -1573,7 +1689,7 @@ async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
   const authArgs = await authArgsForRemotes(cwd, remotes);
 
   try {
-    await execFileAsync(gitBin, [...authArgs, ...args], { cwd, env });
+    await spawnGit(cwd, [...authArgs, ...args], activityOp(args), env);
     return { status: 'ok' };
   } catch (err) {
     return { status: 'error', message: pullErrorMessage(err) };
@@ -1861,10 +1977,7 @@ function registerRepoIpc(): void {
       const text = typeof message === 'string' ? message.trim() : '';
       if (!text) return { status: 'error', message: 'Enter a commit message.' };
       try {
-        await execFileAsync(gitBin, ['commit', '-m', text], {
-          cwd: repoPath,
-          env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
-        });
+        await spawnGit(repoPath, ['commit', '-m', text], 'commit');
       } catch (err) {
         return { status: 'error', message: gitErrorMessage(err, 'Commit failed.') };
       }
@@ -2049,7 +2162,7 @@ function registerRepoIpc(): void {
             : ['checkout', branch];
         // Array args (no shell) avoid injection; branch/remote come from the
         // repo's own ref list. GIT_TERMINAL_PROMPT=0 fails fast instead of prompting.
-        await execFileAsync(gitBin, args, { cwd: repoPath, env });
+        await spawnGit(repoPath, args, 'checkout', env);
       } catch (err) {
         return {
           status: 'error',

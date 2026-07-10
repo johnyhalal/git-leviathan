@@ -11,6 +11,7 @@ import type {
 import { WORKING_TREE_HASH } from '../../../../types/ipc';
 import { RepoToolbar } from './RepoToolbar';
 import { RepoColumns } from './RepoColumns';
+import { ActivityLog } from './ActivityLog';
 import { ConfirmProvider } from '../ConfirmBar';
 
 interface RepoViewProps {
@@ -440,6 +441,7 @@ export function RepoView({
           onOpenSettings={onOpenSettings}
         />
       </ConfirmProvider>
+      <ActivityLog repoPath={repoPath} />
     </div>
   );
 }

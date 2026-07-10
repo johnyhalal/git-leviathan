@@ -13,6 +13,7 @@ import {
   type UndoRedoState,
   type GitflowKind,
   type CloneProgress,
+  type RepoActivityEvent,
   type CloneRequest,
   type CloneResult,
   type CommitLogEntry,
@@ -172,6 +173,12 @@ const api: ExposedApi = {
       const listener = (_event: IpcRendererEvent, path: string) => callback(path);
       ipcRenderer.on(RepoChannels.changed, listener);
       return () => ipcRenderer.removeListener(RepoChannels.changed, listener);
+    },
+    onActivity: (callback) => {
+      const listener = (_event: IpcRendererEvent, activity: RepoActivityEvent) =>
+        callback(activity);
+      ipcRenderer.on(RepoChannels.activity, listener);
+      return () => ipcRenderer.removeListener(RepoChannels.activity, listener);
     },
   },
   theme: {

@@ -4041,3 +4041,122 @@ body.is-row-resizing {
   color: var(--fg-muted);
   cursor: default;
 }
+
+/* ---- Activity log (footer) ----------------------------------------------
+   A footer strip under the repo columns that streams the live output of git
+   mutations — including repository hook output (a pre-commit test run, etc.).
+   Collapsed it's a single status bar; clicking expands a scrollable transcript. */
+.activity-log {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--toolbar-bg);
+}
+
+.activity-log__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 26px;
+  padding: 0 12px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.activity-log__bar:hover {
+  color: var(--fg);
+}
+
+.activity-log__summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.activity-log__chevron {
+  flex: none;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+/* Status dot: idle (grey), running (pulsing amber), ok (green), error (red). */
+.activity-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  opacity: 0.5;
+}
+
+.activity-dot--running {
+  background: #f59e0b;
+  opacity: 1;
+  animation: activity-pulse 1s ease-in-out infinite;
+}
+
+.activity-dot--ok {
+  background: var(--current);
+  opacity: 1;
+}
+
+.activity-dot--error {
+  background: var(--danger);
+  opacity: 1;
+}
+
+@keyframes activity-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.activity-log__body {
+  height: 180px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.activity-line {
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.activity-line--muted {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.activity-line--cmd {
+  color: var(--primary-dark);
+  margin-top: 6px;
+  font-weight: 600;
+}
+
+.activity-line--cmd:first-child {
+  margin-top: 0;
+}
+
+.activity-line--end {
+  color: var(--current);
+}
+
+.activity-line--err {
+  color: var(--danger);
+}

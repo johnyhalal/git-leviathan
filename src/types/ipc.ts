@@ -441,7 +441,38 @@ export const RepoChannels = {
   watch: 'repo:watch',
   /** Main -> renderer (send): the watched repo's working tree changed on disk. */
   changed: 'repo:changed',
+  /** Main -> renderer (send): a line of live output from a running git mutation. */
+  activity: 'repo:activity',
 } as const;
+
+/**
+ * One event in the live activity stream for a mutating git command (commit,
+ * push, pull, merge, rebase, stash, gitflow, checkout, undo/redo …). Broadcast
+ * to every window as the command runs so a footer log can show git's own output
+ * — most usefully, the output of repository hooks (a `pre-commit` test run, a
+ * `pre-push` check). Secrets are stripped before broadcast.
+ *
+ * - `start` — the command began; `op` names it.
+ * - `line`  — one line arrived on `stream` (stdout or stderr); `text` is it.
+ * - `end`   — the command finished; `ok` is whether it exited 0.
+ */
+export interface RepoActivityEvent {
+  /** Absolute path of the repository the command runs in. */
+  repoPath: string;
+  /** Short label for the operation, e.g. `commit`, `push`, `merge`. */
+  op: string;
+  kind: 'start' | 'line' | 'end';
+  /** Which stream the line came from (present only when `kind === 'line'`). */
+  stream?: 'stdout' | 'stderr';
+  /** The line's text, secrets redacted (present only when `kind === 'line'`). */
+  text?: string;
+  /** Whether the command exited cleanly (present only when `kind === 'end'`). */
+  ok?: boolean;
+  /** The process exit code (present only when `kind === 'end'`). */
+  exitCode?: number;
+  /** Epoch milliseconds when this event was produced. */
+  ts: number;
+}
 
 // ---- Integrations ---------------------------------------------------------
 
@@ -874,6 +905,14 @@ export interface RepoApi {
    * receives the changed repo's path. Returns an unsubscribe function.
    */
   onRepoChanged(callback: (path: string) => void): () => void;
+  /**
+   * Subscribe to the live activity stream of running git mutations (commit,
+   * push, pull, merge, …) across all repos. Each callback receives one
+   * {@link RepoActivityEvent}; filter by `event.repoPath` for the active tab.
+   * Surfaces hook output (e.g. a `pre-commit` test run) as it happens. Returns
+   * an unsubscribe function.
+   */
+  onActivity(callback: (event: RepoActivityEvent) => void): () => void;
 }
 
 export interface IntegrationsApi {
