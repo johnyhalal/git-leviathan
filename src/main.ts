@@ -1382,17 +1382,28 @@ async function rewordCommit(
 }
 
 /**
- * Turn a failed `git push`'s stderr into a single, actionable line. The common
- * case is a non-fast-forward rejection, where git's *last* stderr line is just
- * an unhelpful "See the 'Note about fast-forwards'…" pointer — so we detect the
- * rejection ourselves and explain it; everything else falls back to the generic
- * last-line extraction.
+ * Turn a failed `git push`'s stderr into a single, actionable line. Several
+ * failures share the same tail ("failed to push some refs") but have very
+ * different fixes, so we detect the specific reason before the generic
+ * non-fast-forward case — otherwise a scope/permission rejection gets
+ * mislabelled as "pull first". A plain non-fast-forward is the last resort,
+ * because git's own final line there is just an unhelpful "See the 'Note about
+ * fast-forwards'…" pointer.
  */
 function pushErrorMessage(err: unknown): string {
   const stderr =
     err && typeof err === 'object' && 'stderr' in err
       ? String((err as { stderr: unknown }).stderr ?? '')
       : '';
+  // A GitHub OAuth-App token (what we inject for HTTPS pushes) can't touch
+  // workflow files without the `workflow` scope — the local branch is fine.
+  if (/without `?workflow`? scope|refusing to allow an? (?:OAuth|GitHub|Personal Access)/i.test(stderr)) {
+    return 'The remote rejected a change to a GitHub Actions workflow file: the connected account is missing the “workflow” permission. Push over SSH, or reconnect the account with workflow scope.';
+  }
+  // Authentication / authorization failures — not a fast-forward problem.
+  if (/\b403\b|permission denied|not authorized|authentication failed|could not read Username|remote: Invalid username or password|access rights/i.test(stderr)) {
+    return 'The remote refused the push: authentication failed or you don’t have write access. Check the connected account or your credentials.';
+  }
   if (/\[rejected\]|non-fast-forward|fetch first|failed to push some refs/i.test(stderr)) {
     return 'The remote has commits you don’t have locally. Pull (or fetch and integrate) first, then push again.';
   }
@@ -1511,6 +1522,14 @@ function pullErrorMessage(err: unknown): string {
   }
   if (/not possible to fast-forward|need to specify how to reconcile|diverg/i.test(output)) {
     return 'Your branch and the remote have diverged, so a fast-forward isn’t possible. Pull with rebase or a merge instead.';
+  }
+  // Dirty working tree: git aborts before merging so nothing is lost, but its
+  // final line is a bare "Aborting". Name the real blocker instead.
+  if (/local changes to the following files would be overwritten/i.test(output)) {
+    return 'You have uncommitted changes that the pull would overwrite. Commit or stash them, then pull.';
+  }
+  if (/untracked working tree files would be overwritten/i.test(output)) {
+    return 'Untracked files in your working tree clash with incoming files. Move or remove them, then pull.';
   }
   if (/CONFLICT|Automatic merge failed|could not apply|Resolve all conflicts/i.test(output)) {
     return 'Pull stopped on conflicts. Resolve them in your working tree, then continue.';
