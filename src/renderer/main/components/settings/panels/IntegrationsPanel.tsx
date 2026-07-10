@@ -13,6 +13,7 @@ import type {
 } from '../../../../../types/ipc';
 import { SettingsSection } from '../SettingsSection';
 import { ConnectingPrompt } from '../../integrations/ConnectingPrompt';
+import { AddSshKey } from '../../integrations/AddSshKey';
 
 interface ProviderMeta {
   provider: IntegrationProvider;
@@ -47,6 +48,7 @@ interface ConnectSectionProps extends ProviderMeta {
 
 /** One provider's connect/waiting/connected UI. */
 function ConnectSection({
+  provider,
   name,
   Icon,
   blurb,
@@ -113,7 +115,7 @@ function ConnectSection({
           <button
             type="button"
             className={
-              connected ? 'settings-connect is-connected' : 'settings-connect'
+              connected ? 'pill-btn pill-btn-red' : 'pill-btn pill-btn-green'
             }
             disabled={busy}
             onClick={connected ? onDisconnect : onConnect}
@@ -122,6 +124,7 @@ function ConnectSection({
           </button>
         </div>
       </div>
+      {connected && <AddSshKey provider={provider} providerName={name} />}
     </SettingsSection>
   );
 }

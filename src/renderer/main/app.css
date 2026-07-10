@@ -924,6 +924,45 @@ h1 {
   gap: 12px;
 }
 
+/* Generate-and-upload SSH key row (shown under a connected account). */
+.integration-sshkey {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+/* First line: the "SSH Key" header and the add/remove button on the edges. */
+.integration-sshkey-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* Second line: the key details, full width. */
+.integration-sshkey-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.integration-sshkey-result code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+
+.integration-sshkey-public {
+  flex: 1 1 auto;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
 /* ---- Clone dialog (reuses the settings modal shell) ---------------------- */
 
 .clone-form {

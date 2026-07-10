@@ -1,5 +1,5 @@
 import type { PullMode } from '../../../../types/ipc';
-import { PushIcon, StashIcon, PopIcon, BranchIcon } from '../../../../../assets/icons';
+import { PushIcon, StashIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon } from '../../../../../assets/icons';
 import { BranchSelect } from './BranchSelect';
 import { PullAction } from './PullAction';
 import { useConfirm } from '../ConfirmBar';
@@ -41,6 +41,14 @@ interface RepoToolbarProps {
   onBranch: () => void;
   /** Whether the inline "new branch" input is currently open. */
   branching: boolean;
+  /** Undo the last HEAD-moving action (commit/checkout/merge/rebase/reset). */
+  onUndo: () => void;
+  /** Redo the last undone action. */
+  onRedo: () => void;
+  /** Label of the action the next undo would revert, or null when there's none. */
+  undoLabel: string | null;
+  /** Label of the action the next redo would re-apply, or null when there's none. */
+  redoLabel: string | null;
 }
 
 /**
@@ -63,6 +71,10 @@ export function RepoToolbar({
   onPop,
   onBranch,
   branching,
+  onUndo,
+  onRedo,
+  undoLabel,
+  redoLabel,
 }: RepoToolbarProps) {
   const requestConfirm = useConfirm();
 
@@ -99,6 +111,28 @@ export function RepoToolbar({
       </div>
 
       <div className="repo-toolbar-center">
+        <button
+          type="button"
+          className={`repo-action tooltip-host${undoLabel ? '' : ' is-disabled'}`}
+          data-tooltip={undoLabel ? `Undo ${undoLabel}` : 'Nothing to undo'}
+          aria-label={undoLabel ? `Undo ${undoLabel}` : 'Nothing to undo'}
+          onClick={() => undoLabel && onUndo()}
+          aria-disabled={!undoLabel}
+        >
+          <span className="repo-action-label">Undo</span>
+          <UndoIcon size={18} />
+        </button>
+        <button
+          type="button"
+          className={`repo-action tooltip-host${redoLabel ? '' : ' is-disabled'}`}
+          data-tooltip={redoLabel ? `Redo ${redoLabel}` : 'Nothing to redo'}
+          aria-label={redoLabel ? `Redo ${redoLabel}` : 'Nothing to redo'}
+          onClick={() => redoLabel && onRedo()}
+          aria-disabled={!redoLabel}
+        >
+          <span className="repo-action-label">Redo</span>
+          <RedoIcon size={18} />
+        </button>
         <PullAction onPull={onPull} pulling={pulling} />
         <button
           type="button"

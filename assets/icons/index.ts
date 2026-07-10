@@ -28,3 +28,5 @@ export { SortIcon } from './SortIcon';
 export { TrashIcon } from './TrashIcon';
 export { ListIcon } from './ListIcon';
 export { TreeIcon } from './TreeIcon';
+export { UndoIcon } from './UndoIcon';
+export { RedoIcon } from './RedoIcon';

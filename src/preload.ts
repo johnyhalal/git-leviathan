@@ -7,6 +7,7 @@ import {
   UpdateChannels,
   type CheckoutResult,
   type RefsMutationResult,
+  type UndoRedoState,
   type GitflowKind,
   type CloneProgress,
   type CloneRequest,
@@ -30,6 +31,7 @@ import {
   type RemoteRepo,
   type RepoInfo,
   type RepoRefs,
+  type SshKeyInfo,
   type ThemeSource,
   type ThemeState,
   type UpdateInfo,
@@ -91,6 +93,12 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.reword, path, hash, message) as Promise<CommitResult>,
     rewordCount: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.rewordCount, path, hash) as Promise<number>,
+    undoState: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.undoState, path) as Promise<UndoRedoState>,
+    undo: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.undo, path) as Promise<RefsMutationResult>,
+    redo: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.redo, path) as Promise<RefsMutationResult>,
     push: (path: string) =>
       ipcRenderer.invoke(RepoChannels.push, path) as Promise<PushResult>,
     pushSetUpstream: (path: string, remote: string, branch: string, remoteBranch?: string) =>
@@ -191,6 +199,21 @@ const api: ExposedApi = {
         IntegrationChannels.repositories,
         provider,
       ) as Promise<RemoteRepo[]>,
+    sshKeys: (provider: IntegrationProvider) =>
+      ipcRenderer.invoke(
+        IntegrationChannels.sshKeys,
+        provider,
+      ) as Promise<SshKeyInfo[]>,
+    addSshKey: (provider: IntegrationProvider) =>
+      ipcRenderer.invoke(
+        IntegrationChannels.addSshKey,
+        provider,
+      ) as Promise<SshKeyInfo>,
+    removeSshKey: (provider: IntegrationProvider) =>
+      ipcRenderer.invoke(
+        IntegrationChannels.removeSshKey,
+        provider,
+      ) as Promise<SshKeyInfo[]>,
     onChange: (callback) => {
       const listener = (_event: IpcRendererEvent, state: IntegrationsState) =>
         callback(state);

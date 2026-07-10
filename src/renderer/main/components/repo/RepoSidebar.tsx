@@ -733,7 +733,7 @@ export function RepoSidebar({
       </CollapsibleSection>
       {contextMenu && (
         <BranchContextMenu
-          target={contextMenu.target}
+          targets={[contextMenu.target]}
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}

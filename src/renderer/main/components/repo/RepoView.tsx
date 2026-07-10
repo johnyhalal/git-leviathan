@@ -5,6 +5,7 @@ import type {
   PullMode,
   RefsMutationResult,
   RepoRefs,
+  UndoRedoState,
   WorkingStatus,
 } from '../../../../types/ipc';
 import { WORKING_TREE_HASH } from '../../../../types/ipc';
@@ -56,6 +57,9 @@ export function RepoView({ title, repoPath, onError, onNotice }: RepoViewProps) 
   const [pulling, setPulling] = useState(false);
   // True while the inline "new branch" input is shown at the HEAD commit.
   const [creatingBranch, setCreatingBranch] = useState(false);
+  // Labels for the next undo/redo (from the reflog), or null when unavailable.
+  // Refetched alongside refs/log so it tracks every HEAD move.
+  const [undoRedo, setUndoRedo] = useState<UndoRedoState>({ undo: null, redo: null });
 
   // A typed-but-uncommitted message belongs to one repo; drop it when the tab
   // switches to another (this view is reused across repos, not remounted).
@@ -75,11 +79,13 @@ export function RepoView({ title, repoPath, onError, onNotice }: RepoViewProps) 
       window.api.repo.listRefs(repoPath),
       window.api.repo.log(repoPath, PAGE_SIZE),
       window.api.repo.status(repoPath),
-    ]).then(([nextRefs, nextCommits, status]) => {
+      window.api.repo.undoState(repoPath),
+    ]).then(([nextRefs, nextCommits, status, undo]) => {
       if (!live) return;
       setRefs(nextRefs);
       setCommits(nextCommits);
       setWorkingStatus(status);
+      setUndoRedo(undo);
       loadedCountRef.current = PAGE_SIZE;
       // A full page back means there may be more; a short page is the end. Stash
       // rows are woven in on top of the real commits, so the count can exceed the
@@ -119,14 +125,16 @@ export function RepoView({ title, repoPath, onError, onNotice }: RepoViewProps) 
     refreshingRef.current = true;
     try {
       const count = loadedCountRef.current || PAGE_SIZE;
-      const [nextRefs, nextCommits, status] = await Promise.all([
+      const [nextRefs, nextCommits, status, undo] = await Promise.all([
         window.api.repo.listRefs(repoPath),
         window.api.repo.log(repoPath, count),
         window.api.repo.status(repoPath),
+        window.api.repo.undoState(repoPath),
       ]);
       setRefs(nextRefs);
       setCommits(nextCommits);
       setWorkingStatus(status);
+      setUndoRedo(undo);
       setHasMore(nextCommits.length >= count);
     } finally {
       refreshingRef.current = false;
@@ -254,6 +262,18 @@ export function RepoView({ title, repoPath, onError, onNotice }: RepoViewProps) 
     [onError, onNotice, reload],
   );
 
+  // Undo/redo the last HEAD-moving action; both reload on success (HEAD, log and
+  // refs all move) and surface git's message — e.g. the "commit or stash first"
+  // guard — on failure, like every other mutation.
+  const undo = useCallback(
+    () => runMutation('Undo failed', () => window.api.repo.undo(repoPath)),
+    [repoPath, runMutation],
+  );
+  const redo = useCallback(
+    () => runMutation('Redo failed', () => window.api.repo.redo(repoPath)),
+    [repoPath, runMutation],
+  );
+
   const stashPush = useCallback(
     () =>
       runMutation('Stash failed', () => window.api.repo.stashPush(repoPath)),
@@ -379,6 +399,10 @@ export function RepoView({ title, repoPath, onError, onNotice }: RepoViewProps) 
           onPop={() => void stashPop(0)}
           onBranch={() => setCreatingBranch((on) => !on)}
           branching={creatingBranch}
+          onUndo={() => void undo()}
+          onRedo={() => void redo()}
+          undoLabel={undoRedo.undo}
+          redoLabel={undoRedo.redo}
         />
         <RepoColumns
           repoPath={repoPath}

@@ -74,6 +74,75 @@ export async function fetchAccount(
   };
 }
 
+interface GithubKeyError {
+  message?: string;
+  errors?: { message?: string }[];
+}
+
+/** Turn a failed key upload into one actionable line. */
+async function keyUploadError(res: Response): Promise<string> {
+  // A token minted before the SSH-key scope was added can't write keys; GitHub
+  // answers 404/403, which is otherwise baffling here — point at reconnecting.
+  if (res.status === 401 || res.status === 403 || res.status === 404) {
+    return 'GitHub denied the request — disconnect and reconnect the account to grant SSH key access.';
+  }
+  let detail = '';
+  try {
+    const body = (await res.json()) as GithubKeyError;
+    detail = body.message ?? '';
+    const first = body.errors?.[0]?.message;
+    if (first) detail = detail ? `${detail}: ${first}` : first;
+  } catch {
+    // Non-JSON body — fall back to the status code alone.
+  }
+  return `Failed to upload the SSH key to GitHub (HTTP ${res.status})${
+    detail ? `: ${detail}` : ''
+  }.`;
+}
+
+/**
+ * Upload a public SSH key to the authenticated user's GitHub account. Resolves
+ * with the created key's id, needed to remove it later.
+ */
+export async function uploadSshKey(
+  accessToken: string,
+  title: string,
+  publicKey: string,
+  signal?: AbortSignal,
+): Promise<number> {
+  const res = await fetch(`${API_BASE}/user/keys`, {
+    method: 'POST',
+    headers: { ...apiHeaders(accessToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, key: publicKey }),
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(await keyUploadError(res));
+  }
+  const body = (await res.json()) as { id?: number };
+  if (typeof body.id !== 'number') {
+    throw new Error('GitHub did not return the new key id.');
+  }
+  return body.id;
+}
+
+/** Remove an SSH key (by its id) from the authenticated user's GitHub account. */
+export async function deleteSshKey(
+  accessToken: string,
+  keyId: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/user/keys/${keyId}`, {
+    method: 'DELETE',
+    headers: apiHeaders(accessToken),
+    signal,
+  });
+  // 404 means it's already gone — treat that as success.
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`Failed to remove the SSH key from GitHub (HTTP ${res.status}).`);
+  }
+}
+
 interface GithubRepo {
   full_name: string;
   name: string;

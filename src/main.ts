@@ -10,6 +10,7 @@ import {
   shell,
 } from 'electron';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'node:fs';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -30,6 +31,7 @@ import {
   type IntegrationProvider,
   type CheckoutResult,
   type RefsMutationResult,
+  type UndoRedoState,
   type GitflowKind,
   type StashInfo,
   type CommitLogEntry,
@@ -53,6 +55,7 @@ import {
   type RemoteInfo,
   type RemoteRepo,
   type RepoInfo,
+  type SshKeyInfo,
   type RepoRefs,
   type TagInfo,
   type ThemeSource,
@@ -62,6 +65,7 @@ import {
 import type { DeviceAuthorization } from './oauth/deviceFlow';
 import * as github from './oauth/github';
 import * as gitlab from './oauth/gitlab';
+import { generateSshKeyPair } from './ssh/keygen';
 
 // Name the app before anything reads it, so app.getName(), the userData path,
 // notifications and the About panel all say "GitLeviathan" rather than
@@ -91,31 +95,41 @@ const GITLAB_CLIENT_ID = process.env.GITLAB_CLIENT_ID || __GITLAB_CLIENT_ID__;
 interface ProviderClient {
   /** Public OAuth client id, or empty when unconfigured. */
   clientId: string;
-  /** Scopes to request — enough to list and clone repos and read the handle. */
+  /**
+   * Scopes to request — enough to list and clone repos, read the handle, and
+   * upload an SSH key (`write:public_key` on GitHub, write `api` on GitLab).
+   */
   scope: string;
   requestDeviceAuthorization: typeof github.requestDeviceAuthorization;
   pollForAccessToken: typeof github.pollForAccessToken;
   fetchAccount: typeof github.fetchAccount;
   fetchUserRepos: typeof github.fetchUserRepos;
+  uploadSshKey: typeof github.uploadSshKey;
+  deleteSshKey: typeof github.deleteSshKey;
 }
 
 // One entry per provider; the connect/list handlers are otherwise generic.
 const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
   github: {
     clientId: GITHUB_CLIENT_ID,
-    scope: 'repo read:user',
+    scope: 'repo read:user write:public_key',
     requestDeviceAuthorization: github.requestDeviceAuthorization,
     pollForAccessToken: github.pollForAccessToken,
     fetchAccount: github.fetchAccount,
     fetchUserRepos: github.fetchUserRepos,
+    uploadSshKey: github.uploadSshKey,
+    deleteSshKey: github.deleteSshKey,
   },
   gitlab: {
     clientId: GITLAB_CLIENT_ID,
-    scope: 'read_api read_repository',
+    // `api` (read-write) is required to add an SSH key; it also covers cloning.
+    scope: 'api',
     requestDeviceAuthorization: gitlab.requestDeviceAuthorization,
     pollForAccessToken: gitlab.pollForAccessToken,
     fetchAccount: gitlab.fetchAccount,
     fetchUserRepos: gitlab.fetchUserRepos,
+    uploadSshKey: gitlab.uploadSshKey,
+    deleteSshKey: gitlab.deleteSshKey,
   },
 };
 
@@ -148,6 +162,8 @@ interface Settings {
   pullMode?: PullMode;
   /** Connected Git host accounts, keyed by provider id. */
   integrations?: Partial<Record<IntegrationProvider, IntegrationConnection>>;
+  /** SSH keys generated and uploaded from this app, keyed by provider id. */
+  sshKeys?: Partial<Record<IntegrationProvider, SshKeyInfo[]>>;
 }
 
 const DEFAULT_WINDOW = { width: 1100, height: 720 } as const;
@@ -209,6 +225,21 @@ function isIntegrationConnection(
   );
 }
 
+function isSshKeyInfo(value: unknown): value is SshKeyInfo {
+  if (!value || typeof value !== 'object') return false;
+  const k = value as Record<string, unknown>;
+  return (
+    isIntegrationProvider(k.provider) &&
+    typeof k.title === 'string' &&
+    typeof k.fingerprint === 'string' &&
+    typeof k.fingerprintMd5 === 'string' &&
+    typeof k.publicKey === 'string' &&
+    typeof k.privateKeyPath === 'string' &&
+    typeof k.remoteId === 'number' &&
+    typeof k.createdAt === 'number'
+  );
+}
+
 function loadSettings(): void {
   try {
     const parsed = JSON.parse(
@@ -261,6 +292,18 @@ function loadSettings(): void {
         }
       }
       settings.integrations = valid;
+    }
+    if (parsed.sshKeys && typeof parsed.sshKeys === 'object') {
+      const raw = parsed.sshKeys as Record<string, unknown>;
+      const valid: Partial<Record<IntegrationProvider, SshKeyInfo[]>> = {};
+      for (const provider of INTEGRATION_PROVIDERS) {
+        const keys = raw[provider];
+        if (Array.isArray(keys)) {
+          const kept = keys.filter(isSshKeyInfo);
+          if (kept.length) valid[provider] = kept;
+        }
+      }
+      settings.sshKeys = valid;
     }
   } catch {
     // No settings file yet or it is unreadable — fall back to defaults.
@@ -620,6 +663,160 @@ async function mutateRepo(
     }
   } catch (err) {
     return { status: 'error', message: gitErrorMessage(err, fallback) };
+  }
+  return { status: 'ok', refs: await readRefs(cwd) };
+}
+
+// --- Undo / redo over the HEAD reflog ---------------------------------------
+//
+// Undo/redo is modelled as travel along the HEAD reflog: each entry is a past
+// position of HEAD, and "the last action" is the move that landed on the
+// current one. A `RepoHistory` is seeded from the reflog on first use and then
+// self-managed in memory so successive undos/redos don't fight the extra reflog
+// entries our own resets create. It's rebuilt from the reflog whenever HEAD has
+// moved by something other than our own undo/redo (a fresh action), which also
+// discards the now-stale redo future.
+
+/**
+ * How to move HEAD for one undo/redo hop. A `checkout` switches refs back; a
+ * `reset` moves the branch, in one of two modes:
+ * - `mixed` — leave the working tree alone so the diff resurfaces as *unstaged*
+ *   changes (how undoing a plain commit should feel: the commit is gone but its
+ *   edits come back to work on). Never clobbers the working tree.
+ * - `keep`  — reset tracked files to the target while preserving unrelated local
+ *   edits, refusing if they'd be overwritten. Used for merge/rebase/reset/etc.,
+ *   where the point is to drop the changes, not re-surface them.
+ */
+type TravelStep =
+  | { kind: 'checkout'; target: string }
+  | { kind: 'reset'; target: string; mode: 'keep' | 'mixed' };
+
+/** One reversible step: how to travel when undoing it, and when redoing it. */
+interface UndoMove {
+  /** Short human label of the action this step undoes/redoes (for the tooltip). */
+  label: string;
+  undo: TravelStep;
+  redo: TravelStep;
+}
+
+interface RepoHistory {
+  /** Undoable moves, most-recent first (`past[0]` is the next undo). */
+  past: UndoMove[];
+  /** Redoable moves, most-recent first (`future[0]` is the next redo). */
+  future: UndoMove[];
+  /** The HEAD hash we last left the repo at; a mismatch means a foreign action. */
+  expectedHead: string;
+}
+
+const undoHistories = new Map<string, RepoHistory>();
+
+/** The current HEAD commit hash, or '' when it can't be resolved (empty repo). */
+async function headHash(cwd: string): Promise<string> {
+  return (await runGit(cwd, ['rev-parse', 'HEAD'])).trim();
+}
+
+/** Condense a reflog subject into a short, readable action label. */
+function humanizeReflog(subject: string): string {
+  const checkout = /^checkout: moving from (.+?) to (.+)$/.exec(subject);
+  if (checkout) return `checkout: ${checkout[1]} → ${checkout[2]}`;
+  const commit = /^commit(?: \((amend|initial|merge)\))?: (.+)$/.exec(subject);
+  if (commit) return `commit${commit[1] ? ` (${commit[1]})` : ''}: ${commit[2]}`;
+  // merge/rebase/pull/reset/revert/cherry-pick: keep the leading clause only.
+  const colon = subject.indexOf(':');
+  if (colon !== -1) {
+    const head = subject.slice(0, colon).trim();
+    if (/^(merge|rebase|pull|reset|revert|cherry-pick)\b/i.test(head)) return head;
+  }
+  return subject;
+}
+
+/**
+ * Build the undo stack from the HEAD reflog (newest first). Reflog entry `i`
+ * moved HEAD from position `i+1` to position `i`; undoing it returns to `i+1`
+ * (a checkout is reversed by checking the previous ref back out).
+ */
+async function buildUndoStack(cwd: string): Promise<UndoMove[]> {
+  const out = await runGit(cwd, ['reflog', '--format=%H%x1f%gs', '-n', '100']);
+  const positions = out
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [hash, subject = ''] = line.split('\x1f');
+      return { hash, subject };
+    });
+  const moves: UndoMove[] = [];
+  for (let i = 0; i < positions.length - 1; i++) {
+    const cur = positions[i];
+    const prev = positions[i + 1];
+    const checkout = /^checkout: moving from (.+?) to (.+)$/.exec(cur.subject);
+    if (checkout) {
+      moves.push({
+        label: humanizeReflog(cur.subject),
+        undo: { kind: 'checkout', target: checkout[1] },
+        redo: { kind: 'checkout', target: checkout[2] },
+      });
+    } else {
+      // Undoing a plain commit should hand its edits back as unstaged changes
+      // (`--mixed`); undoing a merge/rebase/reset/pull just rewinds HEAD without
+      // dumping the integrated diff into the working tree (`--keep`).
+      const mode: 'keep' | 'mixed' = /^commit(?: \(initial\))?: /.test(cur.subject)
+        ? 'mixed'
+        : 'keep';
+      moves.push({
+        label: humanizeReflog(cur.subject),
+        undo: { kind: 'reset', target: prev.hash, mode },
+        redo: { kind: 'reset', target: cur.hash, mode },
+      });
+    }
+  }
+  return moves;
+}
+
+/**
+ * The repo's undo history, reseeded from the reflog when HEAD has moved by
+ * something other than our own undo/redo (which invalidates any redo future).
+ */
+async function ensureHistory(cwd: string): Promise<RepoHistory> {
+  const head = await headHash(cwd);
+  const existing = undoHistories.get(cwd);
+  if (existing && existing.expectedHead === head) return existing;
+  const fresh: RepoHistory = {
+    past: await buildUndoStack(cwd),
+    future: [],
+    expectedHead: head,
+  };
+  undoHistories.set(cwd, fresh);
+  return fresh;
+}
+
+/**
+ * Move HEAD one undo/redo step: a safe `git reset --keep` (keeps uncommitted
+ * work, refuses when it would clobber it) or a `git checkout` back. Distinct
+ * from `mutateRepo` only to translate git's terse "would overwrite" complaint.
+ */
+async function travelHistory(
+  cwd: string,
+  step: TravelStep,
+): Promise<RefsMutationResult> {
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+  const args =
+    step.kind === 'checkout'
+      ? ['checkout', step.target]
+      : ['reset', step.mode === 'mixed' ? '--mixed' : '--keep', step.target];
+  try {
+    await execFileAsync(gitBin, args, { cwd, env });
+  } catch (err) {
+    const stderr =
+      err && typeof err === 'object' && 'stderr' in err
+        ? String((err as { stderr: unknown }).stderr ?? '')
+        : '';
+    if (/not uptodate|overwritten|would be overwritten|cannot merge/i.test(stderr)) {
+      return {
+        status: 'error',
+        message: 'Commit or stash your changes first — this would overwrite them.',
+      };
+    }
+    return { status: 'error', message: gitErrorMessage(err, 'Could not complete the undo.') };
   }
   return { status: 'ok', refs: await readRefs(cwd) };
 }
@@ -1583,6 +1780,56 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.undoState,
+    async (_event, repoPath: unknown): Promise<UndoRedoState> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { undo: null, redo: null };
+      }
+      const history = await ensureHistory(repoPath);
+      return {
+        undo: history.past[0]?.label ?? null,
+        redo: history.future[0]?.label ?? null,
+      };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.undo,
+    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const history = await ensureHistory(repoPath);
+      const move = history.past[0];
+      if (!move) return { status: 'error', message: 'Nothing to undo.' };
+      const result = await travelHistory(repoPath, move.undo);
+      if (result.status === 'error') return result; // HEAD unmoved; leave the stack.
+      history.past.shift();
+      history.future.unshift(move);
+      history.expectedHead = await headHash(repoPath);
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.redo,
+    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const history = await ensureHistory(repoPath);
+      const move = history.future[0];
+      if (!move) return { status: 'error', message: 'Nothing to redo.' };
+      const result = await travelHistory(repoPath, move.redo);
+      if (result.status === 'error') return result;
+      history.future.shift();
+      history.past.unshift(move);
+      history.expectedHead = await headHash(repoPath);
+      return result;
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.push,
     async (_event, repoPath: unknown): Promise<PushResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
@@ -2462,6 +2709,125 @@ async function completeConnect(
   }
 }
 
+/**
+ * Write a freshly generated keypair under `~/.ssh`, creating the directory if
+ * needed and locking the private key down to owner-only. Picks a non-colliding
+ * name so an existing key is never overwritten. Returns the private key's path.
+ */
+function writeSshKeyToDisk(
+  provider: IntegrationProvider,
+  pair: { publicKey: string; privateKey: string },
+): string {
+  const sshDir = path.join(os.homedir(), '.ssh');
+  fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+
+  const base = `gitleviathan_${provider}_ed25519`;
+  let name = base;
+  for (
+    let n = 1;
+    fs.existsSync(path.join(sshDir, name)) ||
+    fs.existsSync(path.join(sshDir, `${name}.pub`));
+    n++
+  ) {
+    name = `${base}_${n}`;
+  }
+
+  const privateKeyPath = path.join(sshDir, name);
+  fs.writeFileSync(privateKeyPath, pair.privateKey, { mode: 0o600 });
+  fs.writeFileSync(`${privateKeyPath}.pub`, `${pair.publicKey}\n`, {
+    mode: 0o644,
+  });
+  // writeFileSync's mode is masked by the umask, so pin the private key down.
+  try {
+    fs.chmodSync(privateKeyPath, 0o600);
+  } catch {
+    // chmod is unsupported on some platforms (e.g. Windows) — ignore.
+  }
+  return privateKeyPath;
+}
+
+/**
+ * Generate a new SSH key, upload its public half to the provider, and only then
+ * persist the private half locally (so a failed upload leaves nothing behind).
+ */
+async function addSshKey(provider: IntegrationProvider): Promise<SshKeyInfo> {
+  const token = getToken(provider);
+  if (!token) {
+    throw new Error(`${PROVIDER_LABELS[provider]} is not connected.`);
+  }
+  // One key per integration: revoke the existing one first before adding.
+  if (settings.sshKeys?.[provider]?.length) {
+    throw new Error(
+      `An SSH key already exists for ${PROVIDER_LABELS[provider]}. Remove it first.`,
+    );
+  }
+  const host = os.hostname().replace(/\.local$/, '');
+  const date = new Date().toISOString().slice(0, 10);
+  const title = `GitLeviathan (${host}) ${date}`;
+
+  const pair = generateSshKeyPair(title);
+  const remoteId = await PROVIDER_CLIENTS[provider].uploadSshKey(
+    token,
+    title,
+    pair.publicKey,
+  );
+  const privateKeyPath = writeSshKeyToDisk(provider, pair);
+
+  const info: SshKeyInfo = {
+    provider,
+    title,
+    fingerprint: pair.fingerprint,
+    fingerprintMd5: pair.fingerprintMd5,
+    publicKey: pair.publicKey,
+    privateKeyPath,
+    remoteId,
+    createdAt: Date.now(),
+  };
+
+  // Persist so the key reappears in Settings after the panel closes / restart.
+  settings.sshKeys = {
+    ...settings.sshKeys,
+    [provider]: [info],
+  };
+  saveSettings();
+
+  return info;
+}
+
+/**
+ * Revoke a provider's SSH key: delete it on the provider, remove the private
+ * key files from disk, and forget the record. Returns the remaining keys.
+ */
+async function removeSshKey(
+  provider: IntegrationProvider,
+): Promise<SshKeyInfo[]> {
+  const keys = settings.sshKeys?.[provider] ?? [];
+  const token = getToken(provider);
+
+  for (const key of keys) {
+    // Delete on the provider first; a failure here (other than "already gone",
+    // which deleteSshKey swallows) aborts so the record isn't lost prematurely.
+    if (token) {
+      await PROVIDER_CLIENTS[provider].deleteSshKey(token, key.remoteId);
+    }
+    for (const file of [key.privateKeyPath, `${key.privateKeyPath}.pub`]) {
+      try {
+        fs.rmSync(file, { force: true });
+      } catch {
+        // The file may already be gone or unremovable — best effort.
+      }
+    }
+  }
+
+  if (settings.sshKeys?.[provider]) {
+    const next = { ...settings.sshKeys };
+    delete next[provider];
+    settings.sshKeys = next;
+    saveSettings();
+  }
+  return settings.sshKeys?.[provider] ?? [];
+}
+
 function registerIntegrationsIpc(): void {
   ipcMain.handle(
     IntegrationChannels.list,
@@ -2512,6 +2878,36 @@ function registerIntegrationsIpc(): void {
         throw new Error(`${PROVIDER_LABELS[provider]} is not connected.`);
       }
       return PROVIDER_CLIENTS[provider].fetchUserRepos(token);
+    },
+  );
+
+  ipcMain.handle(
+    IntegrationChannels.sshKeys,
+    (_event, provider: IntegrationProvider): SshKeyInfo[] => {
+      if (!isIntegrationProvider(provider)) {
+        throw new Error(`Unknown integration provider: ${String(provider)}`);
+      }
+      return settings.sshKeys?.[provider] ?? [];
+    },
+  );
+
+  ipcMain.handle(
+    IntegrationChannels.addSshKey,
+    (_event, provider: IntegrationProvider): Promise<SshKeyInfo> => {
+      if (!isIntegrationProvider(provider)) {
+        throw new Error(`Unknown integration provider: ${String(provider)}`);
+      }
+      return addSshKey(provider);
+    },
+  );
+
+  ipcMain.handle(
+    IntegrationChannels.removeSshKey,
+    (_event, provider: IntegrationProvider): Promise<SshKeyInfo[]> => {
+      if (!isIntegrationProvider(provider)) {
+        throw new Error(`Unknown integration provider: ${String(provider)}`);
+      }
+      return removeSshKey(provider);
     },
   );
 }

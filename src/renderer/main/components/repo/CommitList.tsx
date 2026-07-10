@@ -197,6 +197,30 @@ function groupRefs(refs: CommitRefDecoration[]): RefGroup[] {
   return groups;
 }
 
+/**
+ * The branch delete targets a commit's refs carry: every branch group on the
+ * commit (tags excluded) mapped to a {@link BranchMenuTarget}. Right-clicking
+ * anywhere on the row opens the delete menu built from these, so the whole line
+ * is a target — not just the badge. Groups with no delete action (the checked-out
+ * branch, a detached HEAD) simply contribute no menu items.
+ */
+function branchTargets(refs: CommitRefDecoration[]): BranchMenuTarget[] {
+  return groupRefs(refs)
+    .filter((group) => group.kind === 'branch')
+    .map((group) => ({
+      name: group.name,
+      local: group.local,
+      isCurrent: group.isHead,
+      remote: group.remote,
+      remoteName: group.remoteName,
+    }));
+}
+
+/** Whether a target has any available delete action (local and/or remote). */
+function isDeletable(target: BranchMenuTarget): boolean {
+  return (target.local && !target.isCurrent) || (target.remote && !!target.remoteName);
+}
+
 /** Human-readable location suffix for a group's tooltip. */
 function refWhere(group: RefGroup): string {
   if (group.kind === 'tag') return 'tag';
@@ -225,7 +249,6 @@ function RefBadge({
   remoteUrl,
   onCheckout,
   dnd,
-  onOpenMenu,
 }: {
   group: RefGroup;
   color: string;
@@ -233,8 +256,6 @@ function RefBadge({
   onCheckout?: (branch: string, remote?: string) => void;
   /** Branch drag-and-drop plumbing; absent disables merge/rebase dragging. */
   dnd?: BranchDnd;
-  /** Open the delete menu for this branch at the right-click point. */
-  onOpenMenu?: (target: BranchMenuTarget, x: number, y: number) => void;
 }) {
   // Whether the badge is highlighted as the drop target under the cursor mid-drag.
   const [dropHover, setDropHover] = useState(false);
@@ -266,25 +287,6 @@ function RefBadge({
     event.stopPropagation();
     if (group.local) onCheckout(group.name);
     else onCheckout(group.name, group.remoteName);
-  };
-
-  // Right-click a branch badge (not a tag) to open its delete menu. Tags carry no
-  // delete actions, so they keep the native context menu.
-  const handleContextMenu = (event: MouseEvent) => {
-    if (group.kind !== 'branch' || !onOpenMenu) return;
-    event.preventDefault();
-    event.stopPropagation();
-    onOpenMenu(
-      {
-        name: group.name,
-        local: group.local,
-        isCurrent: group.isHead,
-        remote: group.remote,
-        remoteName: group.remoteName,
-      },
-      event.clientX,
-      event.clientY,
-    );
   };
 
   return (
@@ -338,7 +340,6 @@ function RefBadge({
           : undefined
       }
       onDoubleClick={handleDoubleClick}
-      onContextMenu={handleContextMenu}
     >
       {group.isHead && (
         <span className="commit-ref-icons">
@@ -490,8 +491,6 @@ interface CellContext {
   onCheckout?: (branch: string, remote?: string) => void;
   /** Branch drag-and-drop plumbing for the ref badges (merge/rebase). */
   branchDnd?: BranchDnd;
-  /** Open the delete menu for a branch badge at the right-click point. */
-  onOpenBranchMenu?: (target: BranchMenuTarget, x: number, y: number) => void;
   /**
    * The inline "new branch" input for the HEAD commit's refs cell, present only
    * on the HEAD row while branch creation is active; absent on every other row.
@@ -634,7 +633,6 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
                 remoteUrl={group.remoteName ? ctx.urlByRemote.get(group.remoteName) : undefined}
                 onCheckout={ctx.onCheckout}
                 dnd={ctx.branchDnd}
-                onOpenMenu={ctx.onOpenBranchMenu}
               />
             ))}
             {overflow > 0 && (
@@ -720,10 +718,11 @@ export function CommitList({
   // merge/rebase menu opened where one branch was dropped onto another.
   const [dragBranch, setDragBranch] = useState<string | null>(null);
   const [branchMenu, setBranchMenu] = useState<BranchMenu | null>(null);
-  // The branch delete menu opened by right-clicking a ref badge, anchored at the
-  // click point; null when closed.
+  // The branch delete menu opened by right-clicking a commit row, anchored at the
+  // click point; null when closed. `targets` are every branch on that row, so the
+  // menu lists each one's delete actions together.
   const [contextMenu, setContextMenu] = useState<{
-    target: BranchMenuTarget;
+    targets: BranchMenuTarget[];
     x: number;
     y: number;
   } | null>(null);
@@ -886,7 +885,6 @@ export function CommitList({
             urlByRemote,
             onCheckout,
             branchDnd,
-            onOpenBranchMenu: (target, x, y) => setContextMenu({ target, x, y }),
             newBranch,
             working: {
               message: commitMessage,
@@ -904,6 +902,15 @@ export function CommitList({
               style={{ height: ROW_HEIGHT }}
               aria-selected={commit.hash === selectedHash}
               onClick={() => handleSelect(commit.hash)}
+              // Right-click anywhere on the row opens the branch delete menu for
+              // every branch on that commit — the whole line is the target, not
+              // just the badge. Rows with no deletable branch keep the native menu.
+              onContextMenu={(event) => {
+                const targets = branchTargets(commit.refs).filter(isDeletable);
+                if (targets.length === 0) return;
+                event.preventDefault();
+                setContextMenu({ targets, x: event.clientX, y: event.clientY });
+              }}
             >
               {order.map((key) => renderCell(key, ctx))}
             </tr>
@@ -926,7 +933,7 @@ export function CommitList({
     )}
     {contextMenu && (
       <BranchContextMenu
-        target={contextMenu.target}
+        targets={contextMenu.targets}
         x={contextMenu.x}
         y={contextMenu.y}
         onClose={() => setContextMenu(null)}

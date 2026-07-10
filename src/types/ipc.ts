@@ -183,6 +183,16 @@ export type RefsMutationResult =
 /** Outcome of a branch checkout. On success it carries the repo's fresh refs. */
 export type CheckoutResult = RefsMutationResult;
 
+/**
+ * The next undoable/redoable HEAD-moving action, read from the reflog. Each is a
+ * short human label for the toolbar button's tooltip (e.g. `commit: fix bug`,
+ * `checkout: main → feature`), or null when there's nothing to undo/redo.
+ */
+export interface UndoRedoState {
+  undo: string | null;
+  redo: string | null;
+}
+
 /** The three gitflow topic-branch kinds the sidebar can start/finish. */
 export type GitflowKind = 'feature' | 'release' | 'hotfix';
 
@@ -339,6 +349,12 @@ export const RepoChannels = {
   reword: 'repo:reword',
   /** Renderer -> main (invoke): count the commits a reword of a commit would rebase. */
   rewordCount: 'repo:reword-count',
+  /** Renderer -> main (invoke): labels for the next undoable/redoable HEAD action. */
+  undoState: 'repo:undo-state',
+  /** Renderer -> main (invoke): undo the last HEAD-moving action; returns fresh refs. */
+  undo: 'repo:undo',
+  /** Renderer -> main (invoke): redo the last undone action; returns fresh refs. */
+  redo: 'repo:redo',
   /** Renderer -> main (invoke): push the current branch to its upstream. */
   push: 'repo:push',
   /** Renderer -> main (invoke): publish the current branch to a remote, setting upstream. */
@@ -467,6 +483,32 @@ export interface RemoteRepo {
   updatedAt?: string;
 }
 
+/**
+ * The outcome of generating a new SSH key and uploading its public half to a
+ * connected provider. The private half stays on disk at `privateKeyPath`.
+ */
+export interface SshKeyResult {
+  provider: IntegrationProvider;
+  /** The title the key was uploaded under (also its on-disk comment). */
+  title: string;
+  /** SHA256 fingerprint, e.g. `SHA256:abc…` (matches `ssh-keygen -lf`). */
+  fingerprint: string;
+  /** Legacy MD5 fingerprint, colon-separated hex, e.g. `a1:d7:56:…`. */
+  fingerprintMd5: string;
+  /** The one-line OpenSSH public key that was uploaded. */
+  publicKey: string;
+  /** Absolute path where the private key was written on disk. */
+  privateKeyPath: string;
+}
+
+/** A persisted record of an SSH key generated and uploaded from this app. */
+export interface SshKeyInfo extends SshKeyResult {
+  /** The key's id on the provider, used to revoke it. */
+  remoteId: number;
+  /** Epoch milliseconds when the key was generated. */
+  createdAt: number;
+}
+
 export const IntegrationChannels = {
   /** Renderer -> main (invoke): read connection state for every provider. */
   list: 'integrations:list',
@@ -476,6 +518,12 @@ export const IntegrationChannels = {
   disconnect: 'integrations:disconnect',
   /** Renderer -> main (invoke): list the connected account's repositories. */
   repositories: 'integrations:repositories',
+  /** Renderer -> main (invoke): read the SSH keys generated for a provider. */
+  sshKeys: 'integrations:ssh-keys',
+  /** Renderer -> main (invoke): generate a new SSH key and upload it. */
+  addSshKey: 'integrations:add-ssh-key',
+  /** Renderer -> main (invoke): revoke a provider's SSH key (remote + local). */
+  removeSshKey: 'integrations:remove-ssh-key',
   /** Main -> renderer (send): connection state changed (e.g. auth completed). */
   changed: 'integrations:changed',
 } as const;
@@ -583,6 +631,20 @@ export interface RepoApi {
    * HEAD, since that's a plain amend).
    */
   rewordCount(path: string, hash: string): Promise<number>;
+  /**
+   * Labels for the next undoable and redoable HEAD-moving actions (commit,
+   * merge, rebase, reset, checkout), derived from the reflog. Each is a short
+   * human string for the toolbar tooltip, or null when nothing is available.
+   */
+  undoState(path: string): Promise<UndoRedoState>;
+  /**
+   * Undo the last HEAD-moving action, sending HEAD back to its prior state via a
+   * safe `git reset --keep` (or a checkout back for a checkout). Refuses rather
+   * than discard uncommitted changes. Resolves with fresh refs, or an error.
+   */
+  undo(path: string): Promise<RefsMutationResult>;
+  /** Redo the last undone action. Resolves with fresh refs, or an error. */
+  redo(path: string): Promise<RefsMutationResult>;
   /**
    * Push the current branch to its upstream. When the branch already tracks an
    * upstream, a plain push follows it. When it has no upstream yet, this does not
@@ -757,6 +819,21 @@ export interface IntegrationsApi {
    * Rejects if the provider is not connected.
    */
   repositories(provider: IntegrationProvider): Promise<RemoteRepo[]>;
+  /** The SSH keys generated for `provider` from this app, newest last. */
+  sshKeys(provider: IntegrationProvider): Promise<SshKeyInfo[]>;
+  /**
+   * Generate a fresh ed25519 SSH key, write the private half under `~/.ssh`, and
+   * upload the public half to the connected provider. The key is persisted so it
+   * reappears next time. Resolves with the key's fingerprint, public text and the
+   * private key's path. Rejects if the provider is not connected or the upload
+   * fails.
+   */
+  addSshKey(provider: IntegrationProvider): Promise<SshKeyInfo>;
+  /**
+   * Revoke `provider`'s SSH key: delete it on the provider, remove the private
+   * key files from disk, and forget it. Resolves with the remaining keys (empty).
+   */
+  removeSshKey(provider: IntegrationProvider): Promise<SshKeyInfo[]>;
   /** Subscribe to connection-state changes. Returns an unsubscribe function. */
   onChange(callback: (state: IntegrationsState) => void): () => void;
 }

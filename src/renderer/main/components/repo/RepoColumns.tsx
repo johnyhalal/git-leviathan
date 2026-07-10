@@ -127,19 +127,26 @@ export function RepoColumns({
 
   // After a successful commit, close the working staging view and select the
   // freshly created commit. The new hash isn't known until history reloads, so
-  // flag the intent and pick the newest real commit once the next `commits`
-  // arrive.
-  const selectTipAfterReload = useRef(false);
+  // remember the *pre-commit* tip and, once a different tip appears, select it.
+  // Keying on "different from the old tip" (not just "armed") is load-bearing:
+  // committing first clears the working status, which drops the synthetic
+  // working row and re-renders with the old commits (new array identity) before
+  // the reload runs — a plain flag would latch onto that stale old tip and never
+  // advance to the new commit. `null` means inactive; an object arms the wait.
+  const selectTipAfterReload = useRef<{ prevTip: string | null } | null>(null);
+  const tipHash = () =>
+    commits?.find((commit) => !commit.working && commit.stashIndex === undefined)?.hash ?? null;
   const handleCommitted = () => {
-    selectTipAfterReload.current = true;
+    selectTipAfterReload.current = { prevTip: tipHash() };
     onCommitted();
   };
   useEffect(() => {
-    if (!selectTipAfterReload.current) return;
-    const tip = commits?.find((commit) => !commit.working && commit.stashIndex === undefined);
-    if (tip) {
-      setSelectedHash(tip.hash);
-      selectTipAfterReload.current = false;
+    const pending = selectTipAfterReload.current;
+    if (!pending) return;
+    const tip = tipHash();
+    if (tip && tip !== pending.prevTip) {
+      setSelectedHash(tip);
+      selectTipAfterReload.current = null;
     }
   }, [commits]);
 

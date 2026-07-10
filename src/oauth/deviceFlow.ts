@@ -62,12 +62,15 @@ export async function requestDeviceAuthorization(
     body: JSON.stringify({ client_id: clientId, scope }),
     signal,
   });
-  if (!res.ok) {
-    throw new Error(`Device authorization request failed (HTTP ${res.status}).`);
-  }
-  const data = (await res.json()) as DeviceCodeResponse;
-  if (data.error) {
+  // Even on a 4xx the provider returns an OAuth error body (e.g. `invalid_scope`
+  // when the app isn't registered for a requested scope) — surface it rather
+  // than a bare status code, so the real cause is visible.
+  const data = (await res.json().catch(() => null)) as DeviceCodeResponse | null;
+  if (data?.error) {
     throw new Error(oauthErrorMessage(data.error, data.error_description));
+  }
+  if (!res.ok || !data) {
+    throw new Error(`Device authorization request failed (HTTP ${res.status}).`);
   }
   if (
     !data.device_code ||

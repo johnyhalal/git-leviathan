@@ -16,7 +16,12 @@ export interface BranchMenuTarget {
 }
 
 interface BranchContextMenuProps {
-  target: BranchMenuTarget;
+  /**
+   * The branches to offer delete actions for. Opening the menu on a single badge
+   * passes one; opening it on a commit row passes every branch sitting on that
+   * commit, so each of their delete actions is listed together.
+   */
+  targets: BranchMenuTarget[];
   /** Viewport coordinates to anchor the menu at (the right-click point). */
   x: number;
   y: number;
@@ -35,56 +40,58 @@ interface MenuItem {
 }
 
 /**
- * Build the delete actions available for `target`: a local branch that isn't the
- * checked-out one can be deleted locally; a branch that exists on a remote can be
- * deleted there. Each action first raises the shared confirm bar (via
+ * Build the delete actions available across `targets`: a local branch that isn't
+ * the checked-out one can be deleted locally; a branch that exists on a remote can
+ * be deleted there. Each action first raises the shared confirm bar (via
  * `requestConfirm`) so the destructive step is always confirmed.
  */
 function deleteItems(
-  target: BranchMenuTarget,
+  targets: BranchMenuTarget[],
   requestConfirm: ReturnType<typeof useConfirm>,
   onDeleteBranch: (name: string) => void,
   onDeleteRemoteBranch: (remote: string, name: string) => void,
 ): MenuItem[] {
   const items: MenuItem[] = [];
 
-  if (target.local && !target.isCurrent) {
-    items.push({
-      label: `Delete ${target.name}`,
-      onClick: () =>
-        requestConfirm({
-          message: `Delete local branch “${target.name}”? This can’t be undone.`,
-          cancelLabel: 'Cancel',
-          actions: [
-            {
-              label: 'Delete',
-              tone: 'danger',
-              busyLabel: 'Deleting…',
-              onClick: () => onDeleteBranch(target.name),
-            },
-          ],
-        }),
-    });
-  }
+  for (const target of targets) {
+    if (target.local && !target.isCurrent) {
+      items.push({
+        label: `Delete ${target.name}`,
+        onClick: () =>
+          requestConfirm({
+            message: `Delete local branch “${target.name}”? This can’t be undone.`,
+            cancelLabel: 'Cancel',
+            actions: [
+              {
+                label: 'Delete',
+                tone: 'danger',
+                busyLabel: 'Deleting…',
+                onClick: () => onDeleteBranch(target.name),
+              },
+            ],
+          }),
+      });
+    }
 
-  if (target.remote && target.remoteName) {
-    const remote = target.remoteName;
-    items.push({
-      label: `Delete ${remote}/${target.name}`,
-      onClick: () =>
-        requestConfirm({
-          message: `Delete “${remote}/${target.name}” from the remote? This can’t be undone.`,
-          cancelLabel: 'Cancel',
-          actions: [
-            {
-              label: 'Delete',
-              tone: 'danger',
-              busyLabel: 'Deleting…',
-              onClick: () => onDeleteRemoteBranch(remote, target.name),
-            },
-          ],
-        }),
-    });
+    if (target.remote && target.remoteName) {
+      const remote = target.remoteName;
+      items.push({
+        label: `Delete ${remote}/${target.name}`,
+        onClick: () =>
+          requestConfirm({
+            message: `Delete “${remote}/${target.name}” from the remote? This can’t be undone.`,
+            cancelLabel: 'Cancel',
+            actions: [
+              {
+                label: 'Delete',
+                tone: 'danger',
+                busyLabel: 'Deleting…',
+                onClick: () => onDeleteRemoteBranch(remote, target.name),
+              },
+            ],
+          }),
+      });
+    }
   }
 
   return items;
@@ -97,7 +104,7 @@ function deleteItems(
  * the branch has no available delete action (e.g. only the checked-out branch).
  */
 export function BranchContextMenu({
-  target,
+  targets,
   x,
   y,
   onClose,
@@ -107,7 +114,7 @@ export function BranchContextMenu({
   const requestConfirm = useConfirm();
   const ref = useOutsideDismiss<HTMLDivElement>(true, onClose);
 
-  const items = deleteItems(target, requestConfirm, onDeleteBranch, onDeleteRemoteBranch);
+  const items = deleteItems(targets, requestConfirm, onDeleteBranch, onDeleteRemoteBranch);
   if (items.length === 0) return null;
 
   return (

@@ -873,6 +873,34 @@ function WorkingChanges({
     [repoPath, onStatusChange],
   );
 
+  // Stage a single file while keeping the diff viewer on a useful target: when
+  // the file being staged is the one currently open, advance the viewer to the
+  // next unstaged file (in the list's sort order) so inspection flows down the
+  // list. Staging the last unstaged file follows it into the staged section
+  // instead, so its now-staged diff stays on screen.
+  const stageFile = useCallback(
+    async (file: DisplayFile) => {
+      const unstaged = status?.unstaged ?? [];
+      const viewing =
+        activeDiff &&
+        sameSource(activeDiff.source, { kind: 'unstaged' }) &&
+        activeDiff.path === file.path;
+      let next: DiffTarget | null = null;
+      if (viewing) {
+        const order = [...unstaged].sort((a, b) => a.path.localeCompare(b.path));
+        if (!asc) order.reverse();
+        const idx = order.findIndex((f) => f.path === file.path);
+        const following = idx >= 0 ? order[idx + 1] : undefined;
+        next = following
+          ? { source: { kind: 'unstaged' }, path: following.path, status: following.status ?? 'modified' }
+          : { source: { kind: 'staged' }, path: file.path, status: file.status ?? 'modified' };
+      }
+      onStatusChange(await window.api.repo.stage(repoPath, file.path));
+      if (next) onOpenDiff(next);
+    },
+    [repoPath, status, asc, activeDiff, onStatusChange, onOpenDiff],
+  );
+
   const discardAll = useCallback(() => {
     requestConfirm({
       message: 'Discard all changes? This cannot be undone.',
@@ -1026,7 +1054,7 @@ function WorkingChanges({
                 label: 'Stage',
                 title: 'Stage file',
                 variant: 'green',
-                onClick: () => void stage(file.path),
+                onClick: () => void stageFile(file),
               })}
               onOpenFile={(file) =>
                 onOpenDiff({

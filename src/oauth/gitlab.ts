@@ -74,6 +74,82 @@ export async function fetchAccount(
   };
 }
 
+interface GitlabKeyError {
+  message?: string | Record<string, string[]>;
+  error?: string;
+}
+
+/** Turn a failed key upload into one actionable line. */
+async function keyUploadError(res: Response): Promise<string> {
+  // A token minted before the write scope was granted can't add keys.
+  if (res.status === 401 || res.status === 403) {
+    return 'GitLab denied the request — disconnect and reconnect the account to grant SSH key access.';
+  }
+  let detail = '';
+  try {
+    const body = (await res.json()) as GitlabKeyError;
+    if (typeof body.message === 'string') {
+      detail = body.message;
+    } else if (body.message && typeof body.message === 'object') {
+      // GitLab reports validation errors as { field: ["msg", …] }.
+      const parts = Object.entries(body.message).map(
+        ([field, msgs]) => `${field} ${msgs.join(', ')}`,
+      );
+      detail = parts.join('; ');
+    } else if (typeof body.error === 'string') {
+      detail = body.error;
+    }
+  } catch {
+    // Non-JSON body — fall back to the status code alone.
+  }
+  return `Failed to upload the SSH key to GitLab (HTTP ${res.status})${
+    detail ? `: ${detail}` : ''
+  }.`;
+}
+
+/**
+ * Upload a public SSH key to the authenticated user's GitLab account. Resolves
+ * with the created key's id, needed to remove it later.
+ */
+export async function uploadSshKey(
+  accessToken: string,
+  title: string,
+  publicKey: string,
+  signal?: AbortSignal,
+): Promise<number> {
+  const res = await fetch(`${API_BASE}/user/keys`, {
+    method: 'POST',
+    headers: { ...apiHeaders(accessToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, key: publicKey }),
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(await keyUploadError(res));
+  }
+  const body = (await res.json()) as { id?: number };
+  if (typeof body.id !== 'number') {
+    throw new Error('GitLab did not return the new key id.');
+  }
+  return body.id;
+}
+
+/** Remove an SSH key (by its id) from the authenticated user's GitLab account. */
+export async function deleteSshKey(
+  accessToken: string,
+  keyId: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/user/keys/${keyId}`, {
+    method: 'DELETE',
+    headers: apiHeaders(accessToken),
+    signal,
+  });
+  // 404 means it's already gone — treat that as success.
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`Failed to remove the SSH key from GitLab (HTTP ${res.status}).`);
+  }
+}
+
 interface GitlabProject {
   path_with_namespace: string;
   name: string;
