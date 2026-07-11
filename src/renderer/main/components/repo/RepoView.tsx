@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CommitLogEntry,
   GitflowKind,
+  MergeState,
   PullMode,
   RefsMutationResult,
   RepoRefs,
@@ -11,6 +12,8 @@ import type {
 import { WORKING_TREE_HASH } from '../../../../types/ipc';
 import { RepoToolbar } from './RepoToolbar';
 import { RepoColumns } from './RepoColumns';
+import { MergeBanner } from './MergeBanner';
+import { ConflictResolver } from './ConflictResolver';
 import { ConfirmProvider } from '../ConfirmBar';
 
 interface RepoViewProps {
@@ -68,12 +71,39 @@ export function RepoView({
   // Labels for the next undo/redo (from the reflog), or null when unavailable.
   // Refetched alongside refs/log so it tracks every HEAD move.
   const [undoRedo, setUndoRedo] = useState<UndoRedoState>({ undo: null, redo: null });
+  // The in-progress merge/rebase/etc. conflict state, or null when the tree is
+  // clean. Refreshed alongside refs/status; drives the banner and resolver.
+  const [mergeState, setMergeState] = useState<MergeState | null>(null);
+  // Whether the full-screen conflict resolver is open.
+  const [resolverOpen, setResolverOpen] = useState(false);
+  // True while a continue/abort/skip is in flight, to disable the banner buttons.
+  const [mergeBusy, setMergeBusy] = useState(false);
+  // Whether the last read saw an in-progress operation, so we auto-open the
+  // resolver only on the transition into conflicts (not on every refresh).
+  const hadMergeRef = useRef(false);
+
+  // Swap in a fresh merge state, opening the resolver the moment a repo first
+  // enters a conflicted operation and closing it once everything is resolved.
+  const applyMergeState = useCallback((next: MergeState | null) => {
+    const was = hadMergeRef.current;
+    hadMergeRef.current = next !== null;
+    setMergeState(next);
+    if (next && !was) {
+      setResolverOpen(true);
+      onNotice?.('Conflicts', `${next.description} — resolve the conflicts to continue.`);
+    }
+    if (!next) setResolverOpen(false);
+  }, [onNotice]);
+  const applyMergeRef = useRef(applyMergeState);
+  applyMergeRef.current = applyMergeState;
 
   // A typed-but-uncommitted message belongs to one repo; drop it when the tab
   // switches to another (this view is reused across repos, not remounted).
   useEffect(() => {
     setCommitMessage('');
     setCreatingBranch(false);
+    setResolverOpen(false);
+    hadMergeRef.current = false;
   }, [repoPath]);
 
   useEffect(() => {
@@ -88,12 +118,14 @@ export function RepoView({
       window.api.repo.log(repoPath, PAGE_SIZE),
       window.api.repo.status(repoPath),
       window.api.repo.undoState(repoPath),
-    ]).then(([nextRefs, nextCommits, status, undo]) => {
+      window.api.repo.mergeState(repoPath),
+    ]).then(([nextRefs, nextCommits, status, undo, merge]) => {
       if (!live) return;
       setRefs(nextRefs);
       setCommits(nextCommits);
       setWorkingStatus(status);
       setUndoRedo(undo);
+      applyMergeRef.current(merge);
       loadedCountRef.current = PAGE_SIZE;
       // A full page back means there may be more; a short page is the end. Stash
       // rows are woven in on top of the real commits, so the count can exceed the
@@ -121,6 +153,23 @@ export function RepoView({
 
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
 
+  // A failing merge/rebase/pull/stash-pop leaves the tree conflicted rather than
+  // truly erroring. On any mutation failure, re-read the merge state first: if an
+  // operation is now in progress, open the resolver (and reload) instead of
+  // surfacing git's raw stderr as a scary toast; otherwise it's a real error.
+  const surfaceConflictsOrError = useCallback(
+    async (failureTitle: string, message: string) => {
+      const merge = await window.api.repo.mergeState(repoPath);
+      if (merge) {
+        applyMergeRef.current(merge);
+        reload();
+      } else {
+        onError?.(failureTitle, message);
+      }
+    },
+    [repoPath, reload, onError],
+  );
+
   // A seamless re-sync used when the window regains focus: re-read refs, the
   // commit log and the working status at the current page cap and swap them in
   // place — no nulling of state, so there's no loading flash and the scroll
@@ -133,16 +182,18 @@ export function RepoView({
     refreshingRef.current = true;
     try {
       const count = loadedCountRef.current || PAGE_SIZE;
-      const [nextRefs, nextCommits, status, undo] = await Promise.all([
+      const [nextRefs, nextCommits, status, undo, merge] = await Promise.all([
         window.api.repo.listRefs(repoPath),
         window.api.repo.log(repoPath, count),
         window.api.repo.status(repoPath),
         window.api.repo.undoState(repoPath),
+        window.api.repo.mergeState(repoPath),
       ]);
       setRefs(nextRefs);
       setCommits(nextCommits);
       setWorkingStatus(status);
       setUndoRedo(undo);
+      applyMergeRef.current(merge);
       setHasMore(nextCommits.length >= count);
     } finally {
       refreshingRef.current = false;
@@ -223,9 +274,9 @@ export function RepoView({
       const result = await window.api.repo.pull(repoPath, mode);
       setPulling(false);
       if (result.status === 'ok') reload();
-      else onError?.('Pull failed', result.message);
+      else await surfaceConflictsOrError('Pull failed', result.message);
     },
-    [pulling, repoPath, reload, onError],
+    [pulling, repoPath, reload, surfaceConflictsOrError],
   );
 
   const checkout = useCallback(
@@ -253,7 +304,7 @@ export function RepoView({
 
   // Stash / gitflow / branch deletion all mutate the repo and hand back fresh
   // refs; on success we just reload, on failure we surface git's message via the
-  // toast channel.
+  // toast channel (or the conflict resolver, when the failure left conflicts).
   const runMutation = useCallback(
     async (
       failureTitle: string,
@@ -265,9 +316,9 @@ export function RepoView({
         // A successful-but-no-op mutation (e.g. an already-up-to-date merge)
         // carries a note so the user isn't left wondering what happened.
         if (result.notice) onNotice?.('Nothing to do', result.notice);
-      } else onError?.(failureTitle, result.message);
+      } else await surfaceConflictsOrError(failureTitle, result.message);
     },
-    [onError, onNotice, reload],
+    [onNotice, reload, surfaceConflictsOrError],
   );
 
   // Undo/redo the last HEAD-moving action; both reload on success (HEAD, log and
@@ -353,6 +404,34 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
+  // Continue / abort / skip the in-progress operation. Each runs through the
+  // same mutation shape (fresh refs or an error), then a reload re-reads the
+  // merge state so the banner and resolver clear once the operation finishes.
+  const runMergeAction = useCallback(
+    async (failureTitle: string, run: () => Promise<RefsMutationResult>) => {
+      if (mergeBusy) return;
+      setMergeBusy(true);
+      const result = await run();
+      setMergeBusy(false);
+      if (result.status === 'ok') reload();
+      else onError?.(failureTitle, result.message);
+    },
+    [mergeBusy, reload, onError],
+  );
+
+  const mergeContinue = useCallback(
+    () => runMergeAction('Continue failed', () => window.api.repo.mergeContinue(repoPath)),
+    [repoPath, runMergeAction],
+  );
+  const mergeAbort = useCallback(
+    () => runMergeAction('Abort failed', () => window.api.repo.mergeAbort(repoPath)),
+    [repoPath, runMergeAction],
+  );
+  const rebaseSkip = useCallback(
+    () => runMergeAction('Skip failed', () => window.api.repo.rebaseSkip(repoPath)),
+    [repoPath, runMergeAction],
+  );
+
   const hasChanges =
     (workingStatus?.staged.length ?? 0) + (workingStatus?.unstaged.length ?? 0) > 0;
 
@@ -412,6 +491,16 @@ export function RepoView({
           undoLabel={undoRedo.undo}
           redoLabel={undoRedo.redo}
         />
+        {mergeState && (
+          <MergeBanner
+            state={mergeState}
+            busy={mergeBusy}
+            onResolve={() => setResolverOpen(true)}
+            onContinue={() => void mergeContinue()}
+            onAbort={() => void mergeAbort()}
+            onSkip={() => void rebaseSkip()}
+          />
+        )}
         <RepoColumns
           repoPath={repoPath}
           branch={currentBranch}
@@ -439,6 +528,14 @@ export function RepoView({
           onError={onError}
           onOpenSettings={onOpenSettings}
         />
+        {resolverOpen && mergeState && (
+          <ConflictResolver
+            repoPath={repoPath}
+            mergeState={mergeState}
+            onResolved={(next) => applyMergeRef.current(next)}
+            onClose={() => setResolverOpen(false)}
+          />
+        )}
       </ConfirmProvider>
     </div>
   );

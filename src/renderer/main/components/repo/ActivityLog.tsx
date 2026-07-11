@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CloseIcon, ListIcon } from '../../../../../assets/icons';
-import type { RepoActivityEvent } from '../../../../types/ipc';
+import { GLOBAL_ACTIVITY_PATH, type RepoActivityEvent } from '../../../../types/ipc';
 
 interface ActivityLogProps {
   /** The repo whose git activity this indicator shows; events for others are ignored. */
@@ -48,7 +48,8 @@ export function ActivityLog({ repoPath }: ActivityLogProps) {
 
   useEffect(() => {
     return window.api.repo.onActivity((event: RepoActivityEvent) => {
-      if (event.repoPath !== repoPath) return;
+      // Show this repo's git activity plus app-wide events (e.g. auto-update).
+      if (event.repoPath !== repoPath && event.repoPath !== GLOBAL_ACTIVITY_PATH) return;
       if (event.kind === 'start') setRunning(event.op);
       else if (event.kind === 'end') {
         setRunning(null);

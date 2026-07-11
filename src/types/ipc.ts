@@ -338,6 +338,83 @@ export interface FileDiff {
   lines: DiffLine[];
 }
 
+// ---- Merge conflicts ------------------------------------------------------
+
+/**
+ * The kind of in-progress operation that left the working tree conflicted.
+ * `stash-pop` has no on-disk marker of its own — it's inferred from unmerged
+ * files with no merge/rebase/cherry-pick/revert operation in progress.
+ */
+export type MergeOp = 'merge' | 'rebase' | 'cherry-pick' | 'revert' | 'stash-pop';
+
+/**
+ * What a conflicted file's two sides did, from git's porcelain-v1 unmerged
+ * XY code (the letter pair for an unmerged entry).
+ */
+export type ConflictKind =
+  | 'both-modified' // UU
+  | 'both-added' // AA
+  | 'both-deleted' // DD
+  | 'added-by-us' // AU
+  | 'added-by-them' // UA
+  | 'deleted-by-us' // DU
+  | 'deleted-by-them'; // UD
+
+/** One unmerged path in the working tree. */
+export interface ConflictFile {
+  path: string;
+  kind: ConflictKind;
+  /** git treats at least one side as binary — no textual merge is possible. */
+  binary: boolean;
+}
+
+/**
+ * The repository's in-progress conflict state, or `null` when the tree is
+ * clean of conflicts and no merge/rebase/etc. is under way. Drives the merge
+ * banner and resolver; refreshed like `WorkingStatus` after every mutation.
+ */
+export interface MergeState {
+  op: MergeOp;
+  /** Human label, e.g. "Merging feature into main", "Rebasing onto main". */
+  description: string;
+  /** Rebase progress (current/total steps), when git exposes it. */
+  step?: { current: number; total: number };
+  /** Remaining unmerged files (empty ⇒ everything resolved, ready to continue). */
+  conflicts: ConflictFile[];
+  /** Whether a "continue" action applies (false for stash-pop). */
+  canContinue: boolean;
+  /** Whether a "skip" action applies (true only for rebase). */
+  canSkip: boolean;
+}
+
+/**
+ * One conflicted file's three merge sides plus the current working copy, for
+ * the side-by-side merge editor. A side is `null` when that stage is absent
+ * (e.g. no base for an add/add, no `ours` when deleted by us).
+ */
+export interface ConflictFileContent {
+  path: string;
+  /** git treats the blob as binary — only whole-side resolution is possible. */
+  binary: boolean;
+  /** Common ancestor (index stage 1), split into lines. */
+  base: string[] | null;
+  /** Our side (index stage 2), split into lines. */
+  ours: string[] | null;
+  /** Their side (index stage 3), split into lines. */
+  theirs: string[] | null;
+  /** The on-disk working file with git's `<<<< ==== >>>>` markers, per line. */
+  merged: string[];
+}
+
+/**
+ * How to resolve a conflicted file: take a whole side, or write a hand-merged
+ * result. Either way the main process then stages the file.
+ */
+export type MergeResolution =
+  | { kind: 'ours' }
+  | { kind: 'theirs' }
+  | { kind: 'content'; text: string };
+
 /** Outcome of a commit. */
 export type CommitResult = { status: 'ok' } | { status: 'error'; message: string };
 
@@ -419,6 +496,18 @@ export const RepoChannels = {
   gitflowStart: 'repo:gitflow-start',
   /** Renderer -> main (invoke): finish the current gitflow topic branch. */
   gitflowFinish: 'repo:gitflow-finish',
+  /** Renderer -> main (invoke): read the in-progress merge/conflict state or null. */
+  mergeState: 'repo:merge-state',
+  /** Renderer -> main (invoke): read one conflicted file's three merge sides. */
+  conflictFile: 'repo:conflict-file',
+  /** Renderer -> main (invoke): resolve one conflicted file; returns fresh merge state. */
+  resolveFile: 'repo:resolve-file',
+  /** Renderer -> main (invoke): finish the in-progress operation (commit/continue). */
+  mergeContinue: 'repo:merge-continue',
+  /** Renderer -> main (invoke): abort the in-progress operation. */
+  mergeAbort: 'repo:merge-abort',
+  /** Renderer -> main (invoke): skip the current commit during a rebase. */
+  rebaseSkip: 'repo:rebase-skip',
   /** Renderer -> main (invoke): pick a destination folder; returns path or null. */
   chooseDir: 'repo:choose-dir',
   /** Renderer -> main (invoke): read the last-used clone destination, if any. */
@@ -475,6 +564,14 @@ export interface RepoActivityEvent {
   /** Epoch milliseconds when this event was produced. */
   ts: number;
 }
+
+/**
+ * Sentinel `repoPath` for activity that isn't tied to any one repository —
+ * e.g. the in-app auto-updater. The footer `ActivityLog` shows events with
+ * this path regardless of which repo is open, so app-wide operations still
+ * surface in the transcript.
+ */
+export const GLOBAL_ACTIVITY_PATH = '*';
 
 // ---- Integrations ---------------------------------------------------------
 
@@ -854,6 +951,40 @@ export interface RepoApi {
    * HEAD isn't on a gitflow branch or the merge can't complete cleanly.
    */
   gitflowFinish(path: string): Promise<RefsMutationResult>;
+  /**
+   * Read the repository's in-progress conflict state — which operation (merge,
+   * rebase, cherry-pick, revert, stash-pop) is under way and which files are
+   * still unmerged — or `null` when there is nothing to resolve.
+   */
+  mergeState(path: string): Promise<MergeState | null>;
+  /**
+   * Read one conflicted `file`'s three merge sides (base/ours/theirs) plus the
+   * on-disk working copy with conflict markers, for the merge editor.
+   */
+  conflictFile(path: string, file: string): Promise<ConflictFileContent>;
+  /**
+   * Resolve one conflicted `file` — take a whole side or write a hand-merged
+   * result — and stage it. Resolves with the refreshed merge state (or null
+   * once the last conflict is gone).
+   */
+  resolveFile(
+    path: string,
+    file: string,
+    resolution: MergeResolution,
+  ): Promise<MergeState | null>;
+  /**
+   * Finish the in-progress operation once every conflict is resolved: commit
+   * the merge, or `--continue` the rebase/cherry-pick/revert. Resolves with
+   * fresh refs, or an error message.
+   */
+  mergeContinue(path: string): Promise<RefsMutationResult>;
+  /**
+   * Abort the in-progress operation (`git <op> --abort`), restoring the
+   * pre-operation state. Resolves with fresh refs, or an error message.
+   */
+  mergeAbort(path: string): Promise<RefsMutationResult>;
+  /** Skip the current commit during a rebase (`git rebase --skip`). */
+  rebaseSkip(path: string): Promise<RefsMutationResult>;
   /**
    * Show the native folder picker to choose a destination directory (e.g. where
    * to clone into). Resolves with the chosen absolute path, or null if canceled.

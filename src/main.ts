@@ -31,6 +31,7 @@ import {
   RepoChannels,
   ThemeChannels,
   UpdateChannels,
+  GLOBAL_ACTIVITY_PATH,
   type ClaudeStatus,
   type GenerateCommitResult,
   type CloneProgress,
@@ -55,6 +56,12 @@ import {
   type FileDiff,
   type FileStatus,
   type WorkingStatus,
+  type MergeOp,
+  type MergeState,
+  type ConflictFile,
+  type ConflictKind,
+  type ConflictFileContent,
+  type MergeResolution,
   type IntegrationsState,
   type LocalBranchInfo,
   type OpenRepoResult,
@@ -1740,11 +1747,303 @@ async function readStatus(cwd: string): Promise<WorkingStatus> {
     // A rename/copy carries its source path in the following field.
     if (x === 'R' || x === 'C' || y === 'R' || y === 'C') i++;
 
+    // Unmerged (conflicted) entries belong to the merge resolver, not the
+    // staged/unstaged lists — a `UU` would otherwise show up in both.
+    if (isUnmergedCode(x, y)) continue;
+
     if (x !== ' ' && x !== '?') staged.push({ path, status: mapPorcelainStatus(x) });
     if (y !== ' ') unstaged.push({ path, status: mapPorcelainStatus(y) });
   }
 
   return { staged, unstaged };
+}
+
+/**
+ * Whether a porcelain-v1 XY code pair marks an unmerged (conflicted) entry:
+ * either side is `U`, or both sides added (`AA`), or both sides deleted (`DD`).
+ */
+function isUnmergedCode(x: string, y: string): boolean {
+  return x === 'U' || y === 'U' || (x === 'A' && y === 'A') || (x === 'D' && y === 'D');
+}
+
+/** Map a porcelain-v1 unmerged XY pair to a human `ConflictKind`. */
+function mapConflictKind(x: string, y: string): ConflictKind {
+  const xy = `${x}${y}`;
+  switch (xy) {
+    case 'AA':
+      return 'both-added';
+    case 'DD':
+      return 'both-deleted';
+    case 'AU':
+      return 'added-by-us';
+    case 'UA':
+      return 'added-by-them';
+    case 'DU':
+      return 'deleted-by-us';
+    case 'UD':
+      return 'deleted-by-them';
+    default: // UU
+      return 'both-modified';
+  }
+}
+
+/** List the working tree's unmerged paths (conflicts), or [] when there are none. */
+async function readConflicts(cwd: string): Promise<ConflictFile[]> {
+  const out = await runGit(cwd, [
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--untracked-files=no',
+  ]);
+  const parts = out.split('\0');
+  const conflicts: ConflictFile[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i];
+    if (entry.length < 4) continue;
+    const x = entry[0];
+    const y = entry[1];
+    const path = entry.slice(3);
+    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') i++;
+    if (!isUnmergedCode(x, y)) continue;
+    conflicts.push({ path, kind: mapConflictKind(x, y), binary: false });
+  }
+  // Flag binary conflicts so the resolver offers only whole-side resolution.
+  await Promise.all(
+    conflicts.map(async (c) => {
+      c.binary = await isBinaryConflict(cwd, c.path);
+    }),
+  );
+  return conflicts;
+}
+
+/**
+ * Whether a conflicted file is binary. `git diff --numstat` reports `-\t-` for a
+ * binary path; we diff the two conflicting sides (stages 2 and 3) of the file.
+ */
+async function isBinaryConflict(cwd: string, file: string): Promise<boolean> {
+  const out = await runGit(cwd, ['diff', '--numstat', '--', file]);
+  return /^-\t-\t/.test(out.trim());
+}
+
+/**
+ * Read the in-progress conflict state, or `null` when the tree has no conflicts
+ * and no merge/rebase/cherry-pick/revert is under way. The operation is
+ * identified by the marker git leaves in the git dir; a stash-pop conflict has
+ * no marker of its own, so it's inferred from unmerged files with no operation.
+ */
+async function readMergeState(cwd: string): Promise<MergeState | null> {
+  const gitDir = (await runGit(cwd, ['rev-parse', '--git-dir'])).trim();
+  if (!gitDir) return null;
+  const abs = path.isAbsolute(gitDir) ? gitDir : path.resolve(cwd, gitDir);
+  const has = (name: string): boolean => fs.existsSync(path.join(abs, name));
+
+  const conflicts = await readConflicts(cwd);
+
+  let op: MergeOp | null = null;
+  let description = '';
+  let step: MergeState['step'];
+  const branch = (await currentBranchName(cwd)) || 'HEAD';
+
+  if (has('rebase-merge') || has('rebase-apply')) {
+    op = 'rebase';
+    // Interactive/merge rebases use rebase-merge/ (msgnum + end); the older
+    // am-based rebase uses rebase-apply/ (next + last).
+    const merge = has('rebase-merge');
+    const dir = merge ? 'rebase-merge' : 'rebase-apply';
+    const onto = readGitFile(abs, path.join(dir, 'onto'));
+    const head = readGitFile(abs, path.join(dir, 'head-name')).replace('refs/heads/', '');
+    const current = Number(readGitFile(abs, path.join(dir, merge ? 'msgnum' : 'next')));
+    const total = Number(readGitFile(abs, path.join(dir, merge ? 'end' : 'last')));
+    if (current > 0 && total > 0) step = { current, total };
+    description = `Rebasing ${head || branch}${onto ? ` onto ${onto.slice(0, 12)}` : ''}`;
+  } else if (has('MERGE_HEAD')) {
+    op = 'merge';
+    const msg = readGitFile(abs, 'MERGE_MSG');
+    const other = /Merge (?:branch|remote-tracking branch|commit) ['"]?([^'"\n]+)/.exec(msg);
+    description = other ? `Merging ${other[1]} into ${branch}` : `Merging into ${branch}`;
+  } else if (has('CHERRY_PICK_HEAD')) {
+    op = 'cherry-pick';
+    description = 'Cherry-picking';
+  } else if (has('REVERT_HEAD')) {
+    op = 'revert';
+    description = 'Reverting';
+  } else if (conflicts.length > 0) {
+    op = 'stash-pop';
+    description = 'Applying stashed changes';
+  }
+
+  if (op === null) return null;
+
+  return {
+    op,
+    description,
+    step,
+    conflicts,
+    canContinue: op !== 'stash-pop',
+    canSkip: op === 'rebase',
+  };
+}
+
+/** Read a text file inside the git dir, trimmed; '' when absent/unreadable. */
+function readGitFile(gitDir: string, name: string): string {
+  try {
+    return fs.readFileSync(path.join(gitDir, name), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Read a conflicted file's three merge sides — base (stage 1), ours (stage 2),
+ * theirs (stage 3) — plus the on-disk working copy with git's conflict markers.
+ * A missing stage resolves to `null` (e.g. no base for add/add). Binary files
+ * short-circuit with empty content; the caller offers only whole-side picks.
+ */
+async function readConflictFile(cwd: string, file: string): Promise<ConflictFileContent> {
+  const binary = await isBinaryConflict(cwd, file);
+  if (binary) {
+    return { path: file, binary: true, base: null, ours: null, theirs: null, merged: [] };
+  }
+  const stage = async (n: number): Promise<string[] | null> => {
+    // `git show :N:path` prints stage N of the index, but a missing stage errors
+    // and runGit swallows it to '' — so check the stage exists before reading it,
+    // to tell "absent side" (null) apart from "present but empty".
+    if (!(await stageExists(cwd, n, file))) return null;
+    return splitContent(await runGit(cwd, ['show', `:${n}:${file}`]));
+  };
+  const [base, ours, theirs] = await Promise.all([stage(1), stage(2), stage(3)]);
+  const merged = await readFileContent(cwd, { kind: 'unstaged' }, file);
+  return { path: file, binary: false, base, ours, theirs, merged };
+}
+
+/** Whether index stage `n` exists for `file` (a side of the conflict). */
+async function stageExists(cwd: string, n: number, file: string): Promise<boolean> {
+  const out = await runGit(cwd, ['ls-files', '-u', '-z', '--', file]);
+  // Entries look like "<mode> <sha> <stage>\t<path>"; check for the stage digit.
+  return out.split('\0').some((line) => new RegExp(`\\s${n}\\t`).test(line));
+}
+
+/** Validate an untrusted merge-resolution payload from IPC, or null if invalid. */
+function asMergeResolution(value: unknown): MergeResolution | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const res = value as { kind?: unknown; text?: unknown };
+  if (res.kind === 'ours' || res.kind === 'theirs') return { kind: res.kind };
+  if (res.kind === 'content' && typeof res.text === 'string') {
+    return { kind: 'content', text: res.text };
+  }
+  return null;
+}
+
+/** Resolve `path` inside `cwd`, or throw if it escapes the repo root. */
+function resolveInRepo(cwd: string, file: string): string {
+  const full = path.resolve(cwd, file);
+  const root = path.resolve(cwd);
+  if (full !== root && !full.startsWith(root + path.sep)) {
+    throw new Error('Path escapes the repository.');
+  }
+  return full;
+}
+
+/**
+ * Resolve one conflicted `file` and stage it. A whole-side pick checks out that
+ * side (or removes the file when the side deleted it); a `content` resolution
+ * writes the hand-merged text. Returns the refreshed merge state.
+ */
+async function resolveConflictFile(
+  cwd: string,
+  file: string,
+  resolution: MergeResolution,
+): Promise<MergeState | null> {
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+  if (resolution.kind === 'content') {
+    // `splitContent` dropped the file's trailing newline when reading; restore it
+    // so a resolved file keeps the POSIX end-of-file newline.
+    const text =
+      resolution.text.length > 0 && !resolution.text.endsWith('\n')
+        ? `${resolution.text}\n`
+        : resolution.text;
+    await fs.promises.writeFile(resolveInRepo(cwd, file), text, 'utf8');
+    await spawnGit(cwd, ['add', '--', file], 'add', env);
+  } else {
+    const stage = resolution.kind === 'ours' ? 2 : 3;
+    if (await stageExists(cwd, stage, file)) {
+      const flag = resolution.kind === 'ours' ? '--ours' : '--theirs';
+      await spawnGit(cwd, ['checkout', flag, '--', file], 'checkout', env);
+      await spawnGit(cwd, ['add', '--', file], 'add', env);
+    } else {
+      // The chosen side deleted the file — accept the deletion.
+      await spawnGit(cwd, ['rm', '-f', '--', file], 'rm', env);
+    }
+  }
+  return readMergeState(cwd);
+}
+
+/** The git step that finishes each conflicting operation once resolved. */
+const CONTINUE_STEP: Record<MergeOp, string[] | null> = {
+  merge: ['commit', '--no-edit'],
+  rebase: ['rebase', '--continue'],
+  'cherry-pick': ['cherry-pick', '--continue'],
+  revert: ['revert', '--continue'],
+  'stash-pop': null,
+};
+
+/** The git step that aborts each conflicting operation. */
+const ABORT_STEP: Record<MergeOp, string[] | null> = {
+  merge: ['merge', '--abort'],
+  rebase: ['rebase', '--abort'],
+  'cherry-pick': ['cherry-pick', '--abort'],
+  revert: ['revert', '--abort'],
+  'stash-pop': null,
+};
+
+/**
+ * Finish the in-progress operation. Refuses while conflicts remain. Runs with
+ * scripted editors (`GIT_EDITOR`/`GIT_SEQUENCE_EDITOR` = `true`) so a continue
+ * never opens an interactive editor and hangs the app.
+ */
+async function continueOperation(cwd: string): Promise<RefsMutationResult> {
+  const state = await readMergeState(cwd);
+  if (!state) return { status: 'error', message: 'Nothing to continue.' };
+  if (state.conflicts.length > 0) {
+    return { status: 'error', message: 'Resolve every conflict before continuing.' };
+  }
+  const step = CONTINUE_STEP[state.op];
+  if (!step) return { status: 'error', message: 'This operation cannot be continued.' };
+  const env = gitEnv({
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_EDITOR: 'true',
+    GIT_SEQUENCE_EDITOR: 'true',
+  });
+  try {
+    await spawnGit(cwd, step, activityOp(step), env);
+  } catch (err) {
+    return { status: 'error', message: gitErrorMessage(err, 'Could not continue.') };
+  }
+  return { status: 'ok', refs: await readRefs(cwd) };
+}
+
+/** Abort the in-progress operation, restoring the pre-operation state. */
+async function abortOperation(cwd: string): Promise<RefsMutationResult> {
+  const state = await readMergeState(cwd);
+  if (!state) return { status: 'error', message: 'Nothing to abort.' };
+  const step = ABORT_STEP[state.op];
+  if (!step) return { status: 'error', message: 'This operation cannot be aborted.' };
+  return mutateRepo(cwd, [step], 'Could not abort.');
+}
+
+/** Skip the current commit during a rebase (`git rebase --skip`). */
+async function skipRebaseStep(cwd: string): Promise<RefsMutationResult> {
+  const env = gitEnv({
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_EDITOR: 'true',
+    GIT_SEQUENCE_EDITOR: 'true',
+  });
+  try {
+    await spawnGit(cwd, ['rebase', '--skip'], 'rebase', env);
+  } catch (err) {
+    return { status: 'error', message: gitErrorMessage(err, 'Could not skip.') };
+  }
+  return { status: 'ok', refs: await readRefs(cwd) };
 }
 
 // ---- Working-tree watching -----------------------------------------------
@@ -2444,6 +2743,93 @@ function registerRepoIpc(): void {
         ],
         `Could not finish “${branch}”.`,
       );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.mergeState,
+    async (_event, repoPath: unknown): Promise<MergeState | null> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return null;
+      return readMergeState(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.conflictFile,
+    async (_event, repoPath: unknown, file: unknown): Promise<ConflictFileContent> => {
+      const empty: ConflictFileContent = {
+        path: typeof file === 'string' ? file : '',
+        binary: false,
+        base: null,
+        ours: null,
+        theirs: null,
+        merged: [],
+      };
+      if (
+        typeof repoPath !== 'string' ||
+        !isGitRepo(repoPath) ||
+        typeof file !== 'string' ||
+        file.length === 0
+      ) {
+        return empty;
+      }
+      return readConflictFile(repoPath, file);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.resolveFile,
+    async (
+      _event,
+      repoPath: unknown,
+      file: unknown,
+      resolution: unknown,
+    ): Promise<MergeState | null> => {
+      if (
+        typeof repoPath !== 'string' ||
+        !isGitRepo(repoPath) ||
+        typeof file !== 'string' ||
+        file.length === 0
+      ) {
+        return null;
+      }
+      const res = asMergeResolution(resolution);
+      if (res === null) return readMergeState(repoPath);
+      try {
+        return await resolveConflictFile(repoPath, file, res);
+      } catch {
+        return readMergeState(repoPath);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.mergeContinue,
+    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      return continueOperation(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.mergeAbort,
+    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      return abortOperation(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.rebaseSkip,
+    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      return skipRebaseStep(repoPath);
     },
   );
 
@@ -3608,6 +3994,24 @@ function setUpdateStatus(next: UpdateStatus): void {
 }
 
 /**
+ * Surface an auto-update line in the footer activity log (and boot log), so the
+ * download → available → ready flow can be debugged from inside the packaged
+ * app — where `bootLog` is off and there's no attached terminal. Uses the
+ * global activity path so it shows regardless of which repo is open.
+ */
+function updateLog(text: string, stream: 'stdout' | 'stderr' = 'stdout'): void {
+  bootLog('[update]', text);
+  emitActivity({
+    repoPath: GLOBAL_ACTIVITY_PATH,
+    op: 'update',
+    kind: 'line',
+    stream,
+    text,
+    ts: Date.now(),
+  });
+}
+
+/**
  * Point `autoUpdater` at the hosted feed and wire its events to `updateStatus`.
  * Safe to call once; a no-op (leaving `supported: false`) where auto-update
  * can't run, so `download()`/`install()` degrade to the manual fallback.
@@ -3623,22 +4027,28 @@ function setupAutoUpdater(): void {
     // A malformed feed / unsupported platform: leave supported false.
     return;
   }
+  updateLog(`feed URL: ${feedUrl}`);
   autoUpdater.on('error', (err) => {
-    setUpdateStatus({
-      state: 'error',
-      supported: true,
-      message: err instanceof Error ? err.message : String(err),
-    });
+    const message = err instanceof Error ? err.message : String(err);
+    updateLog(`error: ${message}`, 'stderr');
+    setUpdateStatus({ state: 'error', supported: true, message });
   });
   autoUpdater.on('update-available', () => {
+    updateLog('update-available — downloading…');
     setUpdateStatus({ state: 'downloading', supported: true, version: updateStatus.version });
   });
   autoUpdater.on('update-not-available', () => {
     // Only reachable after a manual download() with nothing newer to fetch.
+    updateLog(
+      'update-not-available — the Squirrel feed found nothing to download ' +
+        '(check the release has a per-arch .zip asset for this platform/arch, and the build is signed)',
+      'stderr',
+    );
     setUpdateStatus({ state: 'idle', supported: true, version: updateStatus.version });
   });
   // Squirrel.Mac gives (event, notes, releaseName); releaseName is the version.
   autoUpdater.on('update-downloaded', (_event, _notes, releaseName?: string) => {
+    updateLog(`update-downloaded: ${releaseName ?? '(unknown version)'} — ready to install`);
     setUpdateStatus({
       state: 'ready',
       supported: true,
@@ -3654,16 +4064,15 @@ function registerUpdateIpc(): void {
 
   ipcMain.on(UpdateChannels.download, (): void => {
     if (!autoUpdateSupported()) return;
+    updateLog(`download requested — checking feed (target v${updateStatus.version ?? '?'})`);
     // Keep the version the check already surfaced so the UI can label progress.
     setUpdateStatus({ state: 'downloading', supported: true, version: updateStatus.version });
     try {
       autoUpdater.checkForUpdates();
     } catch (err) {
-      setUpdateStatus({
-        state: 'error',
-        supported: true,
-        message: err instanceof Error ? err.message : String(err),
-      });
+      const message = err instanceof Error ? err.message : String(err);
+      updateLog(`checkForUpdates threw: ${message}`, 'stderr');
+      setUpdateStatus({ state: 'error', supported: true, message });
     }
   });
 

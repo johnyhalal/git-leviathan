@@ -25,6 +25,9 @@ import {
   type FileChange,
   type FileDiff,
   type WorkingStatus,
+  type MergeState,
+  type ConflictFileContent,
+  type MergeResolution,
   type IntegrationProvider,
   type IntegrationsState,
   type OpenRepoResult,
@@ -145,6 +148,23 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.gitflowStart, path, kind, name) as Promise<RefsMutationResult>,
     gitflowFinish: (path: string) =>
       ipcRenderer.invoke(RepoChannels.gitflowFinish, path) as Promise<RefsMutationResult>,
+    mergeState: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.mergeState, path) as Promise<MergeState | null>,
+    conflictFile: (path: string, file: string) =>
+      ipcRenderer.invoke(RepoChannels.conflictFile, path, file) as Promise<ConflictFileContent>,
+    resolveFile: (path: string, file: string, resolution: MergeResolution) =>
+      ipcRenderer.invoke(
+        RepoChannels.resolveFile,
+        path,
+        file,
+        resolution,
+      ) as Promise<MergeState | null>,
+    mergeContinue: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.mergeContinue, path) as Promise<RefsMutationResult>,
+    mergeAbort: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.mergeAbort, path) as Promise<RefsMutationResult>,
+    rebaseSkip: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.rebaseSkip, path) as Promise<RefsMutationResult>,
     chooseDirectory: () =>
       ipcRenderer.invoke(RepoChannels.chooseDir) as Promise<string | null>,
     lastCloneDirectory: () =>
