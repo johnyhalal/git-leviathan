@@ -118,8 +118,23 @@ jobs:
       # Per-arch build: one DMG carrying only this arch's slice, signed and
       # notarized. No MAC_UNIVERSAL_GIT, so forge.config ships the single
       # resources/git staged above and there's no universal merge step.
+      # Sign + notarize + staple, retried. Apple's stapler fetches the ticket
+      # from CloudKit (api.apple-cloudkit.com) and periodically answers 503
+      # THROTTLED; the stapler ignores Retry-After and aborts with code 65,
+      # failing the make even though notarization itself already succeeded.
+      # Re-running clears the throttle almost every time.
       - name: Build macOS distributable
-        run: npm run make -- --arch=${{ matrix.arch }}
+        run: |
+          attempt=0
+          until npm run make -- --arch=${{ matrix.arch }}; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 3 ]; then
+              echo "make failed after $attempt attempts"
+              exit 1
+            fi
+            echo "make failed (attempt $attempt) — likely Apple staple throttling; retrying in 60s..."
+            sleep 60
+          done
 
       - name: Resolve release tag
         id: meta
