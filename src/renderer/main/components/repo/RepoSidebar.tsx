@@ -24,21 +24,39 @@ import { RemoteAvatar } from './RemoteAvatar';
 import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
 import type {
   GitflowKind,
+  IntegrationProvider,
   LocalBranchInfo,
+  PullRequestListResult,
+  PullRequestState,
+  PullRequestSummary,
   RemoteBranchInfo,
   RepoRefs,
   StashInfo,
   TagInfo,
 } from '../../../../types/ipc';
 import { CollapsibleSection } from './CollapsibleSection';
-import {
-  MOCK_PULL_REQUESTS,
-  type PullRequest,
-  type PullRequestState,
-} from './mockData';
+import { PullRequestDialog } from './PullRequestDialog';
+import { NewPullRequestDialog } from './NewPullRequestDialog';
 
 const cx = (...parts: (string | false | undefined)[]) =>
   parts.filter(Boolean).join(' ');
+
+const PROVIDER_LABEL: Record<IntegrationProvider, string> = {
+  github: 'GitHub',
+  gitlab: 'GitLab',
+};
+
+/**
+ * Rough client-side host detection, only to gate the sidebar's PR affordances
+ * (the create button, the section hint). The main process does the real parse
+ * when listing/creating.
+ */
+function providerOfUrl(url: string | null | undefined): IntegrationProvider | null {
+  if (!url) return null;
+  if (url.includes('github.com')) return 'github';
+  if (url.includes('gitlab.com')) return 'gitlab';
+  return null;
+}
 
 /** Left padding for a row at a given tree depth. */
 const indent = (depth: number) => 24 + depth * 14;
@@ -263,13 +281,23 @@ function RemoteBranchRow({
   );
 }
 
-function PullRequestRow({ pr, id, active, onSelect }: RowProps & { pr: PullRequest }) {
+function PullRequestRow({
+  pr,
+  id,
+  active,
+  onSelect,
+  onOpen,
+}: RowProps & { pr: PullRequestSummary; onOpen: (pr: PullRequestSummary) => void }) {
   return (
     <button
       type="button"
       className={cx('repo-list-item', active === id && 'is-active')}
       style={{ paddingLeft: indent(0) }}
-      onClick={() => onSelect(id)}
+      onClick={() => {
+        onSelect(id);
+        onOpen(pr);
+      }}
+      title={pr.title}
     >
       <span className={cx('repo-pr-icon', `pr-state-${pr.state}`)}>
         <PullRequestIcon size={14} />
@@ -482,6 +510,8 @@ interface RepoSidebarProps {
   onGitflowStart: (kind: GitflowKind, name: string) => void;
   /** Finish the current gitflow topic branch. */
   onGitflowFinish: () => void;
+  /** Open the settings modal, optionally to a section (e.g. Integrations). */
+  onOpenSettings?: (section?: string) => void;
 }
 
 /**
@@ -504,6 +534,7 @@ export function RepoSidebar({
   onStashDrop,
   onGitflowStart,
   onGitflowFinish,
+  onOpenSettings,
 }: RepoSidebarProps) {
   const [active, setActive] = useState<string | null>(null);
   // The branch delete menu opened by right-clicking a branch row, anchored at the
@@ -588,6 +619,102 @@ export function RepoSidebar({
   const placeholder = (empty: string) => (
     <p className="repo-section-empty">{loading ? 'Loading…' : empty}</p>
   );
+
+  // --- Pull requests -------------------------------------------------------
+
+  // The remote the PRs belong to: prefer `origin`, else the first remote that
+  // has a URL. Everything about PRs keys off this URL.
+  const remoteUrl = useMemo(() => {
+    const list = refs?.remotes ?? [];
+    const origin = list.find((remote) => remote.name === 'origin' && remote.url);
+    return (origin ?? list.find((remote) => remote.url))?.url ?? null;
+  }, [refs?.remotes]);
+
+  const prProvider = providerOfUrl(remoteUrl);
+
+  // Branch names offered when opening a new PR: every local and remote branch,
+  // de-duplicated and sorted. A remote branch shares its bare name with the
+  // local one it tracks, so the Set collapses the pair.
+  const prBranchOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const branch of localBranches) names.add(branch.name);
+    for (const branch of remoteBranches) names.add(branch.name);
+    return [...names].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' }),
+    );
+  }, [localBranches, remoteBranches]);
+
+  const defaultTarget = useMemo(
+    () =>
+      ['main', 'master', 'develop'].find((name) => prBranchOptions.includes(name)) ??
+      prBranchOptions.find((name) => name !== currentBranch),
+    [prBranchOptions, currentBranch],
+  );
+
+  const [prResult, setPrResult] = useState<PullRequestListResult | null>(null);
+  const [detailPr, setDetailPr] = useState<PullRequestSummary | null>(null);
+  const [creatingPr, setCreatingPr] = useState(false);
+  // Bumped after opening a PR to re-list without waiting for the next refs load.
+  const [prReload, setPrReload] = useState(0);
+
+  // List the repo's pull/merge requests whenever the remote (or a manual reload)
+  // changes. `pullRequests` never rejects — it returns a tagged result — so the
+  // section can show a precise hint (unsupported host / not connected / error).
+  useEffect(() => {
+    if (!remoteUrl) {
+      setPrResult({ status: 'unsupported' });
+      return;
+    }
+    let live = true;
+    setPrResult(null);
+    void window.api.integrations.pullRequests(remoteUrl).then((result) => {
+      if (live) setPrResult(result);
+    });
+    return () => {
+      live = false;
+    };
+  }, [remoteUrl, prReload]);
+
+  // Re-list when an account is connected/disconnected while a repo is open, so a
+  // "connect GitHub" hint turns into the actual list without a manual refresh.
+  useEffect(
+    () => window.api.integrations.onChange(() => setPrReload((n) => n + 1)),
+    [],
+  );
+
+  const pulls = prResult?.status === 'ok' ? prResult.pulls : [];
+  // Provider for the detail/create dialogs: the list result is authoritative,
+  // but fall back to the URL guess so the create button works before the list
+  // resolves.
+  const dialogProvider: IntegrationProvider | null =
+    prResult?.status === 'ok'
+      ? prResult.host.provider
+      : prResult?.status === 'disconnected'
+        ? prResult.provider
+        : prProvider;
+
+  // What the PR section body shows for the non-list states.
+  const prPlaceholder = (() => {
+    if (prResult === null) return loading ? null : placeholder('Loading…');
+    switch (prResult.status) {
+      case 'ok':
+        return pulls.length === 0 ? placeholder('No pull requests') : null;
+      case 'unsupported':
+        return placeholder('This remote has no GitHub or GitLab pull requests.');
+      case 'disconnected':
+        return (
+          <button
+            type="button"
+            className="repo-section-empty repo-pr-connect"
+            onClick={() => onOpenSettings?.('integrations')}
+          >
+            {`Connect ${PROVIDER_LABEL[prResult.provider]} to see pull requests.`}
+          </button>
+        );
+      case 'error':
+        return <p className="repo-section-empty">{prResult.message}</p>;
+    }
+  })();
 
   return (
     <nav className="repo-sidebar" aria-label="Repository navigation">
@@ -696,16 +823,31 @@ export function RepoSidebar({
       <CollapsibleSection
         label="Pull Requests"
         icon={<PullRequestIcon size={16} />}
-        count={MOCK_PULL_REQUESTS.length}
+        count={prResult?.status === 'ok' ? pulls.length : undefined}
+        action={
+          prProvider && dialogProvider ? (
+            <button
+              type="button"
+              className="pill-btn pill-btn-green repo-pr-new"
+              aria-label="New pull request"
+              title="New pull request"
+              onClick={() => setCreatingPr(true)}
+            >
+              <PlusIcon size={14} />
+            </button>
+          ) : undefined
+        }
         {...sectionProps('pr')}
       >
-        {MOCK_PULL_REQUESTS.map((pr) => (
+        {prPlaceholder}
+        {pulls.map((pr) => (
           <PullRequestRow
             key={pr.number}
             pr={pr}
             id={`pr:${pr.number}`}
             active={active}
             onSelect={setActive}
+            onOpen={setDetailPr}
           />
         ))}
       </CollapsibleSection>
@@ -739,6 +881,24 @@ export function RepoSidebar({
           onClose={() => setContextMenu(null)}
           onDeleteBranch={onDeleteBranch}
           onDeleteRemoteBranch={onDeleteRemoteBranch}
+        />
+      )}
+      {detailPr && dialogProvider && (
+        <PullRequestDialog
+          pull={detailPr}
+          provider={dialogProvider}
+          onClose={() => setDetailPr(null)}
+        />
+      )}
+      {creatingPr && remoteUrl && dialogProvider && (
+        <NewPullRequestDialog
+          remoteUrl={remoteUrl}
+          provider={dialogProvider}
+          branches={prBranchOptions}
+          defaultSource={currentBranch}
+          defaultTarget={defaultTarget}
+          onClose={() => setCreatingPr(false)}
+          onCreated={() => setPrReload((n) => n + 1)}
         />
       )}
     </nav>

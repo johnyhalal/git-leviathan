@@ -197,6 +197,7 @@ export function RepoColumns({
           onStashDrop={onStashDrop}
           onGitflowStart={onGitflowStart}
           onGitflowFinish={onGitflowFinish}
+          onOpenSettings={onOpenSettings}
         />
       </div>
 

@@ -30,6 +30,9 @@ import {
   type MergeResolution,
   type IntegrationProvider,
   type IntegrationsState,
+  type NewPullRequest,
+  type PullRequestListResult,
+  type CreatePullRequestResult,
   type OpenRepoResult,
   type OpenTabsState,
   type PullMode,
@@ -65,6 +68,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(AppChannels.getPullMode) as Promise<PullMode>,
     setPullMode: (mode: PullMode) =>
       ipcRenderer.invoke(AppChannels.setPullMode, mode) as Promise<void>,
+    openExternal: (url: string) =>
+      ipcRenderer.send(AppChannels.openExternal, url),
     onWindowFocus: (callback) => {
       const listener = () => callback();
       ipcRenderer.on(AppChannels.focused, listener);
@@ -232,6 +237,17 @@ const api: ExposedApi = {
         IntegrationChannels.repositories,
         provider,
       ) as Promise<RemoteRepo[]>,
+    pullRequests: (remoteUrl: string) =>
+      ipcRenderer.invoke(
+        IntegrationChannels.pullRequests,
+        remoteUrl,
+      ) as Promise<PullRequestListResult>,
+    createPullRequest: (remoteUrl: string, input: NewPullRequest) =>
+      ipcRenderer.invoke(
+        IntegrationChannels.createPullRequest,
+        remoteUrl,
+        input,
+      ) as Promise<CreatePullRequestResult>,
     sshKeys: (provider: IntegrationProvider) =>
       ipcRenderer.invoke(
         IntegrationChannels.sshKeys,

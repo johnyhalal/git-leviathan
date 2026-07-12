@@ -2349,6 +2349,261 @@ body.is-col-resizing {
   color: var(--danger);
 }
 
+/* "New pull request" button in the section header, and the connect hint. */
+.repo-section-header-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.repo-section-header-row .repo-section-header {
+  flex: 1 1 auto;
+}
+
+/* Overlaid at the right edge (not in flow) so the count keeps the right-most
+   spot; the plus fades in over it on hover as the count fades out. */
+.repo-section-header-action {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+}
+
+.repo-pr-new {
+  padding: 3px 5px;
+}
+
+/* Swap the plus button and the count on hover: the "new pull request" button
+   stays hidden until the header is hovered, and the count fades out to make
+   room for it. Scoped to the PR section via the presence of a header action. */
+.repo-section-header-row:has(.repo-section-header-action) .repo-pr-new {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-pr-new {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.repo-section-header-row:has(.repo-section-header-action) .repo-section-count {
+  transition: opacity 0.12s ease;
+}
+
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-section-count {
+  opacity: 0;
+}
+
+.repo-pr-connect {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.repo-pr-connect:hover {
+  color: var(--fg);
+}
+
+/* ---- Pull request dialogs (detail + new), over the settings overlay ------ */
+.pr-dialog {
+  width: min(640px, 100%);
+  height: auto;
+  max-height: calc(100vh - 48px);
+}
+
+.pr-dialog-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pr-dialog-heading h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pr-dialog-number {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pr-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pr-dialog-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pr-dialog-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.pr-dialog-avatar {
+  border-radius: 50%;
+  background: var(--control-bg);
+}
+
+.pr-dialog-branches {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+.pr-dialog-branch {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.pr-dialog-dates {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.pr-dialog-description {
+  margin: 0;
+  padding: 12px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pr-dialog-empty {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.pr-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- New pull request form ---------------------------------------------- */
+.pr-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pr-form-branches {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.pr-form-into {
+  padding-bottom: 8px;
+  color: var(--fg-muted);
+}
+
+.pr-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pr-form-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.pr-form-field input,
+.pr-form-field select,
+.pr-form-field textarea {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.pr-form-field textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.pr-form-field input:focus,
+.pr-form-field select:focus,
+.pr-form-field textarea:focus {
+  outline: none;
+  border-color: var(--accent, #2ea043);
+}
+
+.pr-form-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pr-form-hint {
+  margin: -6px 0 0;
+  color: #d29922;
+  font-size: 12px;
+}
+
+.pr-form-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.pr-form .pr-dialog-footer {
+  padding: 4px 0 0;
+  border-top: none;
+}
+
 /* Tags. */
 .repo-tag-hash {
   flex: 0 0 auto;

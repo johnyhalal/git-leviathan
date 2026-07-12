@@ -63,6 +63,10 @@ import {
   type ConflictFileContent,
   type MergeResolution,
   type IntegrationsState,
+  type NewPullRequest,
+  type PullRequestListResult,
+  type CreatePullRequestResult,
+  type RepoHost,
   type LocalBranchInfo,
   type OpenRepoResult,
   type OpenTabsState,
@@ -127,6 +131,8 @@ interface ProviderClient {
   pollForAccessToken: typeof github.pollForAccessToken;
   fetchAccount: typeof github.fetchAccount;
   fetchUserRepos: typeof github.fetchUserRepos;
+  fetchPullRequests: typeof github.fetchPullRequests;
+  createPullRequest: typeof github.createPullRequest;
   uploadSshKey: typeof github.uploadSshKey;
   deleteSshKey: typeof github.deleteSshKey;
 }
@@ -140,6 +146,8 @@ const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
     pollForAccessToken: github.pollForAccessToken,
     fetchAccount: github.fetchAccount,
     fetchUserRepos: github.fetchUserRepos,
+    fetchPullRequests: github.fetchPullRequests,
+    createPullRequest: github.createPullRequest,
     uploadSshKey: github.uploadSshKey,
     deleteSshKey: github.deleteSshKey,
   },
@@ -151,6 +159,8 @@ const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
     pollForAccessToken: gitlab.pollForAccessToken,
     fetchAccount: gitlab.fetchAccount,
     fetchUserRepos: gitlab.fetchUserRepos,
+    fetchPullRequests: gitlab.fetchPullRequests,
+    createPullRequest: gitlab.createPullRequest,
     uploadSshKey: gitlab.uploadSshKey,
     deleteSshKey: gitlab.deleteSshKey,
   },
@@ -237,6 +247,18 @@ function isIntegrationProvider(value: unknown): value is IntegrationProvider {
   return (
     typeof value === 'string' &&
     (INTEGRATION_PROVIDERS as string[]).includes(value)
+  );
+}
+
+function isNewPullRequest(value: unknown): value is NewPullRequest {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.title === 'string' &&
+    typeof v.body === 'string' &&
+    typeof v.sourceBranch === 'string' &&
+    typeof v.targetBranch === 'string' &&
+    typeof v.draft === 'boolean'
   );
 }
 
@@ -443,6 +465,40 @@ function providerForHost(hostname: string): IntegrationProvider | null {
   if (hostname === 'github.com') return 'github';
   if (hostname === 'gitlab.com') return 'gitlab';
   return null;
+}
+
+/**
+ * Parse a remote URL into the connected host, owner and repo it points at, or
+ * null when it isn't a supported host (github.com / gitlab.com). Handles both
+ * HTTPS URLs and scp-like SSH remotes (`git@github.com:owner/repo.git`), and
+ * keeps GitLab subgroup paths intact (owner is everything before the last
+ * segment, so `group/subgroup/repo` round-trips).
+ */
+function parseRepoHost(remoteUrl: string): RepoHost | null {
+  let hostname: string;
+  let repoPath: string;
+  const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(remoteUrl.trim());
+  if (scp) {
+    hostname = scp[1];
+    repoPath = scp[2];
+  } else {
+    try {
+      const parsed = new URL(remoteUrl);
+      hostname = parsed.hostname;
+      repoPath = parsed.pathname.replace(/^\//, '');
+    } catch {
+      return null;
+    }
+  }
+  const provider = providerForHost(hostname);
+  if (!provider) return null;
+  const cleaned = repoPath.replace(/\.git$/, '').replace(/\/$/, '');
+  const slash = cleaned.lastIndexOf('/');
+  if (slash <= 0) return null;
+  const owner = cleaned.slice(0, slash);
+  const repo = cleaned.slice(slash + 1);
+  if (!owner || !repo) return null;
+  return { provider, owner, repo };
 }
 
 /** The HTTPS-basic username each provider pairs with an OAuth token. */
@@ -3525,6 +3581,73 @@ function registerIntegrationsIpc(): void {
   );
 
   ipcMain.handle(
+    IntegrationChannels.pullRequests,
+    async (_event, remoteUrl: unknown): Promise<PullRequestListResult> => {
+      if (typeof remoteUrl !== 'string') {
+        return { status: 'error', message: 'Invalid remote URL.' };
+      }
+      const host = parseRepoHost(remoteUrl);
+      if (!host) return { status: 'unsupported' };
+      const token = getToken(host.provider);
+      if (!token) return { status: 'disconnected', provider: host.provider };
+      try {
+        const pulls = await PROVIDER_CLIENTS[host.provider].fetchPullRequests(
+          token,
+          host.owner,
+          host.repo,
+        );
+        return { status: 'ok', host, pulls };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IntegrationChannels.createPullRequest,
+    async (
+      _event,
+      remoteUrl: unknown,
+      input: unknown,
+    ): Promise<CreatePullRequestResult> => {
+      if (typeof remoteUrl !== 'string' || !isNewPullRequest(input)) {
+        return { status: 'error', message: 'Invalid pull request details.' };
+      }
+      const host = parseRepoHost(remoteUrl);
+      if (!host) {
+        return {
+          status: 'error',
+          message: 'This remote is not a supported host (github.com / gitlab.com).',
+        };
+      }
+      const token = getToken(host.provider);
+      if (!token) {
+        return {
+          status: 'error',
+          message: `${PROVIDER_LABELS[host.provider]} is not connected — connect it in Settings.`,
+        };
+      }
+      try {
+        const pull = await PROVIDER_CLIENTS[host.provider].createPullRequest(
+          token,
+          host.owner,
+          host.repo,
+          input,
+        );
+        return { status: 'ok', pull };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
     IntegrationChannels.sshKeys,
     (_event, provider: IntegrationProvider): SshKeyInfo[] => {
       if (!isIntegrationProvider(provider)) {
@@ -3936,6 +4059,20 @@ function registerAppIpc(): void {
     }
     settings.pullMode = mode as PullMode;
     saveSettings();
+  });
+
+  ipcMain.on(AppChannels.openExternal, (_event, url: unknown): void => {
+    if (typeof url !== 'string') return;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return;
+    }
+    // Only ever hand https URLs on a supported host to the OS browser.
+    if (parsed.protocol === 'https:' && providerForHost(parsed.hostname)) {
+      void shell.openExternal(url);
+    }
   });
 }
 

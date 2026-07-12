@@ -2,7 +2,13 @@
 // ./deviceFlow; this module just supplies GitHub's endpoints and REST mapping.
 // https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow
 
-import type { IntegrationAccount, RemoteRepo } from '../types/ipc';
+import type {
+  IntegrationAccount,
+  NewPullRequest,
+  PullRequestState,
+  PullRequestSummary,
+  RemoteRepo,
+} from '../types/ipc';
 import {
   nextPageUrl,
   pollForAccessToken as pollDeviceToken,
@@ -194,4 +200,109 @@ export async function fetchUserRepos(
     url = nextPageUrl(res.headers.get('link'));
   }
   return repos;
+}
+
+// ---- Pull requests --------------------------------------------------------
+
+interface GithubPull {
+  number: number;
+  title: string;
+  state: string;
+  draft?: boolean;
+  merged_at: string | null;
+  html_url: string;
+  body: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  user: { login?: string; avatar_url?: string } | null;
+  head: { ref?: string } | null;
+  base: { ref?: string } | null;
+}
+
+/** Collapse GitHub's `state` + `draft` + `merged_at` into one normalized state. */
+function pullState(pull: GithubPull): PullRequestState {
+  if (pull.merged_at) return 'merged';
+  if (pull.state === 'closed') return 'closed';
+  if (pull.draft) return 'draft';
+  return 'open';
+}
+
+/** Map a raw GitHub pull to the shared summary shape. */
+function toSummary(pull: GithubPull): PullRequestSummary {
+  return {
+    number: pull.number,
+    title: pull.title,
+    author: pull.user?.login ?? 'unknown',
+    authorAvatarUrl: pull.user?.avatar_url,
+    state: pullState(pull),
+    sourceBranch: pull.head?.ref ?? '',
+    targetBranch: pull.base?.ref ?? '',
+    url: pull.html_url,
+    body: pull.body ?? undefined,
+    createdAt: pull.created_at ?? undefined,
+    updatedAt: pull.updated_at ?? undefined,
+  };
+}
+
+/** Pull out one actionable line from a failed GitHub API response. */
+async function apiError(res: Response, fallback: string): Promise<string> {
+  if (res.status === 401 || res.status === 403 || res.status === 404) {
+    return `${fallback} — GitHub denied the request; disconnect and reconnect the account to refresh access.`;
+  }
+  try {
+    const body = (await res.json()) as GithubKeyError;
+    const first = body.errors?.[0]?.message;
+    const detail = first ?? body.message ?? '';
+    if (detail) return `${fallback}: ${detail}.`;
+  } catch {
+    // Non-JSON body — fall back to the status code alone.
+  }
+  return `${fallback} (HTTP ${res.status}).`;
+}
+
+/**
+ * List a repository's pull requests (open and closed), most-recently-updated
+ * first. A single page (up to 50) is plenty for the sidebar.
+ */
+export async function fetchPullRequests(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  signal?: AbortSignal,
+): Promise<PullRequestSummary[]> {
+  const url =
+    `${API_BASE}/repos/${owner}/${repo}/pulls` +
+    '?state=all&per_page=50&sort=updated&direction=desc';
+  const res = await fetch(url, { headers: apiHeaders(accessToken), signal });
+  if (!res.ok) {
+    throw new Error(await apiError(res, 'Failed to list GitHub pull requests'));
+  }
+  const pulls = (await res.json()) as GithubPull[];
+  return pulls.map(toSummary);
+}
+
+/** Open a new pull request and return it in the shared summary shape. */
+export async function createPullRequest(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  input: NewPullRequest,
+  signal?: AbortSignal,
+): Promise<PullRequestSummary> {
+  const res = await fetch(`${API_BASE}/repos/${owner}/${repo}/pulls`, {
+    method: 'POST',
+    headers: { ...apiHeaders(accessToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: input.title,
+      head: input.sourceBranch,
+      base: input.targetBranch,
+      body: input.body,
+      draft: input.draft,
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(await apiError(res, 'Failed to open the pull request'));
+  }
+  return toSummary((await res.json()) as GithubPull);
 }

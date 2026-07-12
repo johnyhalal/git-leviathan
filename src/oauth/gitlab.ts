@@ -3,7 +3,13 @@
 // GitLab's device grant is GA since 17.9 and needs only a public client id.
 // https://docs.gitlab.com/api/oauth2/#device-authorization-grant-flow
 
-import type { IntegrationAccount, RemoteRepo } from '../types/ipc';
+import type {
+  IntegrationAccount,
+  NewPullRequest,
+  PullRequestState,
+  PullRequestSummary,
+  RemoteRepo,
+} from '../types/ipc';
 import {
   nextPageUrl,
   pollForAccessToken as pollDeviceToken,
@@ -197,4 +203,123 @@ export async function fetchUserRepos(
     url = nextPageUrl(res.headers.get('link'));
   }
   return repos;
+}
+
+// ---- Merge requests -------------------------------------------------------
+// GitLab calls them merge requests; they map onto the app's PullRequest shape.
+
+interface GitlabMergeRequest {
+  iid: number;
+  title: string;
+  state: string;
+  draft?: boolean;
+  work_in_progress?: boolean;
+  web_url: string;
+  description: string | null;
+  source_branch: string;
+  target_branch: string;
+  created_at: string | null;
+  updated_at: string | null;
+  author: { username?: string; avatar_url?: string | null } | null;
+}
+
+/** Collapse GitLab's `state` + draft flags into one normalized state. */
+function mrState(mr: GitlabMergeRequest): PullRequestState {
+  if (mr.state === 'merged') return 'merged';
+  if (mr.state === 'closed' || mr.state === 'locked') return 'closed';
+  if (mr.draft || mr.work_in_progress) return 'draft';
+  return 'open';
+}
+
+/** Map a raw GitLab merge request to the shared summary shape. */
+function toSummary(mr: GitlabMergeRequest): PullRequestSummary {
+  return {
+    number: mr.iid,
+    title: mr.title,
+    author: mr.author?.username ?? 'unknown',
+    authorAvatarUrl: mr.author?.avatar_url ?? undefined,
+    state: mrState(mr),
+    sourceBranch: mr.source_branch,
+    targetBranch: mr.target_branch,
+    url: mr.web_url,
+    body: mr.description ?? undefined,
+    createdAt: mr.created_at ?? undefined,
+    updatedAt: mr.updated_at ?? undefined,
+  };
+}
+
+/** The URL-encoded `owner/repo` path GitLab's project-scoped endpoints expect. */
+function projectId(owner: string, repo: string): string {
+  return encodeURIComponent(`${owner}/${repo}`);
+}
+
+/** Pull out one actionable line from a failed GitLab API response. */
+async function apiError(res: Response, fallback: string): Promise<string> {
+  if (res.status === 401 || res.status === 403 || res.status === 404) {
+    return `${fallback} — GitLab denied the request; disconnect and reconnect the account to refresh access.`;
+  }
+  try {
+    const body = (await res.json()) as GitlabKeyError;
+    if (typeof body.message === 'string') return `${fallback}: ${body.message}.`;
+    if (typeof body.error === 'string') return `${fallback}: ${body.error}.`;
+  } catch {
+    // Non-JSON body — fall back to the status code alone.
+  }
+  return `${fallback} (HTTP ${res.status}).`;
+}
+
+/**
+ * List a project's merge requests (all states), most-recently-updated first. A
+ * single page (up to 50) is plenty for the sidebar.
+ */
+export async function fetchPullRequests(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  signal?: AbortSignal,
+): Promise<PullRequestSummary[]> {
+  const url =
+    `${API_BASE}/projects/${projectId(owner, repo)}/merge_requests` +
+    '?scope=all&per_page=50&order_by=updated_at&sort=desc';
+  const res = await fetch(url, { headers: apiHeaders(accessToken), signal });
+  if (!res.ok) {
+    throw new Error(await apiError(res, 'Failed to list GitLab merge requests'));
+  }
+  const requests = (await res.json()) as GitlabMergeRequest[];
+  return requests.map(toSummary);
+}
+
+/**
+ * Open a new merge request and return it in the shared summary shape. GitLab
+ * marks a draft by the `Draft:` title prefix rather than a flag.
+ */
+export async function createPullRequest(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  input: NewPullRequest,
+  signal?: AbortSignal,
+): Promise<PullRequestSummary> {
+  const title = input.draft ? `Draft: ${input.title}` : input.title;
+  const res = await fetch(
+    `${API_BASE}/projects/${projectId(owner, repo)}/merge_requests`,
+    {
+      method: 'POST',
+      headers: {
+        ...apiHeaders(accessToken),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        source_branch: input.sourceBranch,
+        target_branch: input.targetBranch,
+        title,
+        description: input.body,
+      }),
+      signal,
+    },
+  );
+  if (!res.ok) {
+    throw new Error(await apiError(res, 'Failed to open the merge request'));
+  }
+  return toSummary((await res.json()) as GitlabMergeRequest);
 }

@@ -34,6 +34,8 @@ export const AppChannels = {
   getPullMode: 'app:get-pull-mode',
   /** Renderer -> main (invoke): persist the default pull mode (global). */
   setPullMode: 'app:set-pull-mode',
+  /** Renderer -> main (send): open a github.com/gitlab.com URL in the browser. */
+  openExternal: 'app:open-external',
   /** Main -> renderer (send): the main window regained OS focus. */
   focused: 'app:focused',
 } as const;
@@ -673,6 +675,77 @@ export interface SshKeyInfo extends SshKeyResult {
   createdAt: number;
 }
 
+/** The state of a pull request (GitHub) / merge request (GitLab), normalized. */
+export type PullRequestState = 'open' | 'draft' | 'merged' | 'closed';
+
+/**
+ * A pull request (GitHub) / merge request (GitLab), mapped to one shape the UI
+ * can render regardless of host.
+ */
+export interface PullRequestSummary {
+  /** The number shown to users (GitHub `number` / GitLab `iid`). */
+  number: number;
+  title: string;
+  /** Author handle. */
+  author: string;
+  /** Author avatar image URL, when the host supplies one. */
+  authorAvatarUrl?: string;
+  state: PullRequestState;
+  /** The branch the changes come from. */
+  sourceBranch: string;
+  /** The branch the changes are proposed to merge into. */
+  targetBranch: string;
+  /** Web URL of the PR/MR, to open in a browser. */
+  url: string;
+  /** Markdown description/body, when present. */
+  body?: string;
+  /** ISO timestamp the PR/MR was opened. */
+  createdAt?: string;
+  /** ISO timestamp of the last update. */
+  updatedAt?: string;
+}
+
+/** A repository on a connected host, parsed from a remote URL. */
+export interface RepoHost {
+  provider: IntegrationProvider;
+  /** Owner / namespace (may contain slashes for GitLab subgroups). */
+  owner: string;
+  /** Bare repository name. */
+  repo: string;
+}
+
+/**
+ * Outcome of listing a repository's pull/merge requests. Distinguishes the
+ * "can't even try" cases (not a supported host, or the host isn't connected)
+ * from a genuine failure, so the sidebar can show the right hint instead of an
+ * error toast.
+ */
+export type PullRequestListResult =
+  | { status: 'ok'; host: RepoHost; pulls: PullRequestSummary[] }
+  /** The remote isn't a supported host (github.com / gitlab.com). */
+  | { status: 'unsupported' }
+  /** The host is recognized but no account is connected for it. */
+  | { status: 'disconnected'; provider: IntegrationProvider }
+  /** The listing failed (network / API); `message` is one actionable line. */
+  | { status: 'error'; message: string };
+
+/** The fields needed to open a new pull/merge request. */
+export interface NewPullRequest {
+  title: string;
+  body: string;
+  /** The branch the changes come from. */
+  sourceBranch: string;
+  /** The branch to merge into. */
+  targetBranch: string;
+  /** Open it as a draft, where the host supports drafts. */
+  draft: boolean;
+}
+
+/** Outcome of opening a new pull/merge request. */
+export type CreatePullRequestResult =
+  | { status: 'ok'; pull: PullRequestSummary }
+  | { status: 'error'; message: string };
+
 export const IntegrationChannels = {
   /** Renderer -> main (invoke): read connection state for every provider. */
   list: 'integrations:list',
@@ -682,6 +755,10 @@ export const IntegrationChannels = {
   disconnect: 'integrations:disconnect',
   /** Renderer -> main (invoke): list the connected account's repositories. */
   repositories: 'integrations:repositories',
+  /** Renderer -> main (invoke): list a repo's pull/merge requests by remote URL. */
+  pullRequests: 'integrations:pull-requests',
+  /** Renderer -> main (invoke): open a new pull/merge request. */
+  createPullRequest: 'integrations:create-pull-request',
   /** Renderer -> main (invoke): read the SSH keys generated for a provider. */
   sshKeys: 'integrations:ssh-keys',
   /** Renderer -> main (invoke): generate a new SSH key and upload it. */
@@ -761,6 +838,12 @@ export interface AppApi {
   getPullMode(): Promise<PullMode>;
   /** Persist the default pull mode (global). */
   setPullMode(mode: PullMode): Promise<void>;
+  /**
+   * Open an external URL in the default browser. Only github.com / gitlab.com
+   * HTTPS URLs are honoured (e.g. a pull request's web page); anything else is
+   * ignored by the main process.
+   */
+  openExternal(url: string): void;
   /**
    * Subscribe to the main window regaining OS focus (e.g. the user switched
    * back to the app from another window). Fires each time; used to re-sync the
@@ -1070,6 +1153,21 @@ export interface IntegrationsApi {
    * Rejects if the provider is not connected.
    */
   repositories(provider: IntegrationProvider): Promise<RemoteRepo[]>;
+  /**
+   * List the pull/merge requests for the repository at `remoteUrl`. The host,
+   * owner and repo are parsed from the URL; the result distinguishes an
+   * unsupported/unconnected host from a real failure so the UI can react. Never
+   * rejects.
+   */
+  pullRequests(remoteUrl: string): Promise<PullRequestListResult>;
+  /**
+   * Open a new pull/merge request against the repository at `remoteUrl`.
+   * Resolves with the created PR on success, or a one-line error. Never rejects.
+   */
+  createPullRequest(
+    remoteUrl: string,
+    input: NewPullRequest,
+  ): Promise<CreatePullRequestResult>;
   /** The SSH keys generated for `provider` from this app, newest last. */
   sshKeys(provider: IntegrationProvider): Promise<SshKeyInfo[]>;
   /**
