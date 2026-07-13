@@ -39,6 +39,7 @@ import {
   type PushResult,
   type RecentRepo,
   type RemoteRepo,
+  type UpdateCheckInterval,
   type RepoInfo,
   type RepoRefs,
   type SshKeyInfo,
@@ -68,6 +69,15 @@ const api: ExposedApi = {
       ipcRenderer.invoke(AppChannels.getPullMode) as Promise<PullMode>,
     setPullMode: (mode: PullMode) =>
       ipcRenderer.invoke(AppChannels.setPullMode, mode) as Promise<void>,
+    getUpdateCheckInterval: () =>
+      ipcRenderer.invoke(
+        AppChannels.getUpdateCheckInterval,
+      ) as Promise<UpdateCheckInterval>,
+    setUpdateCheckInterval: (minutes: UpdateCheckInterval) =>
+      ipcRenderer.invoke(
+        AppChannels.setUpdateCheckInterval,
+        minutes,
+      ) as Promise<void>,
     openExternal: (url: string) =>
       ipcRenderer.send(AppChannels.openExternal, url),
     onWindowFocus: (callback) => {
@@ -180,6 +190,12 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.record, repo) as Promise<RecentRepo[]>,
     forget: (path: string) =>
       ipcRenderer.invoke(RepoChannels.forget, path) as Promise<RecentRepo[]>,
+    setFavorite: (path: string, favorite: boolean) =>
+      ipcRenderer.invoke(
+        RepoChannels.setFavorite,
+        path,
+        favorite,
+      ) as Promise<RecentRepo[]>,
     openTabs: () =>
       ipcRenderer.invoke(RepoChannels.openTabs) as Promise<OpenTabsState>,
     saveOpenTabs: (paths: string[], activePath: string | null) =>
@@ -299,6 +315,14 @@ const api: ExposedApi = {
       );
       return () => {
         ipcRenderer.removeListener(UpdateChannels.statusChanged, listener);
+      };
+    },
+    onFound: (callback: (update: UpdateInfo | null) => void) => {
+      const listener = (_event: IpcRendererEvent, update: UpdateInfo | null) =>
+        callback(update);
+      ipcRenderer.on(UpdateChannels.found, listener);
+      return () => {
+        ipcRenderer.removeListener(UpdateChannels.found, listener);
       };
     },
   },

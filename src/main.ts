@@ -72,6 +72,9 @@ import {
   type OpenTabsState,
   type PullMode,
   type PushResult,
+  type UpdateCheckInterval,
+  UPDATE_CHECK_INTERVALS,
+  DEFAULT_UPDATE_CHECK_INTERVAL,
   type RecentRepo,
   type RemoteBranchInfo,
   type RemoteInfo,
@@ -193,6 +196,8 @@ interface Settings {
   sidebarSections?: Record<string, boolean>;
   /** Default pull mode for the toolbar's pull action (global, not per-repo). */
   pullMode?: PullMode;
+  /** Auto-update check interval in minutes; `0` disables the periodic check. */
+  updateCheckInterval?: UpdateCheckInterval;
   /** Connected Git host accounts, keyed by provider id. */
   integrations?: Partial<Record<IntegrationProvider, IntegrationConnection>>;
   /** SSH keys generated and uploaded from this app, keyed by provider id. */
@@ -239,7 +244,8 @@ function isRecentRepo(value: unknown): value is RecentRepo {
   return (
     typeof r.name === 'string' &&
     typeof r.path === 'string' &&
-    typeof r.lastOpenedAt === 'number'
+    typeof r.lastOpenedAt === 'number' &&
+    (r.favorite === undefined || typeof r.favorite === 'boolean')
   );
 }
 
@@ -341,6 +347,9 @@ function loadSettings(): void {
     }
     if (PULL_MODES.includes(parsed.pullMode as PullMode)) {
       settings.pullMode = parsed.pullMode as PullMode;
+    }
+    if (UPDATE_CHECK_INTERVALS.includes(parsed.updateCheckInterval as UpdateCheckInterval)) {
+      settings.updateCheckInterval = parsed.updateCheckInterval as UpdateCheckInterval;
     }
     if (parsed.integrations && typeof parsed.integrations === 'object') {
       const raw = parsed.integrations as Record<string, unknown>;
@@ -597,6 +606,78 @@ async function authArgsForRemotes(
 function remoteOfUpstream(upstream: string): string {
   const slash = upstream.indexOf('/');
   return slash === -1 ? upstream : upstream.slice(0, slash);
+}
+
+/** Single-quote a value for a POSIX shell — git splits `GIT_SSH_COMMAND` with
+ *  shell-word rules (`sh -c` on macOS/Linux, its own splitter on Windows), so a
+ *  key path with spaces must be quoted. */
+function shellQuoteArg(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The connected provider owning an SSH remote's host, or null when the URL isn't
+ * an SSH remote — a scp-like `git@host:path` or an explicit `ssh://…` — on a
+ * supported host (github.com / gitlab.com). HTTPS URLs return null: they're
+ * authenticated with the OAuth token instead (see {@link remoteAuthConfigArgs}).
+ */
+function sshProviderForUrl(remoteUrl: string): IntegrationProvider | null {
+  const url = remoteUrl.trim();
+  let hostname: string;
+  const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(url);
+  if (scp) {
+    hostname = scp[1];
+  } else {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'ssh:') return null;
+      hostname = parsed.hostname;
+    } catch {
+      return null;
+    }
+  }
+  return providerForHost(hostname);
+}
+
+/**
+ * The `GIT_SSH_COMMAND` for an SSH remote whose host has a key this app
+ * generated and uploaded: `ssh -i <key> -o IdentitiesOnly=yes`, so git
+ * authenticates with our own key rather than falling back to the ssh agent
+ * (e.g. 1Password) — the fallback that otherwise surfaces an extra credential
+ * prompt on push/pull. Null for HTTPS URLs, unsupported hosts, or a host we hold
+ * no key for (or whose key file has since been removed), leaving ssh's own key
+ * resolution untouched. `IdentitiesOnly=yes` is the load-bearing flag: without it
+ * ssh still offers agent keys first.
+ */
+function sshCommandForUrl(remoteUrl: string): string | null {
+  const provider = sshProviderForUrl(remoteUrl);
+  if (!provider) return null;
+  const keyPath = settings.sshKeys?.[provider]?.[0]?.privateKeyPath;
+  if (!keyPath || !fs.existsSync(keyPath)) return null;
+  return `ssh -i ${shellQuoteArg(keyPath)} -o IdentitiesOnly=yes`;
+}
+
+/**
+ * The `GIT_SSH_COMMAND` env addition for a push/pull/fetch talking to the given
+ * remotes (deduped by resulting command). Empty unless exactly one distinct SSH
+ * command applies: no SSH remote we hold a key for means ssh keeps its default
+ * resolution, and remotes needing *different* keys (a rare `fetch --all` across
+ * both providers) can't share one command, so we inject nothing rather than force
+ * the wrong identity on one of them.
+ */
+async function sshEnvForRemotes(
+  cwd: string,
+  remotes: string[],
+): Promise<{ GIT_SSH_COMMAND?: string }> {
+  const commands = new Set<string>();
+  for (const remote of remotes) {
+    const url = (await runGit(cwd, ['remote', 'get-url', remote])).trim();
+    if (!url) continue;
+    const command = sshCommandForUrl(url);
+    if (command) commands.add(command);
+  }
+  if (commands.size !== 1) return {};
+  return { GIT_SSH_COMMAND: [...commands][0] };
 }
 
 interface RunningClone {
@@ -1615,12 +1696,14 @@ async function pushCurrent(cwd: string, force = false): Promise<PushResult> {
   ).trim();
 
   if (upstream) {
-    const authArgs = await authArgsForRemotes(cwd, [remoteOfUpstream(upstream)]);
+    const remote = remoteOfUpstream(upstream);
+    const authArgs = await authArgsForRemotes(cwd, [remote]);
+    const sshEnv = await sshEnvForRemotes(cwd, [remote]);
     // A rewritten history (e.g. after an amend) is not a fast-forward; force with
     // lease so the push still aborts if the remote moved under us.
     const pushArgs = force ? ['push', '--force-with-lease'] : ['push'];
     try {
-      await spawnGit(cwd, [...authArgs, ...pushArgs], 'push', env);
+      await spawnGit(cwd, [...authArgs, ...pushArgs], 'push', { ...env, ...sshEnv });
       return { status: 'ok' };
     } catch (err) {
       return { status: 'error', message: pushErrorMessage(err) };
@@ -1686,8 +1769,14 @@ async function pushSetUpstream(
   // branch is created under the requested name on the remote.
   const refspec = remoteBranch === branch ? branch : `${branch}:${remoteBranch}`;
   const authArgs = await authArgsForRemotes(cwd, [remote]);
+  const sshEnv = await sshEnvForRemotes(cwd, [remote]);
   try {
-    await spawnGit(cwd, [...authArgs, 'push', '--set-upstream', remote, refspec], 'push', env);
+    await spawnGit(
+      cwd,
+      [...authArgs, 'push', '--set-upstream', remote, refspec],
+      'push',
+      { ...env, ...sshEnv },
+    );
     return { status: 'ok' };
   } catch (err) {
     return { status: 'error', message: pushErrorMessage(err) };
@@ -1756,9 +1845,10 @@ async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
     remotes = upstream ? [remoteOfUpstream(upstream)] : [];
   }
   const authArgs = await authArgsForRemotes(cwd, remotes);
+  const sshEnv = await sshEnvForRemotes(cwd, remotes);
 
   try {
-    await spawnGit(cwd, [...authArgs, ...args], activityOp(args), env);
+    await spawnGit(cwd, [...authArgs, ...args], activityOp(args), { ...env, ...sshEnv });
     return { status: 'ok' };
   } catch (err) {
     return { status: 'error', message: pullErrorMessage(err) };
@@ -2625,11 +2715,12 @@ function registerRepoIpc(): void {
       // push error mapper and keep GIT_TERMINAL_PROMPT=0 (via mutateRepo's env).
       const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
       const authArgs = await authArgsForRemotes(repoPath, [remote]);
+      const sshEnv = await sshEnvForRemotes(repoPath, [remote]);
       try {
         await execFileAsync(
           gitBin,
           [...authArgs, 'push', remote, '--delete', '--', branch],
-          { cwd: repoPath, env },
+          { cwd: repoPath, env: { ...env, ...sshEnv } },
         );
       } catch (err) {
         return { status: 'error', message: pushErrorMessage(err) };
@@ -2983,10 +3074,15 @@ function registerRepoIpc(): void {
       ) {
         throw new Error('Invalid repository payload');
       }
+      // Carry over an existing star so re-opening a favorite keeps it pinned.
+      const previous = (settings.recentRepos ?? []).find(
+        (item) => item.path === repo.path,
+      );
       const entry: RecentRepo = {
         name: repo.name,
         path: repo.path,
         lastOpenedAt: Date.now(),
+        favorite: previous?.favorite ?? false,
       };
       // De-duplicate by path so a repo appears once and moves to the front,
       // then cap the list length.
@@ -3007,6 +3103,22 @@ function registerRepoIpc(): void {
       }
       settings.recentRepos = (settings.recentRepos ?? []).filter(
         (item) => item.path !== repoPath,
+      );
+      saveSettings();
+      return [...settings.recentRepos].sort(
+        (a, b) => b.lastOpenedAt - a.lastOpenedAt,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.setFavorite,
+    (_event, repoPath: string, favorite: boolean): RecentRepo[] => {
+      if (typeof repoPath !== 'string' || typeof favorite !== 'boolean') {
+        throw new Error('Invalid favorite payload');
+      }
+      settings.recentRepos = (settings.recentRepos ?? []).map((item) =>
+        item.path === repoPath ? { ...item, favorite } : item,
       );
       saveSettings();
       return [...settings.recentRepos].sort(
@@ -3085,6 +3197,9 @@ function registerRepoIpc(): void {
 
       // Embed the matching provider's token into the URL; keep it for redaction.
       const { url: cloneUrl, token } = authenticatedCloneUrl(url);
+      // For an SSH clone URL, authenticate with our own generated key instead of
+      // the ssh agent's (mirrors push/pull); null for HTTPS/unmanaged hosts.
+      const sshCommand = sshCommandForUrl(url);
       const sender = event.sender;
 
       return new Promise<CloneResult>((resolve) => {
@@ -3099,6 +3214,7 @@ function registerRepoIpc(): void {
             env: gitEnv({
               GIT_TERMINAL_PROMPT: '0',
               GIT_ALLOW_PROTOCOL: 'https:http:git:ssh:file',
+              ...(sshCommand ? { GIT_SSH_COMMAND: sshCommand } : {}),
             }),
           },
         );
@@ -4061,6 +4177,23 @@ function registerAppIpc(): void {
     saveSettings();
   });
 
+  ipcMain.handle(
+    AppChannels.getUpdateCheckInterval,
+    (): UpdateCheckInterval =>
+      settings.updateCheckInterval ?? DEFAULT_UPDATE_CHECK_INTERVAL,
+  );
+
+  ipcMain.handle(
+    AppChannels.setUpdateCheckInterval,
+    (_event, minutes: unknown): void => {
+      if (!UPDATE_CHECK_INTERVALS.includes(minutes as UpdateCheckInterval)) {
+        throw new Error('Invalid update check interval');
+      }
+      settings.updateCheckInterval = minutes as UpdateCheckInterval;
+      saveSettings();
+    },
+  );
+
   ipcMain.on(AppChannels.openExternal, (_event, url: unknown): void => {
     if (typeof url !== 'string') return;
     let parsed: URL;
@@ -4127,6 +4260,17 @@ function setUpdateStatus(next: UpdateStatus): void {
   updateStatus = next;
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(UpdateChannels.statusChanged, next);
+  }
+}
+
+/**
+ * Broadcast the latest release-check result to every window so the status-bar
+ * update control stays in sync no matter which window (or which trigger — the
+ * periodic timer or the settings "Check now" button) ran the check.
+ */
+function broadcastUpdateFound(info: UpdateInfo | null): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(UpdateChannels.found, info);
   }
 }
 
@@ -4243,17 +4387,20 @@ function registerUpdateIpc(): void {
       if (typeof data.tag_name !== 'string' || typeof data.html_url !== 'string') {
         return null;
       }
-      if (!isNewerVersion(data.tag_name, app.getVersion())) return null;
+      if (!isNewerVersion(data.tag_name, app.getVersion())) {
+        broadcastUpdateFound(null);
+        return null;
+      }
       const version = data.tag_name.replace(/^v/, '');
       // Remember it so a later download()'s progress can be labelled with the
       // target version before autoUpdater reports the downloaded release name.
       if (updateStatus.state === 'idle') updateStatus = { ...updateStatus, version };
-      return {
-        version,
-        releaseUrl: data.html_url,
-      };
+      const info: UpdateInfo = { version, releaseUrl: data.html_url };
+      broadcastUpdateFound(info);
+      return info;
     } catch {
-      // Offline, aborted, rate-limited, malformed — stay silent.
+      // Offline, aborted, rate-limited, malformed — stay silent. Don't
+      // broadcast: a failed check shouldn't clear a genuine pending update.
       return null;
     } finally {
       clearTimeout(timeout);

@@ -31,3 +31,4 @@ export { TreeIcon } from './TreeIcon';
 export { UndoIcon } from './UndoIcon';
 export { RedoIcon } from './RedoIcon';
 export { SparkleIcon } from './SparkleIcon';
+export { StarIcon } from './StarIcon';

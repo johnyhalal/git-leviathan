@@ -129,7 +129,8 @@ function stripRemote(label: string): string {
  * Collapse a commit's raw ref decorations into display groups: a local branch
  * and its matching remote-tracking branch merge into one badge (basename only)
  * that records whether the branch is local, remote, or both. Tags and a detached
- * HEAD stay as their own badges. Encounter order is preserved.
+ * HEAD stay as their own badges. Encounter order is preserved within each kind,
+ * but branches always sort ahead of tags (e.g. `main, v2.3.2`).
  */
 function groupRefs(refs: CommitRefDecoration[]): RefGroup[] {
   const groups: RefGroup[] = [];
@@ -194,7 +195,12 @@ function groupRefs(refs: CommitRefDecoration[]): RefGroup[] {
         break;
     }
   }
-  return groups;
+  // Stable partition: branches first, then tags, preserving encounter order
+  // within each kind — so a badge line reads `main, v2.3.2`, never the reverse.
+  return [
+    ...groups.filter((group) => group.kind === 'branch'),
+    ...groups.filter((group) => group.kind === 'tag'),
+  ];
 }
 
 /**

@@ -8,6 +8,7 @@ import { RepoView } from './components/repo/RepoView';
 import { ActivityLog } from './components/repo/ActivityLog';
 import { GearIcon } from '../../../assets/icons';
 import type { RepoInfo, UpdateInfo, UpdateStatus } from '../../types/ipc';
+import { DEFAULT_UPDATE_CHECK_INTERVAL } from '../../types/ipc';
 
 let nextTabId = 2;
 let nextToastId = 1;
@@ -84,6 +85,11 @@ export function App() {
     state: 'idle',
     supported: false,
   });
+  // Auto-update check interval in minutes (0 = never), read from settings and
+  // re-read whenever the Settings modal closes so a change applies live.
+  const [checkIntervalMin, setCheckIntervalMin] = useState(
+    DEFAULT_UPDATE_CHECK_INTERVAL,
+  );
   // Gate tab persistence until the initial restore has run, so the default
   // empty tab can't overwrite the saved list before it's loaded.
   const tabsHydrated = useRef(false);
@@ -101,21 +107,40 @@ export function App() {
     };
   }, []);
 
-  // Check GitHub for a newer release on mount and every hour. A failed check
-  // resolves null, so this quietly shows nothing when offline.
+  // Reflect every release-check result — from the timer below, from another
+  // window, or from the settings "Check now" button — in the status-bar button.
+  // The main process broadcasts the outcome, so this is the single writer of
+  // `update` state (a failed/offline check doesn't broadcast, so it can't clear
+  // a genuine pending update).
+  useEffect(() => window.api.update.onFound(setUpdate), []);
+
+  // Trigger a GitHub check on mount and on the configured interval; the result
+  // arrives via `onFound` above. An interval of 0 means "never check
+  // automatically" — the mount check still runs, but no timer is scheduled.
   useEffect(() => {
-    let alive = true;
-    const run = () =>
-      void window.api.update.check().then((info) => {
-        if (alive) setUpdate(info);
-      });
+    const run = () => void window.api.update.check();
     run();
-    const id = setInterval(run, 60 * 60 * 1000);
+    const id =
+      checkIntervalMin > 0
+        ? setInterval(run, checkIntervalMin * 60 * 1000)
+        : undefined;
+    return () => {
+      if (id !== undefined) clearInterval(id);
+    };
+  }, [checkIntervalMin]);
+
+  // Load the persisted check interval on mount, and re-read it each time the
+  // Settings modal closes so a change there re-schedules the timer above.
+  useEffect(() => {
+    if (settingsOpen) return;
+    let alive = true;
+    void window.api.app.getUpdateCheckInterval().then((minutes) => {
+      if (alive) setCheckIntervalMin(minutes);
+    });
     return () => {
       alive = false;
-      clearInterval(id);
     };
-  }, []);
+  }, [settingsOpen]);
 
   // Track the in-app auto-updater (download → ready → install) so the status-bar
   // button can drive it. On builds where auto-update isn't supported this stays
@@ -231,6 +256,13 @@ export function App() {
     void window.api.repo.forget(repo.path).then(setRecentRepos);
   };
 
+  /** Star/unstar a recent repository so it pins to the top of the list. */
+  const toggleFavorite = (repo: RecentRepo) => {
+    void window.api.repo
+      .setFavorite(repo.path, !repo.favorite)
+      .then(setRecentRepos);
+  };
+
   /** Pick a folder on disk and open it as a git repository in the active tab. */
   const handleOpen = async () => {
     const result = await window.api.repo.open();
@@ -307,6 +339,7 @@ export function App() {
             onCreate={() => notImplemented('create')}
             onSelectRecent={openRepo}
             onRemoveRecent={removeRecent}
+            onToggleFavorite={toggleFavorite}
           />
         )}
       </main>

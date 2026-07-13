@@ -5,6 +5,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   SearchIcon,
+  StarIcon,
 } from '../../../../assets/icons';
 import type { RecentRepo } from '../../../types/ipc';
 
@@ -18,6 +19,7 @@ interface RepoStartProps {
   onCreate: () => void;
   onSelectRecent: (repo: RecentRepo) => void;
   onRemoveRecent: (repo: RecentRepo) => void;
+  onToggleFavorite: (repo: RecentRepo) => void;
 }
 
 /**
@@ -31,6 +33,7 @@ export function RepoStart({
   onCreate,
   onSelectRecent,
   onRemoveRecent,
+  onToggleFavorite,
 }: RepoStartProps) {
   const [query, setQuery] = useState('');
 
@@ -43,6 +46,76 @@ export function RepoStart({
         repo.path.toLowerCase().includes(q),
     );
   }, [recent, query]);
+
+  // Favorites float to the top, sorted A→Z; the rest keep the incoming
+  // most-recently-opened-first order.
+  const favorites = useMemo(
+    () =>
+      filtered
+        .filter((repo) => repo.favorite)
+        .sort((a, b) =>
+          a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+        ),
+    [filtered],
+  );
+  const others = useMemo(
+    () => filtered.filter((repo) => !repo.favorite),
+    [filtered],
+  );
+
+  const renderItem = (repo: RecentRepo) => (
+    <li key={repo.path}>
+      {/* A div (not a button) so real remove/star <button>s can nest inside
+          it — nesting <button> in <button> is invalid HTML. */}
+      <div
+        className="repo-recent-item"
+        role="button"
+        tabIndex={0}
+        onClick={() => onSelectRecent(repo)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onSelectRecent(repo);
+          }
+        }}
+        title={repo.path}
+      >
+        <button
+          type="button"
+          className={`repo-recent-star${repo.favorite ? ' is-favorite' : ''}`}
+          aria-label={
+            repo.favorite
+              ? `Unstar ${repo.name}`
+              : `Star ${repo.name} as favorite`
+          }
+          aria-pressed={repo.favorite ?? false}
+          title={repo.favorite ? 'Remove from favorites' : 'Add to favorites'}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleFavorite(repo);
+          }}
+        >
+          <StarIcon size={16} filled={repo.favorite ?? false} />
+        </button>
+        <span className="repo-recent-text">
+          <span className="repo-recent-name">{repo.name}</span>
+          <span className="repo-recent-path">{repo.path}</span>
+        </span>
+        <button
+          type="button"
+          className="repo-recent-remove"
+          aria-label={`Remove ${repo.name} from recent`}
+          title="Remove from recent"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemoveRecent(repo);
+          }}
+        >
+          <CloseIcon size={14} />
+        </button>
+      </div>
+    </li>
+  );
 
   return (
     <div className="repo-start">
@@ -81,42 +154,24 @@ export function RepoStart({
           </div>
 
           {filtered.length > 0 ? (
-            <ul className="repo-recent-list">
-              {filtered.map((repo) => (
-                <li key={repo.path}>
-                  {/* A div (not a button) so a real remove <button> can nest
-                      inside it — nesting <button> in <button> is invalid HTML. */}
-                  <div
-                    className="repo-recent-item"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onSelectRecent(repo)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        onSelectRecent(repo);
-                      }
-                    }}
-                    title={repo.path}
-                  >
-                    <span className="repo-recent-name">{repo.name}</span>
-                    <span className="repo-recent-path">{repo.path}</span>
-                    <button
-                      type="button"
-                      className="repo-recent-remove"
-                      aria-label={`Remove ${repo.name} from recent`}
-                      title="Remove from recent"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onRemoveRecent(repo);
-                      }}
-                    >
-                      <CloseIcon size={14} />
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <>
+              {favorites.length > 0 && (
+                <>
+                  <h3 className="repo-recent-group-title">Favorites</h3>
+                  <ul className="repo-recent-list">
+                    {favorites.map(renderItem)}
+                  </ul>
+                </>
+              )}
+              {others.length > 0 && (
+                <>
+                  {favorites.length > 0 && (
+                    <h3 className="repo-recent-group-title">Recent</h3>
+                  )}
+                  <ul className="repo-recent-list">{others.map(renderItem)}</ul>
+                </>
+              )}
+            </>
           ) : (
             <p className="repo-recent-empty">
               {recent.length === 0

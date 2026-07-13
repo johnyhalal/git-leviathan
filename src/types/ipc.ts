@@ -34,6 +34,10 @@ export const AppChannels = {
   getPullMode: 'app:get-pull-mode',
   /** Renderer -> main (invoke): persist the default pull mode (global). */
   setPullMode: 'app:set-pull-mode',
+  /** Renderer -> main (invoke): read the auto-update check interval (minutes). */
+  getUpdateCheckInterval: 'app:get-update-check-interval',
+  /** Renderer -> main (invoke): persist the auto-update check interval. */
+  setUpdateCheckInterval: 'app:set-update-check-interval',
   /** Renderer -> main (send): open a github.com/gitlab.com URL in the browser. */
   openExternal: 'app:open-external',
   /** Main -> renderer (send): the main window regained OS focus. */
@@ -53,6 +57,13 @@ export const UpdateChannels = {
   status: 'update:status',
   /** Main -> renderer (send): the auto-update status changed. */
   statusChanged: 'update:status-changed',
+  /**
+   * Main -> renderer (send): the result of the most recent release check —
+   * a newer release, or null. Broadcast to every window so a check triggered
+   * anywhere (the periodic timer or the settings "Check now" button) keeps the
+   * status-bar update control in sync.
+   */
+  found: 'update:found',
 } as const;
 
 /** A newer published release than the one currently running. */
@@ -102,6 +113,8 @@ export interface RepoInfo {
 export interface RecentRepo extends RepoInfo {
   /** Epoch milliseconds of the last time this repo was opened. */
   lastOpenedAt: number;
+  /** Whether the user has starred this repo to pin it to the top of the list. */
+  favorite?: boolean;
 }
 
 /** The persisted tab session: the open repo paths and which one was active. */
@@ -240,6 +253,16 @@ export type GitflowKind = 'feature' | 'release' | 'hotfix';
  * - `fetch-all` — `git fetch --all` (update remotes without touching the branch)
  */
 export type PullMode = 'ff' | 'ff-only' | 'rebase' | 'fetch-all';
+
+/**
+ * Allowed intervals (in minutes) for the periodic GitHub release check that
+ * drives the status-bar update button. `0` means "never check automatically".
+ * The renderer renders these as a preset dropdown.
+ */
+export const UPDATE_CHECK_INTERVALS = [30, 60, 360, 1440, 0] as const;
+export type UpdateCheckInterval = (typeof UPDATE_CHECK_INTERVALS)[number];
+/** Interval applied when the user hasn't chosen one: hourly. */
+export const DEFAULT_UPDATE_CHECK_INTERVAL = 60;
 
 /** A ref decoration attached to a commit (branch tip, tag, HEAD, …). */
 export type RefKind = 'head' | 'branch' | 'remote' | 'tag';
@@ -520,6 +543,8 @@ export const RepoChannels = {
   record: 'repo:record',
   /** Renderer -> main (invoke): drop a repo from the recent list; returns it. */
   forget: 'repo:forget',
+  /** Renderer -> main (invoke): star/unstar a recent repo; returns the list. */
+  setFavorite: 'repo:set-favorite',
   /** Renderer -> main (invoke): read the persisted open-tab repo paths. */
   openTabs: 'repo:open-tabs',
   /** Renderer -> main (invoke): persist the open-tab repo paths (in order). */
@@ -839,6 +864,13 @@ export interface AppApi {
   /** Persist the default pull mode (global). */
   setPullMode(mode: PullMode): Promise<void>;
   /**
+   * Read the auto-update check interval, in minutes. `0` means the periodic
+   * check is disabled. Defaults to {@link DEFAULT_UPDATE_CHECK_INTERVAL}.
+   */
+  getUpdateCheckInterval(): Promise<UpdateCheckInterval>;
+  /** Persist the auto-update check interval (global). */
+  setUpdateCheckInterval(minutes: UpdateCheckInterval): Promise<void>;
+  /**
    * Open an external URL in the default browser. Only github.com / gitlab.com
    * HTTPS URLs are honoured (e.g. a pull request's web page); anything else is
    * ignored by the main process.
@@ -1088,6 +1120,11 @@ export interface RepoApi {
   /** Remove a repository (by path) from the recent list; returns the rest. */
   forget(path: string): Promise<RecentRepo[]>;
   /**
+   * Star or unstar a recent repository (by path) so it pins to the top of the
+   * list. Resolves with the updated recent list.
+   */
+  setFavorite(path: string, favorite: boolean): Promise<RecentRepo[]>;
+  /**
    * The repository paths for the tabs that were open last session, in order,
    * plus the index of the one that was active. Paths that no longer exist on
    * disk are pruned (and the active index is re-resolved against what remains).
@@ -1213,6 +1250,13 @@ export interface UpdateApi {
    * unsubscribe function.
    */
   onStatus(callback: (status: UpdateStatus) => void): () => void;
+  /**
+   * Subscribe to release-check results broadcast from the main process: the
+   * callback fires with a newer release (or null) each time any window runs a
+   * check. Lets the status-bar control reflect a check triggered elsewhere
+   * (e.g. the settings "Check now" button). Returns an unsubscribe function.
+   */
+  onFound(callback: (update: UpdateInfo | null) => void): () => void;
 }
 
 export interface ClaudeApi {
