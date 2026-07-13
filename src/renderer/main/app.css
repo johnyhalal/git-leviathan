@@ -109,14 +109,49 @@ body {
   gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
   height: 100%;
+}
+
+/* Horizontally scrollable strip holding the tabs; the `+` button sits outside
+   it (in `.tabs`) so it stays pinned when the tabs overflow. The scrollbar is
+   hidden — reachability comes from wheel scroll, drag, and the edge fades. */
+.tab-strip {
+  display: flex;
+  align-items: end;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  /* Opt the whole strip (incl. the gaps between tabs) out of the titlebar drag
+     region, so wheel/scroll events there reach the renderer instead of the OS. */
+  -webkit-app-region: no-drag;
+}
+
+.tab-strip::-webkit-scrollbar {
+  height: 0;
+}
+
+/* Fade the edge(s) that have off-screen tabs, hinting there's more to scroll. */
+.tab-strip.fade-start {
+  mask-image: linear-gradient(to right, transparent, #000 24px);
+}
+
+.tab-strip.fade-end {
+  mask-image: linear-gradient(to left, transparent, #000 24px);
+}
+
+.tab-strip.fade-start.fade-end {
+  mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent);
 }
 
 .tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
   max-width: 200px;
   padding: 6px 8px 6px 14px;
   border-radius: 8px 8px 0 0;
@@ -216,16 +251,21 @@ body {
   opacity: 1;
   background: var(--control-bg);
 }
+.tabs-action{
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+}
 
 .tab-add {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border: none;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   color: var(--fg-muted);
   font-size: 18px;

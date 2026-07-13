@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BranchIcon, CloseIcon, FolderIcon, PlusIcon } from '../../../../assets/icons';
 
 export interface Tab {
@@ -29,15 +29,64 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd, onReorder }: 
   // `title` tooltip is unreliable in the frameless titlebar region, so we draw
   // our own.
   const [hover, setHover] = useState<{ path: string; left: number; top: number } | null>(null);
+  // Whether the strip is scrolled away from each edge, so we can show a fade
+  // cue (and enable it) only on the side that has hidden tabs.
+  const [overflow, setOverflow] = useState({ start: false, end: false });
+
+  const stripRef = useRef<HTMLDivElement>(null);
 
   const endDrag = () => {
     setDragId(null);
     setDropIndex(null);
   };
 
+  // Recompute which edges have off-screen tabs (on scroll, resize, or when the
+  // set of tabs changes).
+  const syncOverflow = () => {
+    const el = stripRef.current;
+    if (!el) return;
+    const start = el.scrollLeft > 1;
+    const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setOverflow((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+  };
+
+  useLayoutEffect(syncOverflow, [tabs]);
+
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(syncOverflow);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Keep the active tab in view when it changes (e.g. opening a repo far off
+  // the right edge, or switching tabs by keyboard).
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const active = el.querySelector<HTMLElement>('[aria-selected="true"]');
+    active?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  }, [activeId]);
+
   return (
     <div className="tabs" role="tablist" aria-label="Open repositories">
-      {tabs.map((tab, index) => (
+      <div
+        ref={stripRef}
+        className={
+          ['tab-strip', overflow.start ? 'fade-start' : '', overflow.end ? 'fade-end' : '']
+            .filter(Boolean)
+            .join(' ')
+        }
+        onScroll={syncOverflow}
+        // Let a plain vertical wheel scroll the strip horizontally, so a
+        // trackpad/mouse without horizontal scroll can still reach every tab.
+        onWheel={(event) => {
+          if (event.deltaX !== 0) return;
+          stripRef.current?.scrollBy({ left: event.deltaY });
+        }}
+      >
+        {tabs.map((tab, index) => (
         <div
           key={tab.id}
           role="tab"
@@ -101,16 +150,20 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd, onReorder }: 
             </button>
           )}
         </div>
-      ))}
-      <button
-        type="button"
-        className="tab-add"
-        aria-label="New tab"
-        title="New tab"
-        onClick={onAdd}
-      >
-        <PlusIcon />
-      </button>
+        ))}
+      </div>
+      <div
+          className="tabs-action">
+        <button
+          type="button"
+          className="tab-add"
+          aria-label="New tab"
+          title="New tab"
+          onClick={onAdd}
+        >
+          <PlusIcon />
+        </button>
+      </div>
       {hover && (
         <div className="tab-tooltip" style={{ left: hover.left, top: hover.top }}>
           <FolderIcon size={13} />
