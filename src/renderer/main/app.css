@@ -4441,6 +4441,37 @@ body.is-row-resizing {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.activity-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.activity-copy-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.activity-copy-button:hover {
+  background: var(--control-bg);
+}
+
+.activity-copy-button svg {
+  width: 14px;
+  height: 14px;
 }
 
 .activity-line {

@@ -17,7 +17,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import started from 'electron-squirrel-startup';
-import { gitBin, gitEnv } from './git';
+import { gitBin, gitEnv, initShellPath } from './git';
 import {
   probeClaude,
   generateCommitMessage,
@@ -4282,6 +4282,9 @@ app.on('ready', () => {
     platform: process.platform,
   });
   loadSettings();
+  // Resolve the login-shell PATH in the background so git hooks (a pre-commit
+  // Pest/PHPUnit run) can find php/node/etc. that a Finder-launched app misses.
+  void initShellPath();
   reconcileIntegrations();
   applyDockIcon();
   nativeTheme.themeSource = settings.themeSource;
