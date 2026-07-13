@@ -3810,73 +3810,6 @@ function applyDockIcon(): void {
   if (!icon.isEmpty()) app.dock.setIcon(icon);
 }
 
-// ---- Boot debug logging ---------------------------------------------------
-// Diagnostics for the intermittent blank window on startup. Traces the window
-// load lifecycle and forwards renderer console output to boot-debug.log in the
-// project root, mirrored to the main-process console.
-//
-// Dev only: gated on `!app.isPackaged`, so a packaged build attaches no
-// listeners and never writes a file (no runtime cost, and no attempt to write
-// to a non-writable packaged cwd). Writes are async and serialized on one
-// promise chain, so they keep their order without ever blocking the main thread.
-const BOOT_DEBUG = !app.isPackaged;
-const BOOT_LOG_PATH = path.join(process.cwd(), 'boot-debug.log');
-let bootLogChain: Promise<unknown> = Promise.resolve();
-
-function bootLog(...parts: unknown[]): void {
-  if (!BOOT_DEBUG) return;
-  const line = `[${new Date().toISOString()}] ${parts
-    .map((p) => (typeof p === 'string' ? p : JSON.stringify(p)))
-    .join(' ')}`;
-  console.log(`[boot] ${line}`);
-  bootLogChain = bootLogChain
-    .then(() => fs.promises.appendFile(BOOT_LOG_PATH, `${line}\n`))
-    .catch(() => undefined /* logging must never break boot */);
-}
-
-/** Verbose lifecycle + renderer-console logging for one window's web contents. */
-function instrumentWindow(win: BrowserWindow, label: string): void {
-  if (!BOOT_DEBUG) return;
-  const wc = win.webContents;
-  wc.on('did-start-loading', () => bootLog(label, 'did-start-loading'));
-  wc.on('dom-ready', () => bootLog(label, 'dom-ready', wc.getURL()));
-  wc.on('did-finish-load', () => bootLog(label, 'did-finish-load', wc.getURL()));
-  wc.on('did-stop-loading', () => bootLog(label, 'did-stop-loading'));
-  wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) =>
-    bootLog(label, 'did-fail-load', { code, desc, url, isMainFrame }),
-  );
-  wc.on('did-fail-provisional-load', (_e, code, desc, url, isMainFrame) =>
-    bootLog(label, 'did-fail-provisional-load', { code, desc, url, isMainFrame }),
-  );
-  wc.on('preload-error', (_e, preloadFile, err) =>
-    bootLog(label, 'preload-error', preloadFile, String(err)),
-  );
-  wc.on('render-process-gone', (_e, details) =>
-    bootLog(label, 'render-process-gone', details),
-  );
-  wc.on('unresponsive', () => bootLog(label, 'unresponsive'));
-  wc.on('responsive', () => bootLog(label, 'responsive'));
-  // Forward the renderer's console so page-side logs/errors land in the same
-  // file. The signature changed across Electron versions (positional args vs a
-  // single details object), so read whichever this build emits.
-  wc.on('console-message', (...args: unknown[]) => {
-    const first = args[0] as
-      | { level?: unknown; message?: unknown; lineNumber?: unknown; sourceId?: unknown }
-      | undefined;
-    if (first && typeof first === 'object' && 'message' in first) {
-      bootLog(label, 'console', {
-        level: first.level,
-        message: first.message,
-        line: first.lineNumber,
-        source: first.sourceId,
-      });
-    } else {
-      const [, level, message, line, source] = args as unknown[];
-      bootLog(label, 'console', { level, message, line, source });
-    }
-  });
-}
-
 // ---- Windows --------------------------------------------------------------
 
 /**
@@ -3922,7 +3855,6 @@ function createSplashWindow(): BrowserWindow {
     webPreferences: { preload: preloadPath },
   });
 
-  instrumentWindow(splash, 'splash');
   if (SPLASH_WINDOW_VITE_DEV_SERVER_URL) {
     loadDevUrlWithRetry(splash, SPLASH_WINDOW_VITE_DEV_SERVER_URL);
   } else {
@@ -3965,8 +3897,6 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
-  instrumentWindow(win, 'main');
-
   if (settings.windowMaximized) {
     win.maximize();
   }
@@ -4006,17 +3936,12 @@ const REVEAL_FALLBACK_MS = 10_000;
 
 /** Show the splash, load the main window behind it, then hand off. */
 function boot(): void {
-  bootLog('=== boot() start ===', {
-    devServer: MAIN_WINDOW_VITE_DEV_SERVER_URL || '(packaged)',
-    openTabs: settings.openTabs?.length ?? 0,
-  });
   const splash = createSplashWindow();
   const shownAt = Date.now();
   const mainWindow = createMainWindow();
 
   let revealed = false;
-  const reveal = (via: string): void => {
-    bootLog('reveal() called', { via, alreadyRevealed: revealed });
+  const reveal = (): void => {
     if (revealed || mainWindow.isDestroyed()) return;
     revealed = true;
     // Keep the splash up for at least MIN_SPLASH_MS so it never just flashes.
@@ -4028,12 +3953,6 @@ function boot(): void {
       }
       mainWindow.show();
       mainWindow.focus();
-      bootLog('main window shown', {
-        via,
-        url: mainWindow.webContents.getURL(),
-        crashed: mainWindow.webContents.isCrashed(),
-        loading: mainWindow.webContents.isLoading(),
-      });
     }, remaining);
   };
 
@@ -4042,15 +3961,13 @@ function boot(): void {
   // shell — prevents revealing a blank window when the Vite dev server reloads
   // (e.g. after dependency pre-bundling) mid-boot.
   ipcMain.once(AppChannels.ready, (event) => {
-    const fromMain = event.sender === mainWindow.webContents;
-    bootLog('received app:ready', { fromMainWindow: fromMain });
-    if (fromMain) {
-      reveal('app:ready');
+    if (event.sender === mainWindow.webContents) {
+      reveal();
     }
   });
 
   // Safety net: never leave the window stuck hidden if the signal is missed.
-  setTimeout(() => reveal('fallback-timeout'), REVEAL_FALLBACK_MS);
+  setTimeout(() => reveal(), REVEAL_FALLBACK_MS);
 }
 
 /**
@@ -4275,13 +4192,12 @@ function broadcastUpdateFound(info: UpdateInfo | null): void {
 }
 
 /**
- * Surface an auto-update line in the footer activity log (and boot log), so the
+ * Surface an auto-update line in the footer activity log, so the
  * download → available → ready flow can be debugged from inside the packaged
- * app — where `bootLog` is off and there's no attached terminal. Uses the
- * global activity path so it shows regardless of which repo is open.
+ * app — where there's no attached terminal. Uses the global activity path so it
+ * shows regardless of which repo is open.
  */
 function updateLog(text: string, stream: 'stdout' | 'stderr' = 'stdout'): void {
-  bootLog('[update]', text);
   emitActivity({
     repoPath: GLOBAL_ACTIVITY_PATH,
     op: 'update',
@@ -4423,11 +4339,6 @@ function registerUpdateIpc(): void {
 }
 
 app.on('ready', () => {
-  bootLog('\n########## app ready — new session', {
-    pid: process.pid,
-    electron: process.versions.electron,
-    platform: process.platform,
-  });
   loadSettings();
   // Resolve the login-shell PATH in the background so git hooks (a pre-commit
   // Pest/PHPUnit run) can find php/node/etc. that a Finder-launched app misses.

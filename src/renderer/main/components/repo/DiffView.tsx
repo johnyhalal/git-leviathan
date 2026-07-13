@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { DiffSource, FileDiff, FileStatus } from '../../../../types/ipc';
+import { highlightBuffer, highlightLine, languageForPath } from './syntax';
 import {
   ChevronDownIcon,
   CloseIcon,
@@ -49,6 +50,7 @@ interface DiffViewProps {
  */
 export function DiffView({ repoPath, target, onClose }: DiffViewProps) {
   const { source, path, status } = target;
+  const lang = useMemo(() => languageForPath(path), [path]);
   const [mode, setMode] = useState<ViewMode>('diff');
   const [diff, setDiff] = useState<FileDiff | null>(null);
   // The full-file content for "file view", fetched lazily the first time that
@@ -144,17 +146,19 @@ export function DiffView({ repoPath, target, onClose }: DiffViewProps) {
 
       <div className="diff-body">
         {mode === 'diff' ? (
-          <DiffBody diff={diff} />
+          <DiffBody diff={diff} lang={lang} />
         ) : (
-          <FileBody content={content} />
+          <FileBody content={content} lang={lang} />
         )}
       </div>
     </div>
   );
 }
 
-/** The unified-diff rendering: two line-number gutters and a marked code column. */
-function DiffBody({ diff }: { diff: FileDiff | null }) {
+/** The unified-diff rendering: two line-number gutters and a marked code column.
+ * Each line is highlighted on its own — add/delete/context lines don't form a
+ * contiguous program, so a whole-hunk highlight would be misleading. */
+function DiffBody({ diff, lang }: { diff: FileDiff | null; lang: string | null }) {
   if (diff === null) return <p className="diff-empty">Loading…</p>;
   if (diff.binary) return <p className="diff-empty">Binary file — no diff to show.</p>;
   if (diff.lines.length === 0) return <p className="diff-empty">No changes.</p>;
@@ -177,7 +181,10 @@ function DiffBody({ diff }: { diff: FileDiff | null }) {
             <span className="diff-sign" aria-hidden="true">
               {sign}
             </span>
-            <span className="diff-code">{line.text}</span>
+            <span
+              className="diff-code hljs"
+              dangerouslySetInnerHTML={{ __html: highlightLine(line.text, lang) }}
+            />
           </div>
         );
       })}
@@ -185,17 +192,27 @@ function DiffBody({ diff }: { diff: FileDiff | null }) {
   );
 }
 
-/** The full-file rendering: a single line-number gutter and the content column. */
-function FileBody({ content }: { content: string[] | null }) {
+/** The full-file rendering: a single line-number gutter and the content column.
+ * The whole buffer is highlighted at once so multi-line constructs stay intact,
+ * then split back into per-line markup aligned with the content lines. */
+function FileBody({ content, lang }: { content: string[] | null; lang: string | null }) {
+  const html = useMemo(
+    () => (content ? highlightBuffer(content.join('\n'), lang) : []),
+    [content, lang],
+  );
+
   if (content === null) return <p className="diff-empty">Loading…</p>;
   if (content.length === 0) return <p className="diff-empty">Empty or binary file.</p>;
 
   return (
     <div className="diff-lines diff-lines-file" role="table">
-      {content.map((line, index) => (
+      {content.map((_, index) => (
         <div key={index} className="diff-line diff-line-context" role="row">
           <span className="diff-gutter">{index + 1}</span>
-          <span className="diff-code">{line}</span>
+          <span
+            className="diff-code hljs"
+            dangerouslySetInnerHTML={{ __html: html[index] ?? '' }}
+          />
         </div>
       ))}
     </div>

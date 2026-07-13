@@ -40,6 +40,16 @@
   /* Light-blue accent for list selection; green for the checked-out branch. */
   --selection: #3b82f6;
   --current: #16a34a;
+  /* Syntax token palette (GitHub-light-ish), consumed by the .hljs-* rules. */
+  --syn-keyword: #cf222e;
+  --syn-string: #0a3069;
+  --syn-comment: #6e7781;
+  --syn-number: #0550ae;
+  --syn-function: #8250df;
+  --syn-type: #953800;
+  --syn-attr: #0550ae;
+  --syn-tag: #116329;
+  --syn-meta: #6e7781;
   color-scheme: light;
 }
 
@@ -55,6 +65,16 @@
     --danger: #f97066;
     --selection: #60a5fa;
     --current: #4ade80;
+    /* Syntax token palette (GitHub-dark-ish). */
+    --syn-keyword: #ff7b72;
+    --syn-string: #a5d6ff;
+    --syn-comment: #8b949e;
+    --syn-number: #79c0ff;
+    --syn-function: #d2a8ff;
+    --syn-type: #ffa657;
+    --syn-attr: #79c0ff;
+    --syn-tag: #7ee787;
+    --syn-meta: #8b949e;
     color-scheme: dark;
   }
 }
@@ -4235,6 +4255,70 @@ body.is-row-resizing {
   padding-right: 12px;
   white-space: pre;
   tab-size: 2;
+}
+
+/* highlight.js token colors, driven by the per-theme --syn-* vars. The .hljs
+   wrapper class carries no background/color of its own (we inherit the row's). */
+.diff-code.hljs {
+  color: inherit;
+  background: transparent;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag {
+  color: var(--syn-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-char.escape_ {
+  color: var(--syn-string);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+.hljs-number,
+.hljs-literal {
+  color: var(--syn-number);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: var(--syn-function);
+}
+.hljs-type,
+.hljs-title.class_,
+.hljs-built_in,
+.hljs-variable.language_ {
+  color: var(--syn-type);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: var(--syn-attr);
+}
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--syn-tag);
+}
+.hljs-meta,
+.hljs-comment .hljs-doctag {
+  color: var(--syn-meta);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
 }
 
 .diff-line-add {
