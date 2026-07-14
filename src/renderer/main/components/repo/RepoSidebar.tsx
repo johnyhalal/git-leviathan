@@ -833,7 +833,7 @@ export function RepoSidebar({
               title="New pull request"
               onClick={() => setCreatingPr(true)}
             >
-              <PlusIcon size={14} />
+              <PlusIcon size={12} />
             </button>
           ) : undefined
         }

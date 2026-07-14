@@ -1,13 +1,28 @@
 import { useEffect } from 'react';
 import { CloseIcon } from '../../../../assets/icons';
 
-export type ToastVariant = 'error' | 'info';
+export type ToastVariant = 'error' | 'info' | 'green';
+
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
 
 export interface ToastData {
   id: string;
   title: string;
   message?: string;
   variant?: ToastVariant;
+  /**
+   * Keep the toast up until the user closes it, skipping the auto-dismiss
+   * timer. For notices that must not be missed (e.g. "update ready — restart").
+   */
+  persistent?: boolean;
+  /**
+   * An optional call-to-action button rendered inside the toast (e.g.
+   * "Restart" on the update-ready notice).
+   */
+  action?: ToastAction;
 }
 
 interface ToastStackProps {
@@ -16,7 +31,7 @@ interface ToastStackProps {
 }
 
 /** How long a toast stays up before auto-dismissing. */
-const AUTO_DISMISS_MS = 5000;
+const AUTO_DISMISS_MS = 10000;
 
 /** Bottom-left stack of transient notifications. Newest sits nearest the corner. */
 export function ToastStack({ toasts, onDismiss }: ToastStackProps) {
@@ -38,15 +53,26 @@ function ToastItem({
   onDismiss: (id: string) => void;
 }) {
   useEffect(() => {
+    // Persistent toasts stay up until the user clicks the close button.
+    if (toast.persistent) return;
     const timer = setTimeout(() => onDismiss(toast.id), AUTO_DISMISS_MS);
     return () => clearTimeout(timer);
-  }, [toast.id, onDismiss]);
+  }, [toast.id, toast.persistent, onDismiss]);
 
   return (
     <div className={`toast toast-${toast.variant ?? 'info'}`} role="alert">
       <div className="toast-body">
         <span className="toast-title">{toast.title}</span>
         {toast.message && <span className="toast-message">{toast.message}</span>}
+        {toast.action && (
+          <button
+            type="button"
+            className="toast-action"
+            onClick={toast.action.onClick}
+          >
+            {toast.action.label}
+          </button>
+        )}
       </div>
       <button
         type="button"

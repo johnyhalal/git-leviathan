@@ -22,6 +22,7 @@ import {
   probeClaude,
   generateCommitMessage,
   claudeErrorMessage,
+  formatCommitUsage,
   isRunnable,
 } from './claude';
 import {
@@ -66,6 +67,8 @@ import {
   type NewPullRequest,
   type PullRequestListResult,
   type CreatePullRequestResult,
+  type NewFeedback,
+  type CreateIssueResult,
   type RepoHost,
   type LocalBranchInfo,
   type OpenRepoResult,
@@ -265,6 +268,16 @@ function isNewPullRequest(value: unknown): value is NewPullRequest {
     typeof v.sourceBranch === 'string' &&
     typeof v.targetBranch === 'string' &&
     typeof v.draft === 'boolean'
+  );
+}
+
+function isNewFeedback(value: unknown): value is NewFeedback {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    (v.kind === 'bug' || v.kind === 'feature') &&
+    typeof v.title === 'string' &&
+    typeof v.details === 'string'
   );
 }
 
@@ -3764,6 +3777,43 @@ function registerIntegrationsIpc(): void {
   );
 
   ipcMain.handle(
+    IntegrationChannels.submitFeedback,
+    async (_event, input: unknown): Promise<CreateIssueResult> => {
+      if (!isNewFeedback(input)) {
+        return { status: 'error', message: 'Invalid feedback details.' };
+      }
+      const token = getToken('github');
+      if (!token) {
+        return {
+          status: 'error',
+          message:
+            'Connect a GitHub account in Settings to file a report — issues are created under your account.',
+        };
+      }
+      const [owner, repo] = GITHUB_RELEASES_REPO.split('/');
+      const label = input.kind === 'bug' ? 'bug' : 'feature';
+      const prefix = input.kind === 'bug' ? '[Bug]' : '[Feature]';
+      // Footer gives whoever triages the issue the build context automatically.
+      const footer =
+        `\n\n---\n_Reported from GitLeviathan v${app.getVersion()} ` +
+        `on ${process.platform}._`;
+      try {
+        const issue = await github.createIssue(token, owner, repo, {
+          title: `${prefix} ${input.title}`,
+          body: input.details + footer,
+          labels: [label],
+        });
+        return { status: 'ok', number: issue.number, url: issue.url };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
     IntegrationChannels.sshKeys,
     (_event, provider: IntegrationProvider): SshKeyInfo[] => {
       if (!isIntegrationProvider(provider)) {
@@ -4044,7 +4094,7 @@ function registerClaudeIpc(): void {
         .map((s) => s.trim())
         .filter(Boolean);
       try {
-        const message = await generateCommitMessage(
+        const { message, usage } = await generateCommitMessage(
           bin,
           diff,
           recentSubjects,
@@ -4052,6 +4102,18 @@ function registerClaudeIpc(): void {
         );
         if (!message.trim()) {
           return { status: 'error', message: 'Claude returned an empty message.' };
+        }
+        // Surface the model's token usage/cost in the repo's activity log so it
+        // sits alongside git output, not just the main-process console.
+        if (usage) {
+          emitActivity({
+            repoPath,
+            op: 'generate commit message',
+            kind: 'line',
+            stream: 'stdout',
+            text: `claude: ${formatCommitUsage(usage)}`,
+            ts: Date.now(),
+          });
         }
         return { status: 'ok', message: message.trim() };
       } catch (err) {
@@ -4352,9 +4414,6 @@ app.on('ready', () => {
   registerClaudeIpc();
   registerAppIpc();
   registerUpdateIpc();
-  console.log(
-    `[main] ready — theme "${nativeTheme.themeSource}" (dark=${nativeTheme.shouldUseDarkColors})`,
-  );
   boot();
 });
 

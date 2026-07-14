@@ -91,7 +91,6 @@ const config: ForgeConfig = {
       }
       const dmgs = makeResults.flatMap((r) => r.artifacts).filter((a) => a.endsWith('.dmg'));
       for (const dmg of dmgs) {
-        console.log(`[postMake] Notarizing DMG: ${dmg}`);
         execFileSync(
           'xcrun',
           ['notarytool', 'submit', dmg,

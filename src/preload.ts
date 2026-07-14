@@ -33,6 +33,8 @@ import {
   type NewPullRequest,
   type PullRequestListResult,
   type CreatePullRequestResult,
+  type NewFeedback,
+  type CreateIssueResult,
   type OpenRepoResult,
   type OpenTabsState,
   type PullMode,
@@ -264,6 +266,11 @@ const api: ExposedApi = {
         remoteUrl,
         input,
       ) as Promise<CreatePullRequestResult>,
+    submitFeedback: (input: NewFeedback) =>
+      ipcRenderer.invoke(
+        IntegrationChannels.submitFeedback,
+        input,
+      ) as Promise<CreateIssueResult>,
     sshKeys: (provider: IntegrationProvider) =>
       ipcRenderer.invoke(
         IntegrationChannels.sshKeys,

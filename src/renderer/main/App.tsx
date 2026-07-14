@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { TabBar, type Tab } from './components/TabBar';
 import { RepoStart, type RecentRepo } from './components/RepoStart';
-import { ToastStack, type ToastData, type ToastVariant } from './components/Toast';
+import {
+  ToastStack,
+  type ToastAction,
+  type ToastData,
+  type ToastVariant,
+} from './components/Toast';
 import { Settings } from './components/Settings';
 import { CloneDialog } from './components/CloneDialog';
+import { FeedbackDialog } from './components/FeedbackDialog';
 import { RepoView } from './components/repo/RepoView';
 import { ActivityLog } from './components/repo/ActivityLog';
-import { GearIcon } from '../../../assets/icons';
+import { GearIcon, FeedbackIcon } from '../../../assets/icons';
 import type { RepoInfo, UpdateInfo, UpdateStatus } from '../../types/ipc';
 import { DEFAULT_UPDATE_CHECK_INTERVAL } from '../../types/ipc';
 
@@ -42,12 +48,17 @@ function renderUpdateButton(update: UpdateInfo | null, status: UpdateStatus) {
     );
   }
 
-  // Fetching in the background — show progress, no action.
+  // Fetching in the background — plain text (not a button; nothing to click)
+  // with an indeterminate progress bar. Squirrel's autoUpdater emits no
+  // download-progress events, so we can't show a real percentage.
   if (status.state === 'downloading') {
     return (
-      <button type="button" className="statusbar-update" disabled title="Downloading the update">
-        Downloading update{version ? ` (v${version})` : ''}…
-      </button>
+      <span className="statusbar-download" title="Downloading the update">
+        <span>Downloading update{version ? ` v${version}` : ''}…</span>
+        <span className="statusbar-progress" aria-hidden="true">
+          <span className="statusbar-progress-bar" />
+        </span>
+      </span>
     );
   }
 
@@ -78,6 +89,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<string | undefined>();
   const [cloneOpen, setCloneOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -145,7 +157,33 @@ export function App() {
   // Track the in-app auto-updater (download → ready → install) so the status-bar
   // button can drive it. On builds where auto-update isn't supported this stays
   // `supported: false` and the button falls back to opening the release page.
-  useEffect(() => window.api.update.onStatus(setUpdateStatus), []);
+  // On the transition into `ready`, raise a persistent toast once — a downloaded
+  // update is easy to miss, and it stays up until the user acts or dismisses it.
+  const prevUpdateState = useRef<UpdateStatus['state']>('idle');
+  useEffect(
+    () =>
+      window.api.update.onStatus((next) => {
+        setUpdateStatus(next);
+        if (prevUpdateState.current !== 'ready' && next.state === 'ready') {
+          showToast(
+            'Update ready',
+            `Restart GitLeviathan to finish updating${
+              next.version ? ` to v${next.version}` : ''
+            }.`,
+            'info',
+            {
+              persistent: true,
+              action: {
+                label: 'Restart',
+                onClick: () => window.api.update.install(),
+              },
+            },
+          );
+        }
+        prevUpdateState.current = next.state;
+      }),
+    [],
+  );
 
   // Restore the repositories that were open as tabs last session (paths only;
   // titles are derived from the folder name).
@@ -188,10 +226,18 @@ export function App() {
     title: string,
     message?: string,
     variant: ToastVariant = 'info',
+    options?: { persistent?: boolean; action?: ToastAction },
   ) => {
     setToasts((prev) => [
       ...prev,
-      { id: `toast-${nextToastId++}`, title, message, variant },
+      {
+        id: `toast-${nextToastId++}`,
+        title,
+        message,
+        variant,
+        persistent: options?.persistent,
+        action: options?.action,
+      },
     ]);
   };
 
@@ -347,6 +393,15 @@ export function App() {
       <footer className="statusbar">
         {activeTab.repoPath && <ActivityLog repoPath={activeTab.repoPath} />}
         {renderUpdateButton(update, updateStatus)}
+        <button
+          type="button"
+          className="statusbar-feedback"
+          title="Report a bug or request a feature"
+          onClick={() => setFeedbackOpen(true)}
+        >
+          <FeedbackIcon size={13} />
+          <span>Feedback</span>
+        </button>
         <span className="statusbar-version">v{window.api.version}</span>
       </footer>
 
@@ -361,6 +416,26 @@ export function App() {
         <CloneDialog
           onCloned={handleCloned}
           onClose={() => setCloneOpen(false)}
+        />
+      )}
+
+      {feedbackOpen && (
+        <FeedbackDialog
+          onClose={() => setFeedbackOpen(false)}
+          onSubmitted={(issue) => {
+            setFeedbackOpen(false);
+            showToast(
+              'Thanks for the feedback',
+              `Opened issue #${issue.number}.`,
+              'info',
+              {
+                action: {
+                  label: 'View issue',
+                  onClick: () => window.api.app.openExternal(issue.url),
+                },
+              },
+            );
+          }}
         />
       )}
 

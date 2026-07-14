@@ -162,6 +162,77 @@ function spawnClaude(bin: string, args: string[], cwd: string) {
   return spawn(bin, args, { cwd });
 }
 
+/** Token-usage counters reported by `claude -p --output-format json`. */
+interface ClaudeUsage {
+  input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  output_tokens?: number;
+}
+
+/** The subset of the `--output-format json` envelope we read. */
+interface ClaudeJsonResult {
+  result?: string;
+  is_error?: boolean;
+  total_cost_usd?: number;
+  usage?: ClaudeUsage;
+}
+
+/** Normalized token usage/cost for a single generation, for the activity log. */
+export interface CommitUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd?: number;
+}
+
+/** The generated commit message plus, when available, its token usage. */
+export interface CommitMessageResult {
+  message: string;
+  usage?: CommitUsage;
+}
+
+/** One human-readable line summarizing a generation's token usage and cost. */
+export function formatCommitUsage(usage: CommitUsage): string {
+  const cost =
+    typeof usage.costUsd === 'number' ? `, cost $${usage.costUsd.toFixed(4)}` : '';
+  return (
+    `token usage — input ${usage.inputTokens}, output ${usage.outputTokens}, ` +
+    `cache read ${usage.cacheReadTokens}, cache write ${usage.cacheWriteTokens}${cost}`
+  );
+}
+
+/**
+ * Parse the `--output-format json` envelope into the message plus its token
+ * usage. Falls back to treating the raw stdout as the message (with no usage)
+ * if the payload isn't the JSON we expect, so a format change degrades
+ * gracefully rather than breaking generation.
+ */
+function parseCommitResult(stdout: string): CommitMessageResult {
+  const trimmed = stdout.trim();
+  let parsed: ClaudeJsonResult | null = null;
+  try {
+    parsed = JSON.parse(trimmed) as ClaudeJsonResult;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || typeof parsed.result !== 'string') return { message: trimmed };
+
+  const u = parsed.usage ?? {};
+  return {
+    message: parsed.result.trim(),
+    usage: {
+      inputTokens: u.input_tokens ?? 0,
+      outputTokens: u.output_tokens ?? 0,
+      cacheReadTokens: u.cache_read_input_tokens ?? 0,
+      cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+      costUsd:
+        typeof parsed.total_cost_usd === 'number' ? parsed.total_cost_usd : undefined,
+    },
+  };
+}
+
 /**
  * Generate a commit message from the staged diff by piping it to `claude -p`.
  * `recentSubjects` are woven into stdin (never argv) so a crafted commit subject
@@ -172,7 +243,7 @@ export function generateCommitMessage(
   diff: string,
   recentSubjects: string[],
   cwd: string,
-): Promise<string> {
+): Promise<CommitMessageResult> {
   const trimmedDiff =
     diff.length > MAX_DIFF_CHARS
       ? `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated for length]`
@@ -185,9 +256,11 @@ export function generateCommitMessage(
       : '') + `Staged diff:\n${trimmedDiff}\n`;
 
   return new Promise((resolve, reject) => {
+    // `--output-format json` wraps the message in an envelope that also carries
+    // token usage and cost, which we log; we still resolve with the plain text.
     const child = spawnClaude(
       bin,
-      ['-p', COMMIT_INSTRUCTION, '--output-format', 'text'],
+      ['-p', COMMIT_INSTRUCTION, '--output-format', 'json'],
       cwd,
     );
     let out = '';
@@ -210,7 +283,7 @@ export function generateCommitMessage(
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code === 0) {
-        resolve(out.trim());
+        resolve(parseCommitResult(out));
       } else {
         const detail = err.trim() || out.trim();
         reject(new Error(detail || `Claude exited with code ${code}.`));

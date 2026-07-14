@@ -281,6 +281,35 @@ export async function fetchPullRequests(
   return pulls.map(toSummary);
 }
 
+/**
+ * Open a new issue on `owner/repo` and return its number and web URL. `labels`
+ * are applied when they already exist on the repo; GitHub silently ignores
+ * unknown ones rather than failing, so no pre-check is needed.
+ */
+export async function createIssue(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  input: { title: string; body: string; labels: string[] },
+  signal?: AbortSignal,
+): Promise<{ number: number; url: string }> {
+  const res = await fetch(`${API_BASE}/repos/${owner}/${repo}/issues`, {
+    method: 'POST',
+    headers: { ...apiHeaders(accessToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: input.title,
+      body: input.body,
+      labels: input.labels,
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(await apiError(res, 'Failed to create the issue'));
+  }
+  const issue = (await res.json()) as { number: number; html_url: string };
+  return { number: issue.number, url: issue.html_url };
+}
+
 /** Open a new pull request and return it in the shared summary shape. */
 export async function createPullRequest(
   accessToken: string,

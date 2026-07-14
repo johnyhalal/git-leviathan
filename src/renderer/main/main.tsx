@@ -8,11 +8,6 @@ import './app.css';
 // intermittent blank window on startup. `import.meta.env.DEV` is a Vite
 // compile-time constant, so this whole block is stripped from production builds.
 if (import.meta.env.DEV) {
-  console.log('[renderer] main.tsx evaluated', {
-    apiPresent: typeof window.api !== 'undefined',
-    readyState: document.readyState,
-    url: location.href,
-  });
   window.addEventListener('error', (event) =>
     console.error('[renderer] window error', event.message, event.filename, event.lineno),
   );
@@ -31,13 +26,11 @@ createRoot(container).render(
     <App />
   </StrictMode>,
 );
-if (import.meta.env.DEV) console.log('[renderer] render() called');
 
 // Tell the main process to reveal the window only after we've painted a frame,
 // so a slow or reloading dev server never surfaces a blank window.
 requestAnimationFrame(() =>
   requestAnimationFrame(() => {
-    if (import.meta.env.DEV) console.log('[renderer] signalReady (double-rAF fired)');
     window.api.app.signalReady();
   }),
 );

@@ -771,6 +771,23 @@ export type CreatePullRequestResult =
   | { status: 'ok'; pull: PullRequestSummary }
   | { status: 'error'; message: string };
 
+/** What kind of feedback the user is filing — maps to a GitHub issue label. */
+export type FeedbackKind = 'bug' | 'feature';
+
+/** The fields collected by the "report a bug / request a feature" dialog. */
+export interface NewFeedback {
+  kind: FeedbackKind;
+  /** A short one-line summary; used as the issue title. */
+  title: string;
+  /** The free-text details; used as the issue body. */
+  details: string;
+}
+
+/** Outcome of filing feedback as a GitHub issue on the app's own repo. */
+export type CreateIssueResult =
+  | { status: 'ok'; number: number; url: string }
+  | { status: 'error'; message: string };
+
 export const IntegrationChannels = {
   /** Renderer -> main (invoke): read connection state for every provider. */
   list: 'integrations:list',
@@ -784,6 +801,8 @@ export const IntegrationChannels = {
   pullRequests: 'integrations:pull-requests',
   /** Renderer -> main (invoke): open a new pull/merge request. */
   createPullRequest: 'integrations:create-pull-request',
+  /** Renderer -> main (invoke): file feedback as a GitHub issue on the app repo. */
+  submitFeedback: 'integrations:submit-feedback',
   /** Renderer -> main (invoke): read the SSH keys generated for a provider. */
   sshKeys: 'integrations:ssh-keys',
   /** Renderer -> main (invoke): generate a new SSH key and upload it. */
@@ -1205,6 +1224,13 @@ export interface IntegrationsApi {
     remoteUrl: string,
     input: NewPullRequest,
   ): Promise<CreatePullRequestResult>;
+  /**
+   * File a bug report / feature request as a GitHub issue on GitLeviathan's own
+   * repository, using the connected GitHub account. The kind maps to a label.
+   * Resolves with the created issue's number and URL, or a one-line error (e.g.
+   * no GitHub account connected). Never rejects.
+   */
+  submitFeedback(input: NewFeedback): Promise<CreateIssueResult>;
   /** The SSH keys generated for `provider` from this app, newest last. */
   sshKeys(provider: IntegrationProvider): Promise<SshKeyInfo[]>;
   /**
