@@ -16,6 +16,7 @@ export { PushIcon } from './PushIcon';
 export { StashIcon } from './StashIcon';
 export { TrayIcon } from './TrayIcon';
 export { PopIcon } from './PopIcon';
+export { MoreIcon } from './MoreIcon';
 export { BranchIcon } from './BranchIcon';
 export { CheckIcon } from './CheckIcon';
 export { GitflowIcon } from './GitflowIcon';

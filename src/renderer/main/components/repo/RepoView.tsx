@@ -350,6 +350,14 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
+  const stashApply = useCallback(
+    (index: number) =>
+      runMutation('Stash apply failed', () =>
+        window.api.repo.stashApply(repoPath, index),
+      ),
+    [repoPath, runMutation],
+  );
+
   const stashPop = useCallback(
     (index: number) =>
       runMutation('Stash pop failed', () =>
@@ -397,6 +405,14 @@ export function RepoView({
     (source: string, target: string) =>
       runMutation('Rebase failed', () =>
         window.api.repo.rebase(repoPath, source, target),
+      ),
+    [repoPath, runMutation],
+  );
+
+  const renameBranch = useCallback(
+    (oldName: string, newName: string) =>
+      runMutation('Rename failed', () =>
+        window.api.repo.renameBranch(repoPath, oldName, newName),
       ),
     [repoPath, runMutation],
   );
@@ -553,8 +569,10 @@ export function RepoView({
           onCancelCreateBranch={() => setCreatingBranch(false)}
           onMergeBranch={(source, target) => void mergeBranch(source, target)}
           onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
+          onRenameBranch={(oldName, newName) => void renameBranch(oldName, newName)}
           onDeleteBranch={(branch) => void deleteBranch(branch)}
           onDeleteRemoteBranch={(remote, branch) => void deleteRemoteBranch(remote, branch)}
+          onStashApply={(index) => void stashApply(index)}
           onStashPop={(index) => void stashPop(index)}
           onStashDrop={(index) => void stashDrop(index)}
           onGitflowStart={(kind, name) => void gitflowStart(kind, name)}

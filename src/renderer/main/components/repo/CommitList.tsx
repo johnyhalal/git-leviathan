@@ -418,6 +418,8 @@ interface CommitListProps {
   /** Commits newest-first, or null while loading. */
   commits: CommitLogEntry[] | null;
   selectedHash: string | null;
+  /** The checked-out branch name, for the branch context menu's merge/rebase actions. */
+  currentBranch?: string;
   /** Configured remotes, for badging remote refs with their host avatar. */
   remotes?: RemoteInfo[];
   /** Working-tree status, for the working row's file-count icon group. */
@@ -441,6 +443,8 @@ interface CommitListProps {
   onMergeBranch?: (source: string, target: string) => void;
   /** Rebase the dragged branch into the one it was dropped on. */
   onRebaseBranch?: (source: string, target: string) => void;
+  /** Rename a local branch (`git branch -m`), from a badge's context menu. */
+  onRenameBranch?: (oldName: string, newName: string) => void;
   /** Delete a local branch (`git branch -D`), from a badge's context menu. */
   onDeleteBranch?: (branch: string) => void;
   /** Delete a branch on its remote (`git push <remote> --delete`). */
@@ -774,6 +778,7 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
 export function CommitList({
   commits,
   selectedHash,
+  currentBranch,
   remotes,
   workingStatus,
   commitMessage = '',
@@ -786,6 +791,7 @@ export function CommitList({
   onCancelCreateBranch,
   onMergeBranch,
   onRebaseBranch,
+  onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
 }: CommitListProps) {
@@ -1030,7 +1036,12 @@ export function CommitList({
         targets={contextMenu.targets}
         x={contextMenu.x}
         y={contextMenu.y}
+        currentBranch={currentBranch}
         onClose={() => setContextMenu(null)}
+        onCheckout={(name, remote) => onCheckout?.(name, remote)}
+        onMerge={(source, target) => onMergeBranch?.(source, target)}
+        onRebase={(source, target) => onRebaseBranch?.(source, target)}
+        onRenameBranch={(oldName, newName) => onRenameBranch?.(oldName, newName)}
         onDeleteBranch={(name) => onDeleteBranch?.(name)}
         onDeleteRemoteBranch={(remote, name) => onDeleteRemoteBranch?.(remote, name)}
       />

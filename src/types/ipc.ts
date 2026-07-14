@@ -514,6 +514,8 @@ export const RepoChannels = {
   checkout: 'repo:checkout',
   /** Renderer -> main (invoke): create a branch at HEAD; returns fresh refs. */
   createBranch: 'repo:create-branch',
+  /** Renderer -> main (invoke): rename a local branch; returns fresh refs. */
+  renameBranch: 'repo:rename-branch',
   /** Renderer -> main (invoke): delete a local branch; returns fresh refs. */
   deleteBranch: 'repo:delete-branch',
   /** Renderer -> main (invoke): delete a branch on a remote; returns fresh refs. */
@@ -524,6 +526,8 @@ export const RepoChannels = {
   rebase: 'repo:rebase',
   /** Renderer -> main (invoke): stash uncommitted changes (`git stash push`). */
   stashPush: 'repo:stash-push',
+  /** Renderer -> main (invoke): apply a stash, keeping it (`git stash apply`). */
+  stashApply: 'repo:stash-apply',
   /** Renderer -> main (invoke): apply & drop a stash (`git stash pop`). */
   stashPop: 'repo:stash-pop',
   /** Renderer -> main (invoke): discard a stash (`git stash drop`). */
@@ -1048,6 +1052,12 @@ export interface RepoApi {
    */
   createBranch(path: string, name: string): Promise<RefsMutationResult>;
   /**
+   * Rename the local branch `oldName` to `newName` (`git branch -m`). Resolves
+   * with the repo's fresh refs on success, or an error message (invalid name, a
+   * branch of the new name already exists, the old branch is gone…).
+   */
+  renameBranch(path: string, oldName: string, newName: string): Promise<RefsMutationResult>;
+  /**
    * Delete the local branch `branch` (`git branch -D`). Refuses to delete the
    * checked-out branch. Resolves with the repo's fresh refs on success, or an
    * error message.
@@ -1078,6 +1088,12 @@ export interface RepoApi {
    * nothing to stash).
    */
   stashPush(path: string): Promise<RefsMutationResult>;
+  /**
+   * Apply the stash at `index` while keeping it in the stash list
+   * (`git stash apply stash@{index}`). Resolves with fresh refs, or an error
+   * (e.g. when applying would conflict with local changes).
+   */
+  stashApply(path: string, index: number): Promise<RefsMutationResult>;
   /**
    * Apply the stash at `index` and remove it from the stash list
    * (`git stash pop stash@{index}`). Resolves with fresh refs, or an error

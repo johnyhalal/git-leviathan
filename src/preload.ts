@@ -143,6 +143,13 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.checkout, path, branch, remote) as Promise<CheckoutResult>,
     createBranch: (path: string, name: string) =>
       ipcRenderer.invoke(RepoChannels.createBranch, path, name) as Promise<RefsMutationResult>,
+    renameBranch: (path: string, oldName: string, newName: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.renameBranch,
+        path,
+        oldName,
+        newName,
+      ) as Promise<RefsMutationResult>,
     deleteBranch: (path: string, branch: string) =>
       ipcRenderer.invoke(RepoChannels.deleteBranch, path, branch) as Promise<RefsMutationResult>,
     deleteRemoteBranch: (path: string, remote: string, branch: string) =>
@@ -158,6 +165,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.rebase, path, source, target) as Promise<RefsMutationResult>,
     stashPush: (path: string) =>
       ipcRenderer.invoke(RepoChannels.stashPush, path) as Promise<RefsMutationResult>,
+    stashApply: (path: string, index: number) =>
+      ipcRenderer.invoke(RepoChannels.stashApply, path, index) as Promise<RefsMutationResult>,
     stashPop: (path: string, index: number) =>
       ipcRenderer.invoke(RepoChannels.stashPop, path, index) as Promise<RefsMutationResult>,
     stashDrop: (path: string, index: number) =>

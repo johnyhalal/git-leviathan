@@ -2773,6 +2773,45 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.renameBranch,
+    async (
+      _event,
+      repoPath: unknown,
+      oldName: unknown,
+      newName: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const from = typeof oldName === 'string' ? oldName : '';
+      // Keep the new name to a safe, ref-legal slug so it can't inject flags/paths.
+      const to = typeof newName === 'string' ? newName.trim() : '';
+      if (!from) {
+        return { status: 'error', message: 'No branch was specified.' };
+      }
+      if (!to || !/^[A-Za-z0-9._/-]+$/.test(to) || to.startsWith('-')) {
+        return { status: 'error', message: 'Enter a valid branch name.' };
+      }
+      // Re-validate against the repo's own state: the source must exist, and the
+      // destination must be free (unless it's an unchanged rename, which git no-ops).
+      if (!(await localBranchExists(repoPath, from))) {
+        return { status: 'error', message: `Branch “${from}” doesn’t exist.` };
+      }
+      if (to !== from && (await localBranchExists(repoPath, to))) {
+        return { status: 'error', message: `Branch “${to}” already exists.` };
+      }
+      // `git branch -m <old> <new>` renames in place (and moves HEAD's ref when it's
+      // the checked-out branch). Both names are validated above, so neither can be
+      // read as a flag.
+      return mutateRepo(
+        repoPath,
+        [['branch', '-m', from, to]],
+        `Could not rename “${from}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.deleteBranch,
     async (_event, repoPath: unknown, branch: unknown): Promise<RefsMutationResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
@@ -2896,6 +2935,23 @@ function registerRepoIpc(): void {
       const args = ['stash', 'push', '--include-untracked'];
       if (branch) args.push('-m', `WIP on ${branch}`);
       return mutateRepo(repoPath, [args], 'Could not stash your changes.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.stashApply,
+    async (_event, repoPath: unknown, index: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+        return { status: 'error', message: 'Invalid stash.' };
+      }
+      return mutateRepo(
+        repoPath,
+        [['stash', 'apply', `stash@{${index}}`]],
+        'Could not apply the stash.',
+      );
     },
   );
 

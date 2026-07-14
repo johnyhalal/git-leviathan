@@ -60,10 +60,14 @@ interface RepoColumnsProps {
   onMergeBranch: (source: string, target: string) => void;
   /** Rebase one local branch onto another (dragging a branch badge onto another). */
   onRebaseBranch: (source: string, target: string) => void;
+  /** Rename a local branch (`git branch -m`), from a branch's context menu. */
+  onRenameBranch: (oldName: string, newName: string) => void;
   /** Delete a local branch (`git branch -D`), from a branch's context menu. */
   onDeleteBranch: (branch: string) => void;
   /** Delete a branch on its remote (`git push <remote> --delete`). */
   onDeleteRemoteBranch: (remote: string, branch: string) => void;
+  /** Apply a stash by index, keeping it (`git stash apply`). */
+  onStashApply: (index: number) => void;
   /** Apply & drop a stash by index (`git stash pop`). */
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
@@ -106,8 +110,10 @@ export function RepoColumns({
   onCancelCreateBranch,
   onMergeBranch,
   onRebaseBranch,
+  onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
+  onStashApply,
   onStashPop,
   onStashDrop,
   onGitflowStart,
@@ -215,8 +221,12 @@ export function RepoColumns({
           onSelectRef={selectRefTip}
           onSelectStash={selectStash}
           onCheckout={onCheckout}
+          onMergeBranch={onMergeBranch}
+          onRebaseBranch={onRebaseBranch}
+          onRenameBranch={onRenameBranch}
           onDeleteBranch={onDeleteBranch}
           onDeleteRemoteBranch={onDeleteRemoteBranch}
+          onStashApply={onStashApply}
           onStashPop={onStashPop}
           onStashDrop={onStashDrop}
           onGitflowStart={onGitflowStart}
@@ -241,6 +251,7 @@ export function RepoColumns({
           <CommitList
             commits={commits}
             selectedHash={selectedHash}
+            currentBranch={branch}
             remotes={refs?.remotes}
             workingStatus={workingStatus}
             commitMessage={commitMessage}
@@ -253,6 +264,7 @@ export function RepoColumns({
             onCancelCreateBranch={onCancelCreateBranch}
             onMergeBranch={onMergeBranch}
             onRebaseBranch={onRebaseBranch}
+            onRenameBranch={onRenameBranch}
             onDeleteBranch={onDeleteBranch}
             onDeleteRemoteBranch={onDeleteRemoteBranch}
           />

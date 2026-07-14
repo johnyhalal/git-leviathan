@@ -2496,7 +2496,7 @@ body.is-col-resizing {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 5px 8px;
+  padding: 5px 4px;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -2625,12 +2625,20 @@ body.is-col-resizing {
   border-color: var(--selection);
 }
 
-/* Stash rows: a clickable label with pop/drop actions that appear on hover. */
 .repo-stash-item {
   gap: 4px;
 }
 
-.repo-stash-main {
+/* The branch suffix ("… on: <branch>") is de-emphasised. */
+.repo-stash-branch {
+  font-style: italic;
+  opacity: 0.5;
+}
+
+/* Rows that carry a trailing hover action (branches, stashes): the clickable
+   label is a `.repo-row-main` button so the action can sit beside it as its own
+   button (a row can't be one button wrapping another). */
+.repo-row-main {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
@@ -2640,24 +2648,24 @@ body.is-col-resizing {
   border: none;
   background: transparent;
   color: inherit;
-  font-family: inherit;
-  font-size: 13px;
+  font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.repo-stash-main > svg {
+.repo-row-main > svg {
   flex: 0 0 auto;
   color: var(--fg-muted);
 }
 
-/* The branch suffix ("… on: <branch>") is de-emphasised. */
-.repo-stash-branch {
-  font-style: italic;
-  opacity: 0.5;
+/* Keep the checked-out branch's icon green now that it lives inside the button. */
+.repo-list-item.is-current .repo-row-main > svg {
+  color: var(--current);
 }
 
-.repo-stash-action {
+/* The "more options" button that opens a row's context menu; shown only on row
+   hover (or when keyboard-focused). */
+.repo-row-action {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -2672,11 +2680,12 @@ body.is-col-resizing {
   opacity: 0;
 }
 
-.repo-stash-item:hover .repo-stash-action {
-  opacity: 0.7;
+.repo-list-item:hover .repo-row-action,
+.repo-row-action:focus-visible {
+  opacity: 1;
 }
 
-.repo-stash-action:hover {
+.repo-row-action:hover {
   opacity: 1;
   background: var(--control-bg);
   color: var(--fg);
@@ -3472,10 +3481,19 @@ body.is-col-resizing .commit-th {
   font-weight: 600;
 }
 
-/* Right-click branch menu (delete local / delete remote), anchored at the cursor. */
+/* Invisible full-screen scrim behind a right-click menu: it swallows background
+   clicks (any click closes the menu) so nothing behind can be activated, and pairs
+   with a scroll lock so the anchored menu can't drift. Transparent by design. */
+.context-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+/* Right-click menu, anchored at the cursor, above its scrim. */
 .context-menu {
   position: fixed;
-  z-index: 1000;
+  z-index: 1001;
   min-width: 180px;
   padding: 4px;
   display: flex;
@@ -3504,9 +3522,21 @@ body.is-col-resizing .commit-th {
   cursor: pointer;
 }
 
+/* Neutral hover for non-destructive items; danger items get their own below. */
+.context-menu-item:not(.context-menu-item-danger):hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
 .context-menu-item-danger:hover {
   background: var(--danger);
   color: #fff;
+}
+
+/* Divider between action groups (e.g. before the destructive delete rows). */
+.context-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
 }
 
 /* Local/remote/tag glyphs; inherit the badge's color via `currentColor`. */

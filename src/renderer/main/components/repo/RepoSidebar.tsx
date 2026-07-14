@@ -9,12 +9,11 @@ import {
 import {
   BranchIcon,
   CheckIcon,
-  CloseIcon,
   FolderIcon,
   GitflowIcon,
   LocalIcon,
+  MoreIcon,
   PlusIcon,
-  PopIcon,
   RemoteIcon,
   PullRequestIcon,
   TrayIcon,
@@ -22,6 +21,7 @@ import {
 } from '../../../../../assets/icons';
 import { RemoteAvatar } from './RemoteAvatar';
 import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
+import { StashContextMenu, type StashMenuTarget } from './StashContextMenu';
 import type {
   GitflowKind,
   IntegrationProvider,
@@ -194,25 +194,20 @@ function LocalBranchRow({
   onCheckout: (branch: string) => void;
   onOpenMenu: (target: BranchMenuTarget, x: number, y: number) => void;
 }) {
+  const target: BranchMenuTarget = {
+    name: branch.name,
+    local: true,
+    isCurrent: branch.current,
+    remote: false,
+  };
   return (
-    <button
-      type="button"
+    <div
       className={cx('repo-list-item', active === id && 'is-active', branch.current && 'is-current')}
       style={{ paddingLeft: indent(depth) }}
-      aria-current={branch.current ? 'true' : undefined}
-      onClick={() => onSelect(id)}
-      onDoubleClick={() => {
-        if (!branch.current) onCheckout(branch.name);
-      }}
       onContextMenu={(event) => {
         event.preventDefault();
-        onOpenMenu(
-          { name: branch.name, local: true, isCurrent: branch.current, remote: false },
-          event.clientX,
-          event.clientY,
-        );
+        onOpenMenu(target, event.clientX, event.clientY);
       }}
-      title={`Double-click to check out ${branch.name}`}
     >
       {branch.current && (
         <span
@@ -222,17 +217,40 @@ function LocalBranchRow({
           <CheckIcon size={14} />
         </span>
       )}
-      <BranchIcon size={14} />
-      <span className="repo-list-label" title={branch.name}>
-        {label}
-      </span>
-      {(branch.ahead > 0 || branch.behind > 0) && (
-        <span className="repo-branch-track">
-          {branch.ahead ? <span>↑{branch.ahead}</span> : null}
-          {branch.behind ? <span>↓{branch.behind}</span> : null}
+      <button
+        type="button"
+        className="repo-row-main"
+        aria-current={branch.current ? 'true' : undefined}
+        onClick={() => onSelect(id)}
+        onDoubleClick={() => {
+          if (!branch.current) onCheckout(branch.name);
+        }}
+        title={`Double-click to check out ${branch.name}`}
+      >
+        <BranchIcon size={14} />
+        <span className="repo-list-label" title={branch.name}>
+          {label}
         </span>
-      )}
-    </button>
+        {(branch.ahead > 0 || branch.behind > 0) && (
+          <span className="repo-branch-track">
+            {branch.ahead ? <span>↑{branch.ahead}</span> : null}
+            {branch.behind ? <span>↓{branch.behind}</span> : null}
+          </span>
+        )}
+      </button>
+      <button
+        type="button"
+        className="repo-row-action"
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          onOpenMenu(target, rect.right, rect.bottom);
+        }}
+        title="Branch actions"
+        aria-label="Branch actions"
+      >
+        <MoreIcon size={16} />
+      </button>
+    </div>
   );
 }
 
@@ -256,28 +274,47 @@ function RemoteBranchRow({
   onCheckout: (branch: string, remote?: string) => void;
   onOpenMenu: (target: BranchMenuTarget, x: number, y: number) => void;
 }) {
+  const target: BranchMenuTarget = {
+    name,
+    local: false,
+    isCurrent: false,
+    remote: true,
+    remoteName: remote,
+  };
   return (
-    <button
-      type="button"
+    <div
       className={cx('repo-list-item', active === id && 'is-active')}
       style={{ paddingLeft: indent(depth) }}
-      onClick={() => onSelect(id)}
-      onDoubleClick={() => onCheckout(name, remote)}
       onContextMenu={(event) => {
         event.preventDefault();
-        onOpenMenu(
-          { name, local: false, isCurrent: false, remote: true, remoteName: remote },
-          event.clientX,
-          event.clientY,
-        );
+        onOpenMenu(target, event.clientX, event.clientY);
       }}
-      title={`Double-click to check out ${name}`}
     >
-      <BranchIcon size={14} />
-      <span className="repo-list-label" title={full}>
-        {label}
-      </span>
-    </button>
+      <button
+        type="button"
+        className="repo-row-main"
+        onClick={() => onSelect(id)}
+        onDoubleClick={() => onCheckout(name, remote)}
+        title={`Double-click to check out ${name}`}
+      >
+        <BranchIcon size={14} />
+        <span className="repo-list-label" title={full}>
+          {label}
+        </span>
+      </button>
+      <button
+        type="button"
+        className="repo-row-action"
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          onOpenMenu(target, rect.right, rect.bottom);
+        }}
+        title="Branch actions"
+        aria-label="Branch actions"
+      >
+        <MoreIcon size={16} />
+      </button>
+    </div>
   );
 }
 
@@ -334,21 +371,28 @@ function StashRow({
   id,
   active,
   onSelect,
-  onPop,
-  onDrop,
+  onOpenMenu,
 }: RowProps & {
   stash: StashInfo;
-  onPop: (index: number) => void;
-  onDrop: (index: number) => void;
+  /** Open the stash context menu at the right-click point. */
+  onOpenMenu: (target: StashMenuTarget, x: number, y: number) => void;
 }) {
   return (
     <div
       className={cx('repo-list-item', 'repo-stash-item', active === id && 'is-active')}
       style={{ paddingLeft: indent(0) }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onOpenMenu(
+          { index: stash.index, message: stash.message },
+          event.clientX,
+          event.clientY,
+        );
+      }}
     >
       <button
         type="button"
-        className="repo-stash-main"
+        className="repo-row-main"
         onClick={() => onSelect(id)}
         title={stash.branch ? `${stash.message} on: ${stash.branch}` : stash.message}
       >
@@ -365,21 +409,21 @@ function StashRow({
       </button>
       <button
         type="button"
-        className="repo-stash-action"
-        onClick={() => onPop(stash.index)}
-        title="Apply and drop this stash (pop)"
-        aria-label="Pop stash"
+        className="repo-row-action"
+        // Anchor the menu at the button so a plain left-click opens the same
+        // apply/pop/delete menu the right-click gesture does.
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          onOpenMenu(
+            { index: stash.index, message: stash.message },
+            rect.right,
+            rect.bottom,
+          );
+        }}
+        title="Stash actions"
+        aria-label="Stash actions"
       >
-        <PopIcon size={14} />
-      </button>
-      <button
-        type="button"
-        className="repo-stash-action"
-        onClick={() => onDrop(stash.index)}
-        title="Discard this stash (drop)"
-        aria-label="Drop stash"
-      >
-        <CloseIcon size={14} />
+        <MoreIcon size={16} />
       </button>
     </div>
   );
@@ -498,10 +542,18 @@ interface RepoSidebarProps {
    * remote branch so a tracking branch is created off that specific remote.
    */
   onCheckout: (branch: string, remote?: string) => void;
+  /** Merge a local branch into the current one, from a branch row's context menu. */
+  onMergeBranch: (source: string, target: string) => void;
+  /** Rebase the current branch onto another, from a branch row's context menu. */
+  onRebaseBranch: (source: string, target: string) => void;
+  /** Rename a local branch (`git branch -m`), from a branch row's context menu. */
+  onRenameBranch: (oldName: string, newName: string) => void;
   /** Delete a local branch (`git branch -D`), from a branch row's context menu. */
   onDeleteBranch: (branch: string) => void;
   /** Delete a branch on its remote (`git push <remote> --delete`). */
   onDeleteRemoteBranch: (remote: string, branch: string) => void;
+  /** Apply a stash by index, keeping it (`git stash apply`). */
+  onStashApply: (index: number) => void;
   /** Apply & drop a stash by index (`git stash pop`). */
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
@@ -528,8 +580,12 @@ export function RepoSidebar({
   onSelectRef,
   onSelectStash,
   onCheckout,
+  onMergeBranch,
+  onRebaseBranch,
+  onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
+  onStashApply,
   onStashPop,
   onStashDrop,
   onGitflowStart,
@@ -546,6 +602,17 @@ export function RepoSidebar({
   } | null>(null);
   const openBranchMenu = useCallback(
     (target: BranchMenuTarget, x: number, y: number) => setContextMenu({ target, x, y }),
+    [],
+  );
+  // The stash apply/pop/delete menu opened by right-clicking a stash row, anchored
+  // at the click point; null when closed.
+  const [stashMenu, setStashMenu] = useState<{
+    target: StashMenuTarget;
+    x: number;
+    y: number;
+  } | null>(null);
+  const openStashMenu = useCallback(
+    (target: StashMenuTarget, x: number, y: number) => setStashMenu({ target, x, y }),
     [],
   );
 
@@ -813,8 +880,7 @@ export function RepoSidebar({
                 setActive(id);
                 onSelectStash?.(stash.index);
               }}
-              onPop={onStashPop}
-              onDrop={onStashDrop}
+              onOpenMenu={openStashMenu}
             />
           ))}
         </CollapsibleSection>
@@ -878,9 +944,25 @@ export function RepoSidebar({
           targets={[contextMenu.target]}
           x={contextMenu.x}
           y={contextMenu.y}
+          currentBranch={currentBranch}
           onClose={() => setContextMenu(null)}
+          onCheckout={onCheckout}
+          onMerge={onMergeBranch}
+          onRebase={onRebaseBranch}
+          onRenameBranch={onRenameBranch}
           onDeleteBranch={onDeleteBranch}
           onDeleteRemoteBranch={onDeleteRemoteBranch}
+        />
+      )}
+      {stashMenu && (
+        <StashContextMenu
+          target={stashMenu.target}
+          x={stashMenu.x}
+          y={stashMenu.y}
+          onClose={() => setStashMenu(null)}
+          onApply={onStashApply}
+          onPop={onStashPop}
+          onDrop={onStashDrop}
         />
       )}
       {detailPr && dialogProvider && (
