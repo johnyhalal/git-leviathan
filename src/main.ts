@@ -883,8 +883,31 @@ async function readRefs(cwd: string): Promise<RepoRefs> {
   return { localBranches, remoteBranches, remotes, tags, stashes };
 }
 
+/**
+ * If a failed git child was aborted by a repository hook, describe it in one
+ * line; otherwise null. Any hook can stop an operation (pre-commit, commit-msg,
+ * prepare-commit-msg, pre-rebase, pre-merge-commit, post-checkout, pre-push, …),
+ * and its own diagnostic output was already streamed to the activity log, so
+ * point the user there rather than at git's last line (which for a hook abort is
+ * usually a misleading generic error). Detection stays generic — we match git's
+ * own hook-abort phrasing, never any specific hook runner's output.
+ */
+function hookFailureMessage(err: unknown): string | null {
+  if (!err || typeof err !== 'object') return null;
+  const rec = err as Record<string, unknown>;
+  const text = `${String(rec.stderr ?? '')}\n${String(rec.stdout ?? '')}`;
+  const match = text.match(/\b([a-z][a-z-]*) hook (?:failed|declined|exited)/i);
+  if (match) return `The ${match[1]} hook failed — see the activity log.`;
+  if (/hook declined|hook returned non-zero/i.test(text)) {
+    return 'A git hook failed — see the activity log.';
+  }
+  return null;
+}
+
 /** Pull a concise message out of a failed git exec (its last stderr line). */
 function gitErrorMessage(err: unknown, fallback: string): string {
+  const hook = hookFailureMessage(err);
+  if (hook) return hook;
   if (err && typeof err === 'object' && 'stderr' in err) {
     const stderr = String((err as { stderr: unknown }).stderr ?? '').trim();
     const lines = stderr.split('\n').map((line) => line.trim()).filter(Boolean);
@@ -1682,6 +1705,16 @@ function pushErrorMessage(err: unknown): string {
   // Authentication / authorization failures — not a fast-forward problem.
   if (/\b403\b|permission denied|not authorized|authentication failed|could not read Username|remote: Invalid username or password|access rights/i.test(stderr)) {
     return 'The remote refused the push: authentication failed or you don’t have write access. Check the connected account or your credentials.';
+  }
+  // A local pre-push hook aborted the push before anything reached the remote.
+  // When git names the hook we catch it here; otherwise it leaves only the
+  // generic "failed to push some refs" on stderr with no "[rejected]" line, so a
+  // bare failure with no fast-forward hint is one too — detect both before the
+  // non-fast-forward case or they get mislabelled as "pull first".
+  const hook = hookFailureMessage(err);
+  if (hook) return hook;
+  if (/failed to push some refs/i.test(stderr) && !/\[rejected\]|non-fast-forward|fetch first/i.test(stderr)) {
+    return 'The pre-push hook failed — see the activity log.';
   }
   if (/\[rejected\]|non-fast-forward|fetch first|failed to push some refs/i.test(stderr)) {
     return 'The remote has commits you don’t have locally. Pull (or fetch and integrate) first, then push again.';

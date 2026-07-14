@@ -137,7 +137,7 @@ export async function probeClaude(
 /** The static instruction handed to `claude -p`; repo-specific context is on stdin. */
 const COMMIT_INSTRUCTION = [
   'You are writing a git commit message for the staged changes provided on stdin.',
-  'Output ONLY the commit message — no preamble, no markdown, no code fences, no backticks.',
+  'Output ONLY the commit message — no preamble, no markdown, no code fences, no backticks, no leading text.',
   'Follow the Conventional Commits 1.0.0 specification:',
   'The first line MUST be "<type>[optional scope][optional !]: <description>".',
   'The type is a lowercase noun such as feat (a new feature), fix (a bug fix), docs, style, refactor, perf, test, build, ci, chore, or revert.',
@@ -147,6 +147,7 @@ const COMMIT_INSTRUCTION = [
   'For breaking changes, either append "!" before the colon (e.g. "feat!:") and/or add a footer starting with "BREAKING CHANGE: " describing the break.',
   'Other footers use the "Token: value" form (e.g. "Refs: #123", "Reviewed-by: name"), one per line after a blank line.',
   'Prefer a type/scope consistent with the recent commit subjects listed on stdin when they already follow this convention.',
+  'Make the commit description short and compact as possible or if it is just contain not major changes then you can leave it.',
 ].join(' ');
 
 /**
