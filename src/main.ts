@@ -63,6 +63,7 @@ import {
   type ConflictKind,
   type ConflictFileContent,
   type MergeResolution,
+  type MarkResolvedResult,
   type IntegrationsState,
   type NewPullRequest,
   type PullRequestListResult,
@@ -1412,16 +1413,28 @@ function mapFileStatus(code: string): FileStatus {
 }
 
 async function readCommitFiles(cwd: string, hash: string): Promise<FileChange[]> {
-  // Diff a commit against its first parent; --root makes the initial commit list
-  // all its files as added. --name-status yields "M\tpath" (rename: "R100\told\tnew").
-  const out = await runGit(cwd, [
-    'diff-tree',
-    '--no-commit-id',
-    '--name-status',
-    '-r',
-    '--root',
-    hash,
-  ]);
+  // A stash (like any merge) has multiple parents, and `diff-tree` emits nothing
+  // for a merge by default — so it would list no files. Detect that case and diff
+  // the commit against its first parent instead, matching `git stash show` (the
+  // tracked changes it captured). `runGitDiff` is required because `git diff`
+  // signals differences with a non-zero exit that `runGit` would discard.
+  const parents = (await runGit(cwd, ['rev-list', '--parents', '-n', '1', hash]))
+    .trim()
+    .split(/\s+/)
+    .slice(1);
+  const out =
+    parents.length > 1
+      ? await runGitDiff(cwd, ['diff', '--name-status', '-r', `${hash}^1`, hash])
+      : // Diff a commit against its first parent; --root makes the initial commit
+        // list all its files as added. --name-status yields "M\tpath".
+        await runGit(cwd, [
+          'diff-tree',
+          '--no-commit-id',
+          '--name-status',
+          '-r',
+          '--root',
+          hash,
+        ]);
   return nonEmptyLines(out).flatMap((line) => {
     const parts = line.split('\t');
     if (parts.length < 2) return [];
@@ -1496,8 +1509,19 @@ function fileDiffArgs(source: DiffSource, file: string): string[] {
   switch (source.kind) {
     case 'commit':
       // `show --format=` prints just the patch; --root lists the initial commit's
-      // files as additions. -M detects renames.
-      return ['show', '--no-color', '--format=', '-M', source.hash, '--', file];
+      // files as additions. -M detects renames. --first-parent makes a merge (e.g.
+      // a stash) show as a plain diff against its first parent instead of an empty
+      // combined diff; it's a no-op for ordinary single-parent commits.
+      return [
+        'show',
+        '--no-color',
+        '--format=',
+        '-M',
+        '--first-parent',
+        source.hash,
+        '--',
+        file,
+      ];
     case 'staged':
       return ['diff', '--no-color', '-M', '--cached', '--', file];
     case 'unstaged':
@@ -1723,6 +1747,43 @@ function pushErrorMessage(err: unknown): string {
 }
 
 /**
+ * Decide whether `branch` has diverged from its `upstream` because the user
+ * rewrote local history (an amend, reword or rebase) rather than because the
+ * remote genuinely gained new commits — the two look identical to a plain push
+ * (both are non-fast-forward) but want opposite fixes (force-push vs. pull).
+ *
+ * The tell is the reflog: a rewrite leaves the upstream's old commit sitting in
+ * *this branch's* reflog as a tip we used to be at, whereas a teammate's new
+ * commit was never a local tip and so is absent. We only treat it as a rewrite
+ * when the branch is actually behind (`upstream` isn't already an ancestor of
+ * HEAD — otherwise a normal fast-forward push is fine and needs no force).
+ */
+async function divergedByRewrite(cwd: string, branch: string, upstream: string): Promise<boolean> {
+  const upstreamSha = (await runGit(cwd, ['rev-parse', '--verify', `${upstream}^{commit}`])).trim();
+  if (!upstreamSha) return false;
+  // Already reachable from HEAD → we're ahead-only, a plain push fast-forwards.
+  const ahead = await isAncestor(cwd, upstreamSha, 'HEAD');
+  if (ahead) return false;
+  // Was the upstream commit ever a tip of this branch? `git log -g` walks the
+  // branch reflog; the old pre-amend/pre-rebase commit shows up there.
+  const reflog = await runGit(cwd, ['log', '-g', '--format=%H', branch]);
+  return reflog.split('\n').some((sha) => sha.trim() === upstreamSha);
+}
+
+/** True when `ancestor` is an ancestor of (or equal to) `descendant`. */
+async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
+  try {
+    await execFileAsync(gitBin, ['merge-base', '--is-ancestor', ancestor, descendant], {
+      cwd,
+      env: gitEnv(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Push the current branch. If it already tracks an upstream, a plain `git push`
  * follows that. Otherwise the branch has no upstream yet: rather than publishing
  * silently, resolve `needs-upstream` with the target remote (the sole remote,
@@ -1745,9 +1806,13 @@ async function pushCurrent(cwd: string, force = false): Promise<PushResult> {
     const remote = remoteOfUpstream(upstream);
     const authArgs = await authArgsForRemotes(cwd, [remote]);
     const sshEnv = await sshEnvForRemotes(cwd, [remote]);
-    // A rewritten history (e.g. after an amend) is not a fast-forward; force with
-    // lease so the push still aborts if the remote moved under us.
-    const pushArgs = force ? ['push', '--force-with-lease'] : ['push'];
+    // A rewritten history (e.g. after an amend) is not a fast-forward. Force with
+    // lease — either because the caller asked (the commit panel's amend+push), or
+    // because we can see the branch has diverged from its upstream by a *local*
+    // rewrite rather than real new remote work. `--force-with-lease` still aborts
+    // if the remote actually moved under us, so this can't clobber a teammate.
+    const forceLease = force || (await divergedByRewrite(cwd, branch, upstream));
+    const pushArgs = forceLease ? ['push', '--force-with-lease'] : ['push'];
     try {
       await spawnGit(cwd, [...authArgs, ...pushArgs], 'push', { ...env, ...sshEnv });
       return { status: 'ok' };
@@ -2993,6 +3058,28 @@ function registerRepoIpc(): void {
       } catch {
         return readMergeState(repoPath);
       }
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.markResolved,
+    async (
+      _event,
+      repoPath: unknown,
+      file: unknown,
+    ): Promise<MarkResolvedResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: emptyStatus, merge: null };
+      }
+      // Stage the conflicted file(s) as-is; `git add` clears their unmerged
+      // state, which is how git records a conflict as resolved. A specific path
+      // resolves one file; null resolves every conflict at once.
+      const args =
+        typeof file === 'string' && file.length > 0
+          ? ['add', '-A', '--', file]
+          : ['add', '-A'];
+      await runGit(repoPath, args);
+      return { status: await readStatus(repoPath), merge: await readMergeState(repoPath) };
     },
   );
 

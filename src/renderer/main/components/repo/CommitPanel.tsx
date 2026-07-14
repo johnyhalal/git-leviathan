@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CommitDetailData,
   CommitLogEntry,
+  ConflictFile,
+  ConflictKind,
   DiffSource,
   FileChange,
   FileStatus,
@@ -97,6 +99,10 @@ function SummaryCounter({ length }: { length: number }) {
 /** A row in the file list: a real change, or (in "View all files" mode) an
  * unchanged file from the commit snapshot, marked by a null status. */
 type DisplayFile = { path: string; status: FileStatus | null };
+
+/** Best file-status icon for a conflict, from what its two sides did. */
+const conflictStatus = (kind: ConflictKind): FileStatus =>
+  kind.includes('deleted') ? 'deleted' : kind.includes('added') ? 'added' : 'modified';
 
 /** Whether two diff sources refer to the same revision. */
 function sameSource(a: DiffSource, b: DiffSource): boolean {
@@ -820,6 +826,12 @@ interface WorkingChangesProps {
   status: WorkingStatus | null;
   /** Push a fresh status up after stage/unstage/commit. */
   onStatusChange: (status: WorkingStatus) => void;
+  /** Unmerged files from an in-progress operation (empty when none). */
+  conflicts: ConflictFile[];
+  /** Mark conflict(s) resolved by staging them; null marks every conflict. */
+  onMarkResolved: (file: string | null) => void;
+  /** Open the conflict resolver focused on a specific conflicted file. */
+  onOpenConflict: (file: string) => void;
   /** Shared commit message, mirrored with the working row's inline input. */
   message: string;
   /** Update the shared commit message. */
@@ -828,6 +840,8 @@ interface WorkingChangesProps {
   onCommitted: () => void;
   /** Open a working-tree file in the center diff viewer. */
   onOpenDiff: (target: DiffTarget) => void;
+  /** Close the center diff viewer, returning to the commit list. */
+  onCloseDiff: () => void;
   /** The diff target currently shown, so its row can be highlighted. */
   activeDiff: DiffTarget | null;
   onError?: (title: string, message: string) => void;
@@ -841,10 +855,14 @@ function WorkingChanges({
   branch,
   status,
   onStatusChange,
+  conflicts,
+  onMarkResolved,
+  onOpenConflict,
   message,
   onMessageChange,
   onCommitted,
   onOpenDiff,
+  onCloseDiff,
   activeDiff,
   onError,
   onOpenSettings,
@@ -921,12 +939,16 @@ function WorkingChanges({
           label: 'Discard all',
           busyLabel: 'Discarding…',
           tone: 'danger',
-          onClick: async () =>
-            onStatusChange(await window.api.repo.discardAll(repoPath)),
+          onClick: async () => {
+            // Any open diff was taken from a now-discarded change, so drop back
+            // to the commit list before refreshing status.
+            onCloseDiff();
+            onStatusChange(await window.api.repo.discardAll(repoPath));
+          },
         },
       ],
     });
-  }, [requestConfirm, repoPath, onStatusChange]);
+  }, [requestConfirm, repoPath, onStatusChange, onCloseDiff]);
 
   const generate = useCallback(async () => {
     setGenerating(true);
@@ -1023,6 +1045,13 @@ function WorkingChanges({
   const { staged, unstaged } = status;
   const changedCount = countWorkingFiles(status);
   const hasChanges = changedCount > 0;
+  // While an operation is conflicted, the top section becomes the conflict list:
+  // unmerged paths git keeps out of the staged/unstaged lists until resolved.
+  const hasConflicts = conflicts.length > 0;
+  const conflictFiles: FileChange[] = conflicts.map((c) => ({
+    path: c.path,
+    status: conflictStatus(c.kind),
+  }));
   // The shared message is one string; split it into the subject + description
   // fields and recompose on edit so the working row's inline input stays mirrored.
   const { subject, body } = splitMessage(message);
@@ -1092,40 +1121,75 @@ function WorkingChanges({
 
       <div className="commit-changes-body" ref={bodyRef}>
         <section className="commit-changes-section" style={{ flexGrow: topRatio }}>
-          <div className="commit-files-header">
-            <span className="commit-files-title">Unstaged Files · {unstaged.length}</span>
-            {unstaged.length > 0 && (
-              <button
-                type="button"
-                className="pill-btn pill-btn-green commit-files-bulk"
-                onClick={() => void stage(null)}
-              >
-                Stage All Changes
-              </button>
-            )}
-          </div>
-          <div className="commit-changes-scroll">
-            <WorkingFileList
-              files={unstaged}
-              mode={mode}
-              asc={asc}
-              emptyText="No unstaged changes"
-              action={(file) => ({
-                label: 'Stage',
-                title: 'Stage file',
-                variant: 'green',
-                onClick: () => void stageFile(file),
-              })}
-              onOpenFile={(file) =>
-                onOpenDiff({
-                  source: unstagedSource,
-                  path: file.path,
-                  status: file.status ?? 'modified',
-                })
-              }
-              activePath={activePathFor(unstagedSource)}
-            />
-          </div>
+          {hasConflicts ? (
+            <>
+              <div className="commit-files-header">
+                <span className="commit-files-title">
+                  Conflicted Files · {conflictFiles.length}
+                </span>
+                <button
+                  type="button"
+                  className="pill-btn pill-btn-yellow commit-files-bulk"
+                  onClick={() => onMarkResolved(null)}
+                >
+                  Mark All Resolved
+                </button>
+              </div>
+              <div className="commit-changes-scroll">
+                <WorkingFileList
+                  files={conflictFiles}
+                  mode={mode}
+                  asc={asc}
+                  emptyText="No conflicts"
+                  action={(file) => ({
+                    label: 'Mark Resolved',
+                    title: 'Stage this file to mark the conflict resolved',
+                    variant: 'yellow',
+                    onClick: () => onMarkResolved(file.path),
+                  })}
+                  onOpenFile={(file) => onOpenConflict(file.path)}
+                  activePath={null}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="commit-files-header">
+                <span className="commit-files-title">Unstaged Files · {unstaged.length}</span>
+                {unstaged.length > 0 && (
+                  <button
+                    type="button"
+                    className="pill-btn pill-btn-green commit-files-bulk"
+                    onClick={() => void stage(null)}
+                  >
+                    Stage All Changes
+                  </button>
+                )}
+              </div>
+              <div className="commit-changes-scroll">
+                <WorkingFileList
+                  files={unstaged}
+                  mode={mode}
+                  asc={asc}
+                  emptyText="No unstaged changes"
+                  action={(file) => ({
+                    label: 'Stage',
+                    title: 'Stage file',
+                    variant: 'green',
+                    onClick: () => void stageFile(file),
+                  })}
+                  onOpenFile={(file) =>
+                    onOpenDiff({
+                      source: unstagedSource,
+                      path: file.path,
+                      status: file.status ?? 'modified',
+                    })
+                  }
+                  activePath={activePathFor(unstagedSource)}
+                />
+              </div>
+            </>
+          )}
         </section>
 
         <div
@@ -1265,6 +1329,12 @@ interface CommitPanelProps {
   workingStatus: WorkingStatus | null;
   /** Push a fresh working-tree status up after stage/unstage/commit. */
   onWorkingStatusChange: (status: WorkingStatus) => void;
+  /** Unmerged files from an in-progress operation (empty when none). */
+  conflicts: ConflictFile[];
+  /** Mark conflict(s) resolved by staging them; null marks every conflict. */
+  onMarkResolved: (file: string | null) => void;
+  /** Open the conflict resolver focused on a specific conflicted file. */
+  onOpenConflict: (file: string) => void;
   /** Shared commit message, mirrored with the working row's inline input. */
   commitMessage: string;
   /** Update the shared commit message. */
@@ -1276,6 +1346,8 @@ interface CommitPanelProps {
   onSelectCommit: (hash: string) => void;
   /** Open a file in the center diff viewer. */
   onOpenDiff: (target: DiffTarget) => void;
+  /** Close the center diff viewer, returning to the commit list. */
+  onCloseDiff: () => void;
   /** The diff target currently shown, so its file row can be highlighted. */
   activeDiff: DiffTarget | null;
   onError?: (title: string, message: string) => void;
@@ -1293,12 +1365,16 @@ export function CommitPanel({
   branch,
   workingStatus,
   onWorkingStatusChange,
+  conflicts,
+  onMarkResolved,
+  onOpenConflict,
   commitMessage,
   onCommitMessageChange,
   onCommitted,
   onViewWorking,
   onSelectCommit,
   onOpenDiff,
+  onCloseDiff,
   activeDiff,
   onError,
   onOpenSettings,
@@ -1321,10 +1397,14 @@ export function CommitPanel({
       branch={branch}
       status={workingStatus}
       onStatusChange={onWorkingStatusChange}
+      conflicts={conflicts}
+      onMarkResolved={onMarkResolved}
+      onOpenConflict={onOpenConflict}
       message={commitMessage}
       onMessageChange={onCommitMessageChange}
       onCommitted={onCommitted}
       onOpenDiff={onOpenDiff}
+      onCloseDiff={onCloseDiff}
       activeDiff={activeDiff}
       onError={onError}
       onOpenSettings={onOpenSettings}

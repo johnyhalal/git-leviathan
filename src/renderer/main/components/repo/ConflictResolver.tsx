@@ -12,6 +12,9 @@ import { MergeEditor } from './MergeEditor';
 interface ConflictResolverProps {
   repoPath: string;
   mergeState: MergeState;
+  /** File to pre-select when opened (e.g. clicked in the commit panel); the
+   * first conflict is used when null or no longer conflicted. */
+  initialFile?: string | null;
   /** Apply a fresh merge state after resolving a file (may be null once done). */
   onResolved: (next: MergeState | null) => void;
   onClose: () => void;
@@ -38,11 +41,15 @@ function splitPath(path: string): { dir: string; name: string } {
 export function ConflictResolver({
   repoPath,
   mergeState,
+  initialFile,
   onResolved,
   onClose,
 }: ConflictResolverProps) {
   const conflicts = mergeState.conflicts;
-  const [selected, setSelected] = useState<string | null>(conflicts[0]?.path ?? null);
+  const [selected, setSelected] = useState<string | null>(
+    (initialFile && conflicts.some((c) => c.path === initialFile) ? initialFile : conflicts[0]?.path) ??
+      null,
+  );
   const [content, setContent] = useState<ConflictFileContent | null>(null);
   const [merged, setMerged] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

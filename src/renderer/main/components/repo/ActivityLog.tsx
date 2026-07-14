@@ -96,6 +96,14 @@ export function ActivityLog({ repoPath }: ActivityLogProps) {
     });
   };
 
+  // Wipe the transcript. The in-flight command (if any) keeps streaming into a
+  // fresh log; the status summary drops back to idle for the cleared history.
+  const clearLog = () => {
+    setRecords([]);
+    setLastOk(null);
+    setCopied(false);
+  };
+
   return (
     <>
       <button
@@ -128,6 +136,15 @@ export function ActivityLog({ repoPath }: ActivityLogProps) {
                   >
                     {copied ? <CheckIcon /> : null}
                     {copied ? 'Copied' : 'Copy'}
+                  </button>
+                )}
+                {records.length > 0 && (
+                  <button
+                    type="button"
+                    className="activity-copy-button"
+                    onClick={clearLog}
+                  >
+                    Clear
                   </button>
                 )}
                 <button

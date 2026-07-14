@@ -28,6 +28,7 @@ import {
   type MergeState,
   type ConflictFileContent,
   type MergeResolution,
+  type MarkResolvedResult,
   type IntegrationProvider,
   type IntegrationsState,
   type NewPullRequest,
@@ -176,6 +177,8 @@ const api: ExposedApi = {
         file,
         resolution,
       ) as Promise<MergeState | null>,
+    markResolved: (path: string, file: string | null) =>
+      ipcRenderer.invoke(RepoChannels.markResolved, path, file) as Promise<MarkResolvedResult>,
     mergeContinue: (path: string) =>
       ipcRenderer.invoke(RepoChannels.mergeContinue, path) as Promise<RefsMutationResult>,
     mergeAbort: (path: string) =>

@@ -62,6 +62,10 @@ export function RepoView({
   const refreshingRef = useRef(false);
   // Bumped after a checkout to re-run the loader with the new HEAD.
   const [reloadToken, setReloadToken] = useState(0);
+  // Bumped after a push/pull lands so RepoColumns closes any open diff (a pull
+  // can rewrite the file it was showing).
+  const [closeDiffToken, setCloseDiffToken] = useState(0);
+  const closeDiff = useCallback(() => setCloseDiffToken((token) => token + 1), []);
   // True while a push is in flight, to disable the toolbar button.
   const [pushing, setPushing] = useState(false);
   // True while a pull/fetch is in flight, to disable the toolbar button.
@@ -76,6 +80,8 @@ export function RepoView({
   const [mergeState, setMergeState] = useState<MergeState | null>(null);
   // Whether the full-screen conflict resolver is open.
   const [resolverOpen, setResolverOpen] = useState(false);
+  // The conflicted file to pre-select when the resolver opens (null = first).
+  const [resolverFile, setResolverFile] = useState<string | null>(null);
   // True while a continue/abort/skip is in flight, to disable the banner buttons.
   const [mergeBusy, setMergeBusy] = useState(false);
   // Whether the last read saw an in-progress operation, so we auto-open the
@@ -239,12 +245,14 @@ export function RepoView({
     setPushing(true);
     const result = await window.api.repo.push(repoPath);
     setPushing(false);
-    if (result.status === 'ok') reload();
-    else if (result.status === 'needs-upstream')
+    if (result.status === 'ok') {
+      closeDiff();
+      reload();
+    } else if (result.status === 'needs-upstream')
       return { remote: result.remote, branch: result.branch };
     else onError?.('Push failed', result.message);
     return null;
-  }, [pushing, repoPath, reload, onError]);
+  }, [pushing, repoPath, reload, closeDiff, onError]);
 
   // Publish a branch that has no upstream to `remote`, setting it as the upstream.
   // Runs after the user confirms the toolbar's "publish branch" bar. Reloads on
@@ -256,13 +264,14 @@ export function RepoView({
       const result = await window.api.repo.pushSetUpstream(repoPath, remote, branch, remoteBranch);
       setPushing(false);
       if (result.status === 'ok') {
+        closeDiff();
         reload();
         return;
       }
       onError?.('Push failed', result.message);
       throw new Error(result.message);
     },
-    [repoPath, reload, onError],
+    [repoPath, reload, closeDiff, onError],
   );
 
   // Pull/fetch the current branch; reload on success (HEAD, log and ahead/behind
@@ -273,10 +282,12 @@ export function RepoView({
       setPulling(true);
       const result = await window.api.repo.pull(repoPath, mode);
       setPulling(false);
-      if (result.status === 'ok') reload();
-      else await surfaceConflictsOrError('Pull failed', result.message);
+      if (result.status === 'ok') {
+        closeDiff();
+        reload();
+      } else await surfaceConflictsOrError('Pull failed', result.message);
     },
-    [pulling, repoPath, reload, surfaceConflictsOrError],
+    [pulling, repoPath, reload, closeDiff, surfaceConflictsOrError],
   );
 
   const checkout = useCallback(
@@ -432,6 +443,25 @@ export function RepoView({
     [repoPath, runMergeAction],
   );
 
+  // Mark conflict(s) resolved from the commit panel (stage them as-is). Updates
+  // both the working lists and the merge state so the conflict section clears
+  // and the banner's "Continue" unlocks once the last conflict is gone.
+  const markResolved = useCallback(
+    async (file: string | null) => {
+      const result = await window.api.repo.markResolved(repoPath, file);
+      setWorkingStatus(result.status);
+      applyMergeRef.current(result.merge);
+    },
+    [repoPath],
+  );
+
+  // Open the full-screen resolver, optionally pre-selecting a file (clicking a
+  // conflicted file in the commit panel jumps straight to it).
+  const openResolver = useCallback((file: string | null) => {
+    setResolverFile(file);
+    setResolverOpen(true);
+  }, []);
+
   const hasChanges =
     (workingStatus?.staged.length ?? 0) + (workingStatus?.unstaged.length ?? 0) > 0;
 
@@ -495,7 +525,7 @@ export function RepoView({
           <MergeBanner
             state={mergeState}
             busy={mergeBusy}
-            onResolve={() => setResolverOpen(true)}
+            onResolve={() => openResolver(null)}
             onContinue={() => void mergeContinue()}
             onAbort={() => void mergeAbort()}
             onSkip={() => void rebaseSkip()}
@@ -508,11 +538,15 @@ export function RepoView({
           commits={displayCommits}
           workingStatus={workingStatus}
           onWorkingStatusChange={setWorkingStatus}
+          conflicts={mergeState?.conflicts ?? []}
+          onMarkResolved={(file) => void markResolved(file)}
+          onOpenConflict={(file) => openResolver(file)}
           commitMessage={commitMessage}
           onCommitMessageChange={setCommitMessage}
           loadingMore={loadingMore}
           onLoadMore={() => void loadMore()}
           onCommitted={reload}
+          closeDiffToken={closeDiffToken}
           onCheckout={(branch, remote) => void checkout(branch, remote)}
           creatingBranch={creatingBranch}
           onCreateBranch={(name) => void createBranch(name)}
@@ -532,6 +566,7 @@ export function RepoView({
           <ConflictResolver
             repoPath={repoPath}
             mergeState={mergeState}
+            initialFile={resolverFile}
             onResolved={(next) => applyMergeRef.current(next)}
             onClose={() => setResolverOpen(false)}
           />

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type UIEvent } from 'react';
 import type {
   CommitLogEntry,
+  ConflictFile,
   GitflowKind,
   RepoRefs,
   WorkingStatus,
@@ -22,6 +23,12 @@ interface RepoColumnsProps {
   workingStatus: WorkingStatus | null;
   /** Push a fresh working-tree status up (after stage/unstage/commit). */
   onWorkingStatusChange: (status: WorkingStatus) => void;
+  /** Unmerged files from the in-progress operation (empty when none). */
+  conflicts: ConflictFile[];
+  /** Mark conflict(s) resolved by staging them; null marks every conflict. */
+  onMarkResolved: (file: string | null) => void;
+  /** Open the conflict resolver focused on a specific conflicted file. */
+  onOpenConflict: (file: string) => void;
   /** The shared commit message (mirrored between the working row and the panel). */
   commitMessage: string;
   /** Update the shared commit message. */
@@ -32,6 +39,12 @@ interface RepoColumnsProps {
   onLoadMore: () => void;
   /** Called after a successful commit so history/refs reload. */
   onCommitted: () => void;
+  /**
+   * A counter bumped by the parent after a push/pull lands. Any change closes an
+   * open diff (a pull can rewrite the file it was showing), returning the center
+   * pane to the commit list.
+   */
+  closeDiffToken: number;
   /**
    * Check out a branch (double-clicking it in the sidebar). Pass `remote` for a
    * remote branch so a tracking branch is created off that specific remote.
@@ -78,11 +91,15 @@ export function RepoColumns({
   commits,
   workingStatus,
   onWorkingStatusChange,
+  conflicts,
+  onMarkResolved,
+  onOpenConflict,
   commitMessage,
   onCommitMessageChange,
   loadingMore,
   onLoadMore,
   onCommitted,
+  closeDiffToken,
   onCheckout,
   creatingBranch,
   onCreateBranch,
@@ -108,6 +125,13 @@ export function RepoColumns({
   useEffect(() => {
     setDiffTarget(null);
   }, [repoPath, selectedHash]);
+
+  // A push/pull just landed (the parent bumped this token): a pull can rewrite
+  // the file the diff was showing, so drop back to the commit list. The initial
+  // mount runs this too, which is harmless — nothing is open yet.
+  useEffect(() => {
+    setDiffTarget(null);
+  }, [closeDiffToken]);
 
   // On opening a repo, preselect the latest real commit — skipping the synthetic
   // working-tree row and any stash rows. Keyed on repoPath so it runs once per
@@ -244,12 +268,16 @@ export function RepoColumns({
           branch={branch}
           workingStatus={workingStatus}
           onWorkingStatusChange={onWorkingStatusChange}
+          conflicts={conflicts}
+          onMarkResolved={onMarkResolved}
+          onOpenConflict={onOpenConflict}
           commitMessage={commitMessage}
           onCommitMessageChange={onCommitMessageChange}
           onCommitted={handleCommitted}
           onViewWorking={() => setSelectedHash(commits?.[0]?.hash ?? null)}
           onSelectCommit={setSelectedHash}
           onOpenDiff={setDiffTarget}
+          onCloseDiff={() => setDiffTarget(null)}
           activeDiff={diffTarget}
           onError={onError}
           onOpenSettings={onOpenSettings}

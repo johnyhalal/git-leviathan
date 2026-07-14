@@ -101,6 +101,23 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* The UI chrome is non-selectable by default (it behaves like a native app,
+     not a document). Content the user legitimately copies opts back in below:
+     form fields, the diff code, commit messages, and the activity log. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+[contenteditable='true'],
+.diff-code,
+.commit-detail-message,
+.commit-message-subject,
+.commit-message-description,
+.activity-log__body {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* ---- Top bar (menu bar) -------------------------------------------------- */
@@ -4303,6 +4320,7 @@ body.is-row-resizing {
 
 /* Row control: a pill that stays hidden until its file row is hovered. */
 .commit-file-action {
+  font-size: 10px;
   flex: 0 0 auto;
   opacity: 0;
 }

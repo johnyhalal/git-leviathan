@@ -440,6 +440,17 @@ export type MergeResolution =
   | { kind: 'theirs' }
   | { kind: 'content'; text: string };
 
+/**
+ * Result of marking conflict(s) resolved from the commit panel: staging a
+ * conflicted file both updates the working-tree lists (it moves into `staged`)
+ * and shrinks the remaining conflicts, so both are returned together.
+ */
+export interface MarkResolvedResult {
+  status: WorkingStatus;
+  /** Fresh merge state, or `null` once the last conflict is resolved. */
+  merge: MergeState | null;
+}
+
 /** Outcome of a commit. */
 export type CommitResult = { status: 'ok' } | { status: 'error'; message: string };
 
@@ -527,6 +538,8 @@ export const RepoChannels = {
   conflictFile: 'repo:conflict-file',
   /** Renderer -> main (invoke): resolve one conflicted file; returns fresh merge state. */
   resolveFile: 'repo:resolve-file',
+  /** Renderer -> main (invoke): stage conflicted file(s) as-is to mark them resolved. */
+  markResolved: 'repo:mark-resolved',
   /** Renderer -> main (invoke): finish the in-progress operation (commit/continue). */
   mergeContinue: 'repo:merge-continue',
   /** Renderer -> main (invoke): abort the in-progress operation. */
@@ -1106,6 +1119,14 @@ export interface RepoApi {
     file: string,
     resolution: MergeResolution,
   ): Promise<MergeState | null>;
+  /**
+   * Mark conflict(s) resolved by staging their current on-disk content as-is
+   * (`git add`) — used by the commit panel's "Mark Resolved" / "Mark All
+   * Resolved" buttons after the user has edited out the conflict markers. Pass a
+   * `file` to resolve one path, or `null` to stage every conflict at once.
+   * Resolves with the fresh working status and merge state.
+   */
+  markResolved(path: string, file: string | null): Promise<MarkResolvedResult>;
   /**
    * Finish the in-progress operation once every conflict is resolved: commit
    * the merge, or `--continue` the rebase/cherry-pick/revert. Resolves with
