@@ -3647,8 +3647,45 @@ body.is-col-resizing .commit-th {
   min-width: 100px;
 }
 
+/* Let the avatar's designed tooltip escape the cell. The `td` qualifier is needed
+   to out-specify `.commit-table td { overflow: hidden }`; the SVG fills the cell
+   exactly, so nothing else spills. */
+.commit-table td.commit-graph-cell {
+  overflow: visible;
+}
+
 .commit-graph {
   display: block;
+}
+
+/* Wraps the graph SVG so an HTML tooltip host can be absolutely placed over the
+   avatar node (SVG elements can't carry the CSS `tooltip-host` pseudo-elements). */
+.commit-graph-wrap {
+  position: relative;
+}
+
+/* Transparent hit area sized to the avatar circle; only there to host the
+   designed tooltip. Placed via inline `left/top/width/height`. */
+.commit-graph-avatar-tip {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+}
+
+/* The avatar hugs the cell's left edge, so anchor its tooltip (and arrow) to the
+   left and let it extend rightward instead of centering — which would clip. */
+.commit-graph-avatar-tip.tooltip-host::after {
+  left: 0;
+  transform: translateX(0) translateY(4px);
+}
+
+.commit-graph-avatar-tip.tooltip-host:hover::after,
+.commit-graph-avatar-tip.tooltip-host:focus-visible::after {
+  transform: translateX(0) translateY(0);
+}
+
+.commit-graph-avatar-tip.tooltip-host::before {
+  left: 50%;
 }
 
 .commit-date,

@@ -495,6 +495,7 @@ export function RepoView({
       shortHash: '',
       parents: headHash ? [headHash] : [],
       author: '',
+      authorEmail: '',
       authorAvatarUrl: '',
       date: '',
       subject: '',

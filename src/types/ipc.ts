@@ -281,7 +281,12 @@ export interface CommitLogEntry {
   /** Full parent hashes (2+ means a merge). */
   parents: string[];
   author: string;
-  /** Gravatar URL for the author's email (identicon fallback), for the graph node. */
+  /** Author's email, shown alongside the name in the graph avatar's tooltip. */
+  authorEmail: string;
+  /**
+   * Avatar URL for the graph node: in a GitHub repo, the author's real GitHub
+   * avatar when their commit email reveals it, otherwise a Gravatar identicon.
+   */
   authorAvatarUrl: string;
   /** ISO 8601 author date. */
   date: string;

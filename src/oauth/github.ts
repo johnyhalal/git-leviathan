@@ -202,6 +202,72 @@ export async function fetchUserRepos(
   return repos;
 }
 
+// ---- Commit author avatars ------------------------------------------------
+
+/** The GitHub account behind a commit's author email, resolved server-side. */
+export interface CommitAuthorIdentity {
+  /** The lowercased git author email GitHub matched to the account. */
+  email: string;
+  login: string;
+  avatarUrl: string;
+}
+
+interface GithubCommitListEntry {
+  commit: { author: { email?: string } | null } | null;
+  // The GitHub account GitHub mapped the author email to; null when the email
+  // belongs to no account (or the author is a bot).
+  author: { login?: string; avatar_url?: string } | null;
+}
+
+/** Cap on pages walked (100 commits each), so a huge history can't run forever. */
+const MAX_COMMIT_PAGES = 20;
+
+/**
+ * Walk a repo's commits (default branch unless `sha` is given) and return a map
+ * of author email → the GitHub account GitHub resolved for it. GitHub does the
+ * email→account mapping on its servers against every email registered to an
+ * account, so this covers real/private emails a client can't map offline. The
+ * optional `stop` predicate is called with the accumulated map after each page;
+ * return true to stop early — e.g. once every email you care about is resolved.
+ */
+export async function fetchCommitAuthors(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  opts: {
+    sha?: string;
+    stop?: (resolved: Map<string, CommitAuthorIdentity>) => boolean;
+    signal?: AbortSignal;
+  } = {},
+): Promise<Map<string, CommitAuthorIdentity>> {
+  const resolved = new Map<string, CommitAuthorIdentity>();
+  let url: string | null =
+    `${API_BASE}/repos/${owner}/${repo}/commits?per_page=100` +
+    (opts.sha ? `&sha=${encodeURIComponent(opts.sha)}` : '');
+
+  for (let page = 0; url && page < MAX_COMMIT_PAGES; page++) {
+    const res: Response = await fetch(url, {
+      headers: apiHeaders(accessToken),
+      signal: opts.signal,
+    });
+    if (!res.ok) {
+      throw new Error(await apiError(res, 'Failed to read GitHub commit authors'));
+    }
+    const commits = (await res.json()) as GithubCommitListEntry[];
+    for (const entry of commits) {
+      const email = entry.commit?.author?.email?.trim().toLowerCase();
+      const login = entry.author?.login;
+      const avatarUrl = entry.author?.avatar_url;
+      if (email && login && avatarUrl && !resolved.has(email)) {
+        resolved.set(email, { email, login, avatarUrl });
+      }
+    }
+    if (opts.stop?.(resolved)) break;
+    url = nextPageUrl(res.headers.get('link'));
+  }
+  return resolved;
+}
+
 // ---- Pull requests --------------------------------------------------------
 
 interface GithubPull {

@@ -69,6 +69,9 @@ interface CommitGraphProps {
   maxLane: number;
   /** Author avatar shown as the node; falls back to a plain dot if absent. */
   avatarUrl?: string;
+  /** Author name, shown in a tooltip over the avatar (identicons are otherwise
+   *  unidentifiable). Omitted → no tooltip. */
+  authorLabel?: string;
   /** This row is a merge commit (2+ parents): draw a small lane-color dot in
    *  place of the avatar, since merges carry no file changes of their own. */
   merge?: boolean;
@@ -85,6 +88,7 @@ export function CommitGraph({
   rowHeight,
   maxLane,
   avatarUrl,
+  authorLabel,
   merge,
   nodeId,
 }: CommitGraphProps) {
@@ -93,8 +97,12 @@ export function CommitGraph({
   const nodeX = laneX(graph.node);
   const nodeColor = color(graph.color);
   const clipId = `avatar-clip-${nodeId}`;
+  // The avatar image is drawn only for real, non-merge commits that have one; the
+  // tooltip tracks that exact case so it covers the image and nothing else.
+  const showAvatar = !graph.working && !graph.dashed && !merge && !!avatarUrl;
 
   return (
+    <div className="commit-graph-wrap">
     <svg
       className="commit-graph"
       width={width}
@@ -261,5 +269,21 @@ export function CommitGraph({
         <circle cx={nodeX} cy={mid} r={NODE_R} fill={nodeColor} />
       )}
     </svg>
+      {/* A transparent host laid exactly over the avatar circle: CSS tooltips can't
+          attach to an SVG <image>, so this HTML element carries the designed
+          tooltip for it. */}
+      {showAvatar && authorLabel && (
+        <span
+          className="commit-graph-avatar-tip tooltip-host"
+          data-tooltip={authorLabel}
+          style={{
+            left: nodeX - AVATAR_R,
+            top: mid - AVATAR_R,
+            width: AVATAR_R * 2,
+            height: AVATAR_R * 2,
+          }}
+        />
+      )}
+    </div>
   );
 }

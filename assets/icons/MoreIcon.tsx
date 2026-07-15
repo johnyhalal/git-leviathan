@@ -11,9 +11,9 @@ export function MoreIcon({ size = 16 }: IconProps) {
       stroke="none"
       aria-hidden="true"
     >
-      <circle cx="12" cy="5" r="1.6" />
-      <circle cx="12" cy="12" r="1.6" />
-      <circle cx="12" cy="19" r="1.6" />
+      <circle cx="12" cy="3" r="2.6" />
+      <circle cx="12" cy="12" r="2.6" />
+      <circle cx="12" cy="21" r="2.6" />
     </svg>
   );
 }

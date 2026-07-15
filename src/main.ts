@@ -1242,11 +1242,6 @@ async function integrateBranch(
 }
 
 /** The configured remote names (`origin`, …), for classifying decorations. */
-async function readRemoteNames(cwd: string): Promise<Set<string>> {
-  const out = await runGit(cwd, ['remote']);
-  return new Set(nonEmptyLines(out));
-}
-
 /**
  * Parse git's %D decoration string into structured refs. `remotes` is the set of
  * configured remote names: a token is a remote-tracking ref only when its first
@@ -1292,7 +1287,178 @@ function gravatarUrl(email: string): string {
   return `https://www.gravatar.com/avatar/${hash}?s=48&d=identicon`;
 }
 
-async function readLogCommits(cwd: string, limit: number): Promise<CommitLogEntry[]> {
+/**
+ * Lowercased author email → the GitHub identity resolved for it via the API.
+ * Filled lazily in the background when a connected GitHub repo's log is read
+ * (see enrichGithubAvatars) and persisted across sessions, so it covers authors
+ * whose real/private commit email the offline noreply heuristic can't map.
+ */
+const githubAvatars = new Map<string, { avatarUrl: string; login: string }>();
+
+/**
+ * A GitHub author's real avatar derived purely from their commit email, or
+ * `null` when the email doesn't identify a GitHub user. GitHub has no public
+ * email→avatar endpoint, but its default private-commit emails encode the
+ * identity directly: `12345+user@users.noreply.github.com` gives the numeric
+ * user id (→ avatars.githubusercontent.com/u/12345), and the legacy
+ * `user@users.noreply.github.com` gives the login (→ github.com/user.png).
+ * Authors who commit with a real/private email can't be resolved this way and
+ * fall back to Gravatar.
+ */
+function githubAvatarUrl(email: string): string | null {
+  const match = /^(?:(\d+)\+)?([a-z0-9-]+)@users\.noreply\.github\.com$/i.exec(
+    email.trim(),
+  );
+  if (!match) return null;
+  const [, id, login] = match;
+  return id
+    ? `https://avatars.githubusercontent.com/u/${id}?v=4&s=48`
+    : `https://github.com/${encodeURIComponent(login)}.png?size=48`;
+}
+
+/**
+ * Avatar for a commit author's email. In a GitHub repo, prefer the author's real
+ * GitHub avatar — first from the API-resolved cache (covers real/private emails),
+ * then the noreply-email heuristic (works offline) — and otherwise fall back to a
+ * Gravatar identicon.
+ */
+function avatarUrl(email: string, isGithubRepo: boolean): string {
+  if (isGithubRepo) {
+    const cached = githubAvatars.get(email.trim().toLowerCase());
+    if (cached) return cached.avatarUrl;
+    const derived = githubAvatarUrl(email);
+    if (derived) return derived;
+  }
+  return gravatarUrl(email);
+}
+
+const githubAvatarsPath = () =>
+  path.join(app.getPath('userData'), 'github-avatars.json');
+
+/** Load the persisted email → GitHub-identity cache into memory (once, at boot). */
+function loadGithubAvatars(): void {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(githubAvatarsPath(), 'utf-8'),
+    ) as unknown;
+    if (!parsed || typeof parsed !== 'object') return;
+    for (const [email, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (
+        value &&
+        typeof value === 'object' &&
+        typeof (value as { avatarUrl?: unknown }).avatarUrl === 'string' &&
+        typeof (value as { login?: unknown }).login === 'string'
+      ) {
+        const entry = value as { avatarUrl: string; login: string };
+        githubAvatars.set(email, { avatarUrl: entry.avatarUrl, login: entry.login });
+      }
+    }
+  } catch {
+    // No cache yet, or the file is unreadable — start empty.
+  }
+}
+
+let saveGithubAvatarsTimer: NodeJS.Timeout | null = null;
+/** Persist the avatar cache, debounced so a burst of resolutions writes once. */
+function saveGithubAvatars(): void {
+  if (saveGithubAvatarsTimer) return;
+  saveGithubAvatarsTimer = setTimeout(() => {
+    saveGithubAvatarsTimer = null;
+    try {
+      fs.writeFileSync(
+        githubAvatarsPath(),
+        JSON.stringify(Object.fromEntries(githubAvatars)),
+        'utf-8',
+      );
+    } catch (err) {
+      console.error('Failed to persist the GitHub avatar cache:', err);
+    }
+  }, 1000);
+}
+
+/** Repos with an avatar crawl in flight, so overlapping log loads don't stack. */
+const avatarCrawlsInFlight = new Set<string>();
+/**
+ * Emails a crawl already tried but couldn't resolve, so a re-sync doesn't crawl
+ * for them again. Session-only: they may have no GitHub account, or live only on
+ * a branch the default-branch walk doesn't reach — a fresh launch retries in
+ * case the author has since made their email public.
+ */
+const triedUnresolvedEmails = new Set<string>();
+
+/**
+ * Best-effort background fill of the GitHub avatar cache for a connected GitHub
+ * repo. Emails already cached, already tried, or resolvable offline (noreply) are
+ * skipped; the rest drive a bounded crawl of the repo's commits, where GitHub
+ * maps each author email to an account server-side. When new avatars are learned
+ * they're cached, persisted, and every window is told the repo changed so its
+ * graph re-reads the log and the identicons upgrade to real avatars in place.
+ */
+async function enrichGithubAvatars(
+  repoPath: string,
+  commits: CommitLogEntry[],
+): Promise<void> {
+  if (avatarCrawlsInFlight.has(repoPath)) return;
+
+  const wanted = new Set<string>();
+  for (const commit of commits) {
+    const email = commit.authorEmail?.trim().toLowerCase();
+    if (!email) continue;
+    if (githubAvatars.has(email) || triedUnresolvedEmails.has(email)) continue;
+    // A noreply email already resolves offline, so it doesn't need an API call.
+    if (githubAvatarUrl(commit.authorEmail)) continue;
+    wanted.add(email);
+  }
+  if (wanted.size === 0) return;
+
+  const token = getToken('github');
+  if (!token) return;
+
+  const host = (await readRemotes(repoPath))
+    .map((remote) => parseRepoHost(remote.url))
+    .find((h): h is RepoHost => h?.provider === 'github');
+  if (!host) return;
+
+  avatarCrawlsInFlight.add(repoPath);
+  try {
+    const resolved = await github.fetchCommitAuthors(token, host.owner, host.repo, {
+      // Stop paging as soon as every email we're after has been resolved.
+      stop: (found) => [...wanted].every((email) => found.has(email)),
+    });
+    let added = false;
+    for (const [email, identity] of resolved) {
+      if (!githubAvatars.has(email)) {
+        githubAvatars.set(email, {
+          avatarUrl: identity.avatarUrl,
+          login: identity.login,
+        });
+        added = true;
+      }
+    }
+    // Whatever the crawl couldn't resolve, don't chase again this session.
+    for (const email of wanted) {
+      if (!githubAvatars.has(email)) triedUnresolvedEmails.add(email);
+    }
+    if (added) {
+      saveGithubAvatars();
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send(RepoChannels.changed, repoPath);
+      }
+    }
+  } catch {
+    // Rate limited, offline, or no access (e.g. a private repo the token can't
+    // read) — leave the identicons in place rather than surfacing an error.
+  } finally {
+    avatarCrawlsInFlight.delete(repoPath);
+  }
+}
+
+async function readLogCommits(
+  cwd: string,
+  limit: number,
+  remotes: Set<string>,
+  isGithubRepo: boolean,
+): Promise<CommitLogEntry[]> {
   // --date-order lists commits newest-first by commit date while still never
   // showing a parent before its children — the only ordering the renderer's lane
   // layout relies on. (--topo-order also satisfies that, but walks one lineage
@@ -1304,16 +1470,13 @@ async function readLogCommits(cwd: string, limit: number): Promise<CommitLogEntr
   // keeps the stash out of this walk: a stash is a merge commit and --all would
   // otherwise pull in both the stash tip and its synthetic "index on …" parent.
   // Stashes are woven in separately, once each, by readStashCommits/mergeStashes.
-  const [out, remotes] = await Promise.all([
-    runGit(cwd, [
-      'log',
-      '--exclude=refs/stash',
-      '--all',
-      '--date-order',
-      `--max-count=${limit}`,
-      `--pretty=format:${LOG_FORMAT}`,
-    ]),
-    readRemoteNames(cwd),
+  const out = await runGit(cwd, [
+    'log',
+    '--exclude=refs/stash',
+    '--all',
+    '--date-order',
+    `--max-count=${limit}`,
+    `--pretty=format:${LOG_FORMAT}`,
   ]);
   return nonEmptyLines(out).map((line) => {
     const [
@@ -1331,7 +1494,8 @@ async function readLogCommits(cwd: string, limit: number): Promise<CommitLogEntr
       shortHash,
       parents: parents ? parents.split(' ').filter(Boolean) : [],
       author,
-      authorAvatarUrl: gravatarUrl(authorEmail),
+      authorEmail,
+      authorAvatarUrl: avatarUrl(authorEmail, isGithubRepo),
       date,
       subject,
       refs: parseDecorations(decorations, remotes),
@@ -1346,7 +1510,10 @@ async function readLogCommits(cwd: string, limit: number): Promise<CommitLogEntr
  * stash down to its base. Stashes are ordered `stash@{0}` first, so the array
  * index is the stash index.
  */
-async function readStashCommits(cwd: string): Promise<CommitLogEntry[]> {
+async function readStashCommits(
+  cwd: string,
+  isGithubRepo: boolean,
+): Promise<CommitLogEntry[]> {
   const out = await runGit(cwd, ['stash', 'list', `--format=${LOG_FORMAT}`]);
   return nonEmptyLines(out).map((line, index) => {
     const [hash, shortHash, parents, author, authorEmail, date, subject] =
@@ -1357,7 +1524,8 @@ async function readStashCommits(cwd: string): Promise<CommitLogEntry[]> {
       shortHash,
       parents: base ? [base] : [],
       author,
-      authorAvatarUrl: gravatarUrl(authorEmail),
+      authorEmail,
+      authorAvatarUrl: avatarUrl(authorEmail, isGithubRepo),
       date,
       // Drop the "WIP on <branch>:" / "On <branch>:" noise so the graph row reads
       // as the message alone (matching how the stash list renders it).
@@ -1391,9 +1559,17 @@ function mergeStashes(
 }
 
 async function readLog(cwd: string, limit: number): Promise<CommitLogEntry[]> {
+  // Read remotes once up front: their names drive %D decoration parsing, and
+  // whether any points at github.com decides if author avatars can come from
+  // GitHub (see avatarUrl) rather than Gravatar.
+  const remoteInfos = await readRemotes(cwd);
+  const remoteNames = new Set(remoteInfos.map((remote) => remote.name));
+  const isGithubRepo = remoteInfos.some(
+    (remote) => parseRepoHost(remote.url)?.provider === 'github',
+  );
   const [commits, stashes] = await Promise.all([
-    readLogCommits(cwd, limit),
-    readStashCommits(cwd),
+    readLogCommits(cwd, limit, remoteNames, isGithubRepo),
+    readStashCommits(cwd, isGithubRepo),
   ]);
   return mergeStashes(commits, stashes);
 }
@@ -2388,7 +2564,11 @@ function registerRepoIpc(): void {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return [];
       const max =
         typeof limit === 'number' && limit > 0 ? Math.floor(limit) : DEFAULT_LOG_LIMIT;
-      return readLog(repoPath, max);
+      const commits = await readLog(repoPath, max);
+      // Fill in real GitHub avatars in the background; the graph re-reads the log
+      // via a repo:changed broadcast once any resolve.
+      void enrichGithubAvatars(repoPath, commits);
+      return commits;
     },
   );
 
@@ -4582,6 +4762,7 @@ app.on('ready', () => {
   // Pest/PHPUnit run) can find php/node/etc. that a Finder-launched app misses.
   void initShellPath();
   reconcileIntegrations();
+  loadGithubAvatars();
   applyDockIcon();
   nativeTheme.themeSource = settings.themeSource;
   registerThemeIpc();
