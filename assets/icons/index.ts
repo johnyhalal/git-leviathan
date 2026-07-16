@@ -11,6 +11,7 @@ export { SearchIcon } from './SearchIcon';
 export { GithubIcon } from './GithubIcon';
 export { GitlabIcon } from './GitlabIcon';
 export { ChevronDownIcon } from './ChevronDownIcon';
+export { ChevronRightIcon } from './ChevronRightIcon';
 export { PullIcon } from './PullIcon';
 export { PushIcon } from './PushIcon';
 export { StashIcon } from './StashIcon';

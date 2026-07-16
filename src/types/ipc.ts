@@ -495,6 +495,12 @@ export const RepoChannels = {
   unstage: 'repo:unstage',
   /** Renderer -> main (invoke): discard every working-tree change; fresh status. */
   discardAll: 'repo:discard-all',
+  /** Renderer -> main (invoke): discard one file's working-tree changes; fresh status. */
+  discardFile: 'repo:discard-file',
+  /** Renderer -> main (invoke): append a pattern to `.gitignore`; fresh status. */
+  ignore: 'repo:ignore',
+  /** Renderer -> main (invoke): whether a path is tracked by git (in the index/HEAD). */
+  isTracked: 'repo:is-tracked',
   /** Renderer -> main (invoke): commit the staged changes. */
   commit: 'repo:commit',
   /** Renderer -> main (invoke): read HEAD's full commit message (for amend prefill). */
@@ -976,6 +982,20 @@ export interface RepoApi {
    * clean -fd`). Irreversible. Resolves with the (now clean) working status.
    */
   discardAll(path: string): Promise<WorkingStatus>;
+  /**
+   * Discard a single file's changes: unstage it, revert its tracked modifications,
+   * and delete it if it was untracked. Irreversible. Resolves with fresh status.
+   */
+  discardFile(path: string, file: string): Promise<WorkingStatus>;
+  /**
+   * Append `pattern` to the repository's `.gitignore` (creating it if absent),
+   * skipping the write when the exact pattern is already listed. When
+   * `untrackFile` is given, that file is also dropped from the index
+   * (`git rm --cached`, keeping the working copy). Returns fresh status.
+   */
+  ignore(path: string, pattern: string, untrackFile?: string | null): Promise<WorkingStatus>;
+  /** Whether `file` is tracked by git (listed in the index), to pick ignore options. */
+  isTracked(path: string, file: string): Promise<boolean>;
   /**
    * Commit the currently staged changes with `message`. When `amend` is true,
    * rewrites HEAD in place (`git commit --amend`) instead of adding a new commit.

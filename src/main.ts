@@ -2711,6 +2711,69 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.discardFile,
+    async (_event, repoPath: unknown, file: unknown): Promise<WorkingStatus> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
+      if (typeof file !== 'string' || file.length === 0) return readStatus(repoPath);
+      // Per-file mirror of discardAll (git forbids `reset --hard <path>`): unstage
+      // the path so its index entry matches HEAD, restore the working copy from
+      // there, then clean removes it if it was untracked (a freshly-added file).
+      await runGit(repoPath, ['reset', '-q', '--', file]);
+      await runGit(repoPath, ['checkout', '--', file]);
+      await runGit(repoPath, ['clean', '-fd', '--', file]);
+      return readStatus(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.ignore,
+    async (
+      _event,
+      repoPath: unknown,
+      pattern: unknown,
+      untrackFile: unknown,
+    ): Promise<WorkingStatus> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
+      // Take only the first line so a pattern can never inject extra rules.
+      const line = typeof pattern === 'string' ? pattern.split('\n')[0].trim() : '';
+      if (line) {
+        const gitignorePath = path.join(repoPath, '.gitignore');
+        let existing = '';
+        try {
+          existing = await fs.promises.readFile(gitignorePath, 'utf8');
+        } catch {
+          existing = ''; // No .gitignore yet — we'll create it.
+        }
+        // Skip the write when the exact rule is already present (ignoring blank space).
+        const present = existing.split('\n').some((entry) => entry.trim() === line);
+        if (!present) {
+          // Ensure the new rule starts on its own line.
+          const prefix =
+            existing.length === 0 || existing.endsWith('\n') ? existing : `${existing}\n`;
+          await fs.promises.writeFile(gitignorePath, `${prefix}${line}\n`, 'utf8');
+        }
+      }
+      // Optionally stop tracking the file: drop it from the index but keep the
+      // working copy (-f gets past the index/worktree difference safety check).
+      if (typeof untrackFile === 'string' && untrackFile.length > 0) {
+        await runGit(repoPath, ['rm', '--cached', '-f', '--', untrackFile]);
+      }
+      return readStatus(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.isTracked,
+    async (_event, repoPath: unknown, file: unknown): Promise<boolean> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return false;
+      if (typeof file !== 'string' || file.length === 0) return false;
+      // ls-files prints the path only when git already tracks it (index/HEAD).
+      const out = await runGit(repoPath, ['ls-files', '--', file]);
+      return out.trim().length > 0;
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.commit,
     async (_event, repoPath: unknown, message: unknown, amend: unknown): Promise<CommitResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {

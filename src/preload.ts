@@ -113,6 +113,12 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.unstage, path, file) as Promise<WorkingStatus>,
     discardAll: (path: string) =>
       ipcRenderer.invoke(RepoChannels.discardAll, path) as Promise<WorkingStatus>,
+    discardFile: (path: string, file: string) =>
+      ipcRenderer.invoke(RepoChannels.discardFile, path, file) as Promise<WorkingStatus>,
+    ignore: (path: string, pattern: string, untrackFile?: string | null) =>
+      ipcRenderer.invoke(RepoChannels.ignore, path, pattern, untrackFile) as Promise<WorkingStatus>,
+    isTracked: (path: string, file: string) =>
+      ipcRenderer.invoke(RepoChannels.isTracked, path, file) as Promise<boolean>,
     commit: (path: string, message: string, amend?: boolean) =>
       ipcRenderer.invoke(RepoChannels.commit, path, message, amend) as Promise<CommitResult>,
     headMessage: (path: string) =>

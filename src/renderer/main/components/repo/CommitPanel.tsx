@@ -10,7 +10,8 @@ import type {
   WorkingStatus,
 } from '../../../../types/ipc';
 import type { DiffTarget } from './DiffView';
-import { useConfirm } from '../ConfirmBar';
+import { FileContextMenu, type FileMenuItem } from './FileContextMenu';
+import { useConfirm, type ConfirmAction } from '../ConfirmBar';
 import {
   CertificateIcon,
   ChevronDownIcon,
@@ -129,9 +130,11 @@ interface FileRowProps {
   onOpen?: () => void;
   /** Whether this file is the one currently shown in the diff viewer. */
   selected?: boolean;
+  /** Right-click the row to raise its context menu (working-tree lists only). */
+  onContextMenu?: (event: React.MouseEvent) => void;
 }
 
-function FileRow({ file, action, showDir = true, indent, onOpen, selected }: FileRowProps) {
+function FileRow({ file, action, showDir = true, indent, onOpen, selected, onContextMenu }: FileRowProps) {
   const classes = ['commit-file', 'tooltip-host'];
   if (!file.status) classes.push('commit-file-unchanged');
   if (onOpen) classes.push('is-openable');
@@ -145,6 +148,7 @@ function FileRow({ file, action, showDir = true, indent, onOpen, selected }: Fil
       tabIndex={onOpen ? 0 : undefined}
       aria-pressed={onOpen ? selected : undefined}
       onClick={onOpen}
+      onContextMenu={onContextMenu}
       onKeyDown={
         onOpen
           ? (event) => {
@@ -243,10 +247,12 @@ interface DirNodeProps {
   action?: (file: DisplayFile) => FileRowProps['action'];
   /** Path of the file currently shown in the diff viewer, if any. */
   activePath?: string | null;
+  /** Right-click a leaf file to raise its context menu (working-tree lists only). */
+  onContextMenuFile?: (file: DisplayFile, event: React.MouseEvent) => void;
 }
 
 /** Recursively render a folder's subfolders (first) then its files. */
-function DirNode({ dir, depth, asc, collapsed, onToggle, onOpenFile, action, activePath }: DirNodeProps) {
+function DirNode({ dir, depth, asc, collapsed, onToggle, onOpenFile, action, activePath, onContextMenuFile }: DirNodeProps) {
   const dirs = [...dir.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
   const files = [...dir.files].sort((a, b) =>
     baseName(a.path).localeCompare(baseName(b.path)),
@@ -284,6 +290,7 @@ function DirNode({ dir, depth, asc, collapsed, onToggle, onOpenFile, action, act
                 onOpenFile={onOpenFile}
                 action={action}
                 activePath={activePath}
+                onContextMenuFile={onContextMenuFile}
               />
             )}
           </div>
@@ -298,6 +305,7 @@ function DirNode({ dir, depth, asc, collapsed, onToggle, onOpenFile, action, act
           action={action?.(file)}
           onOpen={onOpenFile ? () => onOpenFile(file) : undefined}
           selected={file.path === activePath}
+          onContextMenu={onContextMenuFile ? (event) => onContextMenuFile(file, event) : undefined}
         />
       ))}
     </>
@@ -754,6 +762,8 @@ interface WorkingFileListProps {
   onOpenFile: (file: DisplayFile) => void;
   /** Path of the file currently shown in the diff viewer, if any. */
   activePath: string | null;
+  /** Right-click a file to raise its context menu (stage/unstage). */
+  onContextMenuFile?: (file: DisplayFile, event: React.MouseEvent) => void;
 }
 
 /**
@@ -769,6 +779,7 @@ function WorkingFileList({
   action,
   onOpenFile,
   activePath,
+  onContextMenuFile,
 }: WorkingFileListProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggleDir = useCallback((path: string) => {
@@ -799,6 +810,7 @@ function WorkingFileList({
           onOpenFile={onOpenFile}
           action={action}
           activePath={activePath}
+          onContextMenuFile={onContextMenuFile}
         />
       </div>
     );
@@ -812,6 +824,7 @@ function WorkingFileList({
           action={action(file)}
           onOpen={() => onOpenFile(file)}
           selected={file.path === activePath}
+          onContextMenu={onContextMenuFile ? (event) => onContextMenuFile(file, event) : undefined}
         />
       ))}
     </>
@@ -885,6 +898,14 @@ function WorkingChanges({
   // staged (bottom) section takes the remainder. Dragged via the divider.
   const [topRatio, setTopRatio] = useState(0.5);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // The right-click menu open on a working-tree file, anchored at (x, y). Its
+  // section decides the action offered (stage on unstaged, unstage on staged).
+  const [fileMenu, setFileMenu] = useState<{
+    section: 'staged' | 'unstaged';
+    file: DisplayFile;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // Staged rows diff the index against HEAD; unstaged rows the working tree
   // against the index. A row is active only when the open diff matches both its
@@ -930,6 +951,89 @@ function WorkingChanges({
     },
     [repoPath, status, asc, activeDiff, onStatusChange, onOpenDiff],
   );
+
+  // Raise the ignore confirm bar for a file/pattern. Untracked files offer just
+  // "Ignore"; tracked files also offer "Ignore and stop tracking" (which drops
+  // the file from the index too, since ignoring a tracked file alone is a no-op).
+  const requestIgnore = useCallback(
+    async (file: DisplayFile, pattern: string) => {
+      const tracked = await window.api.repo.isTracked(repoPath, file.path);
+      const actions: ConfirmAction[] = [
+        {
+          label: 'Ignore',
+          tone: 'primary',
+          busyLabel: 'Ignoring…',
+          onClick: async () => onStatusChange(await window.api.repo.ignore(repoPath, pattern)),
+        },
+      ];
+      if (tracked) {
+        actions.push({
+          label: 'Ignore and stop tracking',
+          tone: 'danger',
+          busyLabel: 'Ignoring…',
+          onClick: async () => {
+            // Its diff is taken from a now-untracked file, so close it first.
+            if (activeDiff?.path === file.path) onCloseDiff();
+            onStatusChange(await window.api.repo.ignore(repoPath, pattern, file.path));
+          },
+        });
+      }
+      requestConfirm({message: `Ignore “${pattern}”?`, actions});
+    },
+    [repoPath, requestConfirm, onStatusChange, activeDiff, onCloseDiff],
+  );
+
+  const discardFile = useCallback(
+    (file: DisplayFile) => {
+      requestConfirm({
+        message: `Discard changes to “${file.path}”? This cannot be undone.`,
+        actions: [
+          {
+            label: 'Discard changes',
+            busyLabel: 'Discarding…',
+            tone: 'danger',
+            onClick: async () => {
+              // If the discarded file is open in the diff viewer, its diff is now
+              // stale (matched on path, regardless of section) — drop back first.
+              if (activeDiff?.path === file.path) onCloseDiff();
+              onStatusChange(await window.api.repo.discardFile(repoPath, file.path));
+            },
+          },
+        ],
+      });
+    },
+    [requestConfirm, repoPath, activeDiff, onStatusChange, onCloseDiff],
+  );
+
+  // The three "Ignore" submenu rows for a file: the file itself, its extension,
+  // and its parent directory — each appends a rule to .gitignore. The extension
+  // and directory rows drop out when the file has neither.
+  const ignoreSubmenu = (file: DisplayFile): FileMenuItem[] => {
+    const name = baseName(file.path);
+    // The file's full repo-relative path (no leading slash) ignores this file.
+    const rows: FileMenuItem[] = [
+      { label: `Ignore '${name}'`, onClick: () => void requestIgnore(file, file.path) },
+    ];
+    const dot = name.lastIndexOf('.');
+    if (dot > 0) {
+      const ext = name.slice(dot + 1);
+      rows.push({
+        label: `All files with the extension of '.${ext}'`,
+        onClick: () => void requestIgnore(file, `*.${ext}`),
+      });
+    }
+    const dir = dirName(file.path); // '' at the repo root, else 'a/b/c/'
+    if (dir) {
+      // Label shows just the immediate parent name; the pattern still anchors to
+      // the full path so only that exact directory is ignored.
+      const parent = baseName(dir.replace(/\/$/, ''));
+      rows.push({
+        label: `All files in '${parent}/'`,
+        onClick: () => void requestIgnore(file, `${dir}`),
+      });
+    }
+    return rows;
+  };
 
   const discardAll = useCallback(() => {
     requestConfirm({
@@ -1186,6 +1290,10 @@ function WorkingChanges({
                     })
                   }
                   activePath={activePathFor(unstagedSource)}
+                  onContextMenuFile={(file, event) => {
+                    event.preventDefault();
+                    setFileMenu({ section: 'unstaged', file, x: event.clientX, y: event.clientY });
+                  }}
                 />
               </div>
             </>
@@ -1233,6 +1341,10 @@ function WorkingChanges({
                 })
               }
               activePath={activePathFor(stagedSource)}
+              onContextMenuFile={(file, event) => {
+                event.preventDefault();
+                setFileMenu({ section: 'staged', file, x: event.clientX, y: event.clientY });
+              }}
             />
           </div>
         </section>
@@ -1315,6 +1427,21 @@ function WorkingChanges({
           {staged.length > 0 ? ` (${staged.length})` : ''}
         </button>
       </div>
+
+      {fileMenu && (
+        <FileContextMenu
+          x={fileMenu.x}
+          y={fileMenu.y}
+          onClose={() => setFileMenu(null)}
+          items={[
+            fileMenu.section === 'unstaged'
+              ? { label: 'Stage file', onClick: () => void stageFile(fileMenu.file) }
+              : { label: 'Unstage file', onClick: () => void unstage(fileMenu.file.path) },
+            { label: 'Ignore', submenu: ignoreSubmenu(fileMenu.file) },
+            { label: 'Discard changes', danger: true, onClick: () => discardFile(fileMenu.file) },
+          ]}
+        />
+      )}
     </aside>
   );
 }
