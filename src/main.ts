@@ -1736,27 +1736,71 @@ async function isUntracked(cwd: string, file: string): Promise<boolean> {
   return out.trim().length > 0;
 }
 
+/**
+ * The raw unified-diff text for `file`'s unstaged changes — the same patch the
+ * viewer parses, so hunk indices line up between display and hunk staging. An
+ * untracked file isn't part of git's diff (it prints nothing), so it's diffed
+ * against an empty file, matching how it renders once `git add`ed.
+ */
+async function rawUnstagedDiff(cwd: string, file: string): Promise<string> {
+  const out = await runGit(cwd, fileDiffArgs({ kind: 'unstaged' }, file));
+  if (out === '' && (await isUntracked(cwd, file))) {
+    return runGitDiff(cwd, ['diff', '--no-color', '--no-index', '--', '/dev/null', file]);
+  }
+  return out;
+}
+
 async function readFileDiff(
   cwd: string,
   source: DiffSource,
   file: string,
 ): Promise<FileDiff> {
-  let out = await runGit(cwd, fileDiffArgs(source, file));
-  // An untracked file isn't part of git's diff, so `git diff` prints nothing.
-  // Diff it against an empty file so the whole thing shows as added — matching
-  // how the staged (indexed) version renders once it's `git add`ed.
-  if (out === '' && source.kind === 'unstaged' && (await isUntracked(cwd, file))) {
-    out = await runGitDiff(cwd, [
-      'diff',
-      '--no-color',
-      '--no-index',
-      '--',
-      '/dev/null',
-      file,
-    ]);
-  }
+  const out =
+    source.kind === 'unstaged'
+      ? await rawUnstagedDiff(cwd, file)
+      : await runGit(cwd, fileDiffArgs(source, file));
   const { binary, lines } = parseUnifiedDiff(out);
   return { path: file, binary, lines };
+}
+
+/**
+ * Carve a single-hunk patch out of a file's full unified diff `patch`: the file
+ * header (every line before the first `@@`) plus only the `hunkIndex`-th (0-based)
+ * `@@ … @@` hunk. `git apply` can then stage/revert just that hunk. Returns null
+ * when the patch has no header or the index is out of range.
+ */
+function extractHunkPatch(patch: string, hunkIndex: number): string | null {
+  const lines = patch.split('\n');
+  const firstHunk = lines.findIndex((line) => line.startsWith('@@'));
+  if (firstHunk === -1) return null;
+  const header = lines.slice(0, firstHunk);
+  const hunks: string[][] = [];
+  for (const line of lines.slice(firstHunk)) {
+    // Each `@@` opens a hunk; every following line (context/+/-/"\ No newline")
+    // belongs to it until the next `@@`.
+    if (line.startsWith('@@')) hunks.push([line]);
+    else hunks[hunks.length - 1]?.push(line);
+  }
+  if (hunkIndex < 0 || hunkIndex >= hunks.length) return null;
+  // git apply requires a trailing newline and no stray blank tail from the split.
+  return [...header, ...hunks[hunkIndex]].join('\n').replace(/\n*$/, '\n');
+}
+
+/** Run `git apply <args>` with `patch` fed on stdin. Resolves true on success. */
+function runGitApply(cwd: string, args: string[], patch: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(gitBin, ['apply', ...args], {
+      cwd,
+      env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
+    });
+    child.on('error', () => resolve(false));
+    child.on('close', (code) => resolve(code === 0));
+    // A broken pipe (git rejecting the patch early) must not crash the process.
+    child.stdin?.on('error', () => {
+      /* ignore: the close handler reports the failure via the exit code */
+    });
+    child.stdin?.end(patch);
+  });
 }
 
 /** Drop a single trailing empty entry produced by splitting on a final newline. */
@@ -2682,6 +2726,51 @@ function registerRepoIpc(): void {
     },
   );
 
+  // Stage/discard/unstage a single hunk by carving it out of the file's live diff
+  // and (reverse-)applying it. The renderer numbers hunks in diff order, so
+  // re-deriving the patch here keeps those indices aligned. `from` picks which
+  // diff the hunk is taken from: the unstaged (worktree-vs-index) diff for
+  // stage/discard, or the staged (index-vs-HEAD) diff for unstage.
+  const applyHunk = async (
+    repoPath: unknown,
+    file: unknown,
+    hunkIndex: unknown,
+    from: 'staged' | 'unstaged',
+    args: string[],
+  ): Promise<WorkingStatus> => {
+    if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
+    if (typeof file !== 'string' || file.length === 0) return readStatus(repoPath);
+    if (typeof hunkIndex !== 'number' || !Number.isInteger(hunkIndex) || hunkIndex < 0) {
+      return readStatus(repoPath);
+    }
+    const rawDiff =
+      from === 'staged'
+        ? await runGit(repoPath, fileDiffArgs({ kind: 'staged' }, file))
+        : await rawUnstagedDiff(repoPath, file);
+    const patch = extractHunkPatch(rawDiff, hunkIndex);
+    if (patch !== null) await runGitApply(repoPath, args, patch);
+    return readStatus(repoPath);
+  };
+
+  ipcMain.handle(
+    RepoChannels.stageHunk,
+    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
+      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--cached']),
+  );
+
+  ipcMain.handle(
+    RepoChannels.discardHunk,
+    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
+      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--reverse']),
+  );
+
+  // Unstage reverse-applies the hunk to the index alone (worktree untouched).
+  ipcMain.handle(
+    RepoChannels.unstageHunk,
+    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
+      applyHunk(repoPath, file, hunkIndex, 'staged', ['--cached', '--reverse']),
+  );
+
   ipcMain.handle(
     RepoChannels.unstage,
     async (_event, repoPath: unknown, file: unknown): Promise<WorkingStatus> => {
@@ -2770,6 +2859,25 @@ function registerRepoIpc(): void {
       // ls-files prints the path only when git already tracks it (index/HEAD).
       const out = await runGit(repoPath, ['ls-files', '--', file]);
       return out.trim().length > 0;
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.deleteFile,
+    async (_event, repoPath: unknown, file: unknown): Promise<WorkingStatus> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
+      if (typeof file !== 'string' || file.length === 0) return readStatus(repoPath);
+      const target = path.resolve(repoPath, file);
+      // Refuse paths that escape the repository (defence against traversal in IPC args).
+      const rel = path.relative(repoPath, target);
+      if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return readStatus(repoPath);
+      // Send to the OS trash (recoverable) rather than an unrecoverable unlink.
+      try {
+        await shell.trashItem(target);
+      } catch {
+        // Already gone / not trashable — just report the resulting status.
+      }
+      return readStatus(repoPath);
     },
   );
 

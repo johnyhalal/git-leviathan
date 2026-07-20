@@ -16,12 +16,15 @@ export interface FileMenuItem {
   submenu?: FileMenuItem[];
 }
 
+/** A menu row or a divider between action groups. */
+export type FileMenuEntry = FileMenuItem | 'separator';
+
 interface FileContextMenuProps {
   /** Viewport coordinates to anchor the menu at (the right-click point). */
   x: number;
   y: number;
-  /** The actions to offer for the file. Renders nothing when empty. */
-  items: FileMenuItem[];
+  /** The rows to offer for the file, `'separator'` for a divider. Empty renders nothing. */
+  items: FileMenuEntry[];
   /** Dismiss the menu (outside click, Escape, or after an item runs). */
   onClose: () => void;
 }
@@ -38,16 +41,20 @@ export function FileContextMenu({ x, y, items, onClose }: FileContextMenuProps) 
   if (items.length === 0) return null;
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
-      {items.map((item, index) => (
-        <MenuRow
-          key={`${item.label}-${index}`}
-          item={item}
-          open={openIndex === index}
-          // Hovering a plain row closes any open submenu; a parent row opens its own.
-          onHover={() => setOpenIndex(item.submenu?.length ? index : null)}
-          onClose={onClose}
-        />
-      ))}
+      {items.map((item, index) =>
+        item === 'separator' ? (
+          <div key={`sep-${index}`} className="context-menu-sep" role="separator" />
+        ) : (
+          <MenuRow
+            key={`${item.label}-${index}`}
+            item={item}
+            open={openIndex === index}
+            // Hovering a plain row closes any open submenu; a parent row opens its own.
+            onHover={() => setOpenIndex(item.submenu?.length ? index : null)}
+            onClose={onClose}
+          />
+        ),
+      )}
     </ContextMenu>
   );
 }

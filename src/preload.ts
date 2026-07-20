@@ -109,6 +109,12 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.status, path) as Promise<WorkingStatus>,
     stage: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.stage, path, file) as Promise<WorkingStatus>,
+    stageHunk: (path: string, file: string, hunkIndex: number) =>
+      ipcRenderer.invoke(RepoChannels.stageHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
+    discardHunk: (path: string, file: string, hunkIndex: number) =>
+      ipcRenderer.invoke(RepoChannels.discardHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
+    unstageHunk: (path: string, file: string, hunkIndex: number) =>
+      ipcRenderer.invoke(RepoChannels.unstageHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
     unstage: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.unstage, path, file) as Promise<WorkingStatus>,
     discardAll: (path: string) =>
@@ -119,6 +125,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.ignore, path, pattern, untrackFile) as Promise<WorkingStatus>,
     isTracked: (path: string, file: string) =>
       ipcRenderer.invoke(RepoChannels.isTracked, path, file) as Promise<boolean>,
+    deleteFile: (path: string, file: string) =>
+      ipcRenderer.invoke(RepoChannels.deleteFile, path, file) as Promise<WorkingStatus>,
     commit: (path: string, message: string, amend?: boolean) =>
       ipcRenderer.invoke(RepoChannels.commit, path, message, amend) as Promise<CommitResult>,
     headMessage: (path: string) =>

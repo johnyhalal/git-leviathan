@@ -246,6 +246,7 @@ export function RepoColumns({
             repoPath={repoPath}
             target={diffTarget}
             onClose={() => setDiffTarget(null)}
+            onWorkingStatusChange={onWorkingStatusChange}
           />
         ) : (
           <CommitList

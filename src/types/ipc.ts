@@ -491,6 +491,12 @@ export const RepoChannels = {
   status: 'repo:status',
   /** Renderer -> main (invoke): stage a file (or all); returns fresh status. */
   stage: 'repo:stage',
+  /** Renderer -> main (invoke): stage a single unstaged hunk; returns fresh status. */
+  stageHunk: 'repo:stage-hunk',
+  /** Renderer -> main (invoke): discard a single unstaged hunk; returns fresh status. */
+  discardHunk: 'repo:discard-hunk',
+  /** Renderer -> main (invoke): unstage a single staged hunk; returns fresh status. */
+  unstageHunk: 'repo:unstage-hunk',
   /** Renderer -> main (invoke): unstage a file (or all); returns fresh status. */
   unstage: 'repo:unstage',
   /** Renderer -> main (invoke): discard every working-tree change; fresh status. */
@@ -501,6 +507,8 @@ export const RepoChannels = {
   ignore: 'repo:ignore',
   /** Renderer -> main (invoke): whether a path is tracked by git (in the index/HEAD). */
   isTracked: 'repo:is-tracked',
+  /** Renderer -> main (invoke): delete a working-tree file (to the OS trash); fresh status. */
+  deleteFile: 'repo:delete-file',
   /** Renderer -> main (invoke): commit the staged changes. */
   commit: 'repo:commit',
   /** Renderer -> main (invoke): read HEAD's full commit message (for amend prefill). */
@@ -974,6 +982,24 @@ export interface RepoApi {
    * refreshed working-tree status.
    */
   stage(path: string, file: string | null): Promise<WorkingStatus>;
+  /**
+   * Stage just the `hunkIndex`-th hunk (0-based, in diff order) of `file`'s
+   * unstaged changes by applying that single hunk to the index. Returns fresh
+   * status.
+   */
+  stageHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
+  /**
+   * Discard just the `hunkIndex`-th hunk (0-based, in diff order) of `file`'s
+   * unstaged changes by reverse-applying that hunk to the working tree.
+   * Irreversible. Returns fresh status.
+   */
+  discardHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
+  /**
+   * Unstage just the `hunkIndex`-th hunk (0-based, in diff order) of `file`'s
+   * staged changes by reverse-applying that hunk to the index. Returns fresh
+   * status.
+   */
+  unstageHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
   /** Unstage `file` (a path), or everything when null. Returns fresh status. */
   unstage(path: string, file: string | null): Promise<WorkingStatus>;
   /**
@@ -996,6 +1022,11 @@ export interface RepoApi {
   ignore(path: string, pattern: string, untrackFile?: string | null): Promise<WorkingStatus>;
   /** Whether `file` is tracked by git (listed in the index), to pick ignore options. */
   isTracked(path: string, file: string): Promise<boolean>;
+  /**
+   * Delete `file` from the working tree, sending it to the OS trash (recoverable).
+   * For a tracked file this surfaces as an (unstaged) deletion. Returns fresh status.
+   */
+  deleteFile(path: string, file: string): Promise<WorkingStatus>;
   /**
    * Commit the currently staged changes with `message`. When `amend` is true,
    * rewrites HEAD in place (`git commit --amend`) instead of adding a new commit.

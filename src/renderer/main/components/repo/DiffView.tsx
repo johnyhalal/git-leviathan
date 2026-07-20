@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { DiffSource, FileDiff, FileStatus } from '../../../../types/ipc';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { DiffSource, FileDiff, FileStatus, WorkingStatus } from '../../../../types/ipc';
 import { highlightBuffer, highlightLine, languageForPath } from './syntax';
+import { useConfirm } from '../ConfirmBar';
 import {
   ChevronDownIcon,
   CloseIcon,
@@ -40,6 +41,8 @@ interface DiffViewProps {
   repoPath: string;
   target: DiffTarget;
   onClose: () => void;
+  /** Push a fresh working-tree status up after a hunk is staged or discarded. */
+  onWorkingStatusChange?: (status: WorkingStatus) => void;
 }
 
 /**
@@ -48,9 +51,10 @@ interface DiffViewProps {
  * mode switch and prev/next steppers) over the line-numbered body, which shows
  * either the parsed unified diff or the file's full content.
  */
-export function DiffView({ repoPath, target, onClose }: DiffViewProps) {
+export function DiffView({ repoPath, target, onClose, onWorkingStatusChange }: DiffViewProps) {
   const { source, path, status } = target;
   const lang = useMemo(() => languageForPath(path), [path]);
+  const requestConfirm = useConfirm();
   const [mode, setMode] = useState<ViewMode>('diff');
   const [diff, setDiff] = useState<FileDiff | null>(null);
   // The full-file content for "file view", fetched lazily the first time that
@@ -81,6 +85,52 @@ export function DiffView({ repoPath, target, onClose }: DiffViewProps) {
       live = false;
     };
   }, [mode, content, repoPath, source, path]);
+
+  // Hunk-level actions depend on the source: unstaged changes can be staged or
+  // discarded per hunk; staged changes can be unstaged per hunk. After the op,
+  // push the fresh status up and re-read the diff; when the last hunk goes, close
+  // the viewer.
+  const canStageHunks = source.kind === 'unstaged';
+  const canUnstageHunks = source.kind === 'staged';
+  const afterHunk = useCallback(
+    async (nextStatus: WorkingStatus) => {
+      onWorkingStatusChange?.(nextStatus);
+      const fresh = await window.api.repo.fileDiff(repoPath, source, path);
+      if (fresh.lines.length === 0) onClose();
+      else setDiff(fresh);
+    },
+    [onWorkingStatusChange, repoPath, source, path, onClose],
+  );
+  const stageHunk = useCallback(
+    async (hunkIndex: number) => {
+      await afterHunk(await window.api.repo.stageHunk(repoPath, path, hunkIndex));
+    },
+    [afterHunk, repoPath, path],
+  );
+  const unstageHunk = useCallback(
+    async (hunkIndex: number) => {
+      await afterHunk(await window.api.repo.unstageHunk(repoPath, path, hunkIndex));
+    },
+    [afterHunk, repoPath, path],
+  );
+  const discardHunk = useCallback(
+    (hunkIndex: number) => {
+      requestConfirm({
+        message: 'Discard this hunk? This cannot be undone.',
+        actions: [
+          {
+            label: 'Discard hunk',
+            busyLabel: 'Discarding…',
+            tone: 'danger',
+            onClick: async () => {
+              await afterHunk(await window.api.repo.discardHunk(repoPath, path, hunkIndex));
+            },
+          },
+        ],
+      });
+    },
+    [requestConfirm, afterHunk, repoPath, path],
+  );
 
   return (
     <div className="diff-view">
@@ -146,7 +196,13 @@ export function DiffView({ repoPath, target, onClose }: DiffViewProps) {
 
       <div className="diff-body">
         {mode === 'diff' ? (
-          <DiffBody diff={diff} lang={lang} />
+          <DiffBody
+            diff={diff}
+            lang={lang}
+            onStageHunk={canStageHunks ? stageHunk : undefined}
+            onDiscardHunk={canStageHunks ? discardHunk : undefined}
+            onUnstageHunk={canUnstageHunks ? unstageHunk : undefined}
+          />
         ) : (
           <FileBody content={content} lang={lang} />
         )}
@@ -158,18 +214,73 @@ export function DiffView({ repoPath, target, onClose }: DiffViewProps) {
 /** The unified-diff rendering: two line-number gutters and a marked code column.
  * Each line is highlighted on its own — add/delete/context lines don't form a
  * contiguous program, so a whole-hunk highlight would be misleading. */
-function DiffBody({ diff, lang }: { diff: FileDiff | null; lang: string | null }) {
+function DiffBody({
+  diff,
+  lang,
+  onStageHunk,
+  onDiscardHunk,
+  onUnstageHunk,
+}: {
+  diff: FileDiff | null;
+  lang: string | null;
+  /** Stage the hunk at this index (unstaged view); paired with onDiscardHunk. */
+  onStageHunk?: (hunkIndex: number) => void;
+  onDiscardHunk?: (hunkIndex: number) => void;
+  /** Unstage the hunk at this index (staged view). */
+  onUnstageHunk?: (hunkIndex: number) => void;
+}) {
   if (diff === null) return <p className="diff-empty">Loading…</p>;
   if (diff.binary) return <p className="diff-empty">Binary file — no diff to show.</p>;
   if (diff.lines.length === 0) return <p className="diff-empty">No changes.</p>;
 
+  const hunkActions = (onStageHunk && onDiscardHunk) || onUnstageHunk;
+  // Hunks are numbered in diff order, matching how the main process re-derives
+  // them for `stageHunk`/`discardHunk`; count headers seen so far as we render.
+  let hunkIndex = -1;
   return (
     <div className="diff-lines" role="table">
       {diff.lines.map((line, index) => {
         if (line.kind === 'hunk') {
+          hunkIndex += 1;
+          const thisHunk = hunkIndex;
+          const rangeEnd = line.text.indexOf('@@', 2);
+          const hunkText = rangeEnd === -1 ? line.text : line.text.slice(0, rangeEnd + 2);
           return (
             <div key={index} className="diff-line diff-line-hunk" role="row">
-              <span className="diff-hunk-text">{line.text}</span>
+              <span className="diff-hunk-text">{hunkText}</span>
+              {hunkActions && (
+                <span className="diff-hunk-actions">
+                  {onUnstageHunk ? (
+                    <button
+                      type="button"
+                      className="pill-btn pill-btn-red diff-hunk-btn"
+                      title="Unstage this hunk"
+                      onClick={() => onUnstageHunk(thisHunk)}
+                    >
+                      Unstage Hunk
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="pill-btn pill-btn-red diff-hunk-btn"
+                        title="Discard this hunk"
+                        onClick={() => onDiscardHunk?.(thisHunk)}
+                      >
+                        Discard Hunk
+                      </button>
+                      <button
+                        type="button"
+                        className="pill-btn pill-btn-green diff-hunk-btn"
+                        title="Stage this hunk"
+                        onClick={() => onStageHunk?.(thisHunk)}
+                      >
+                        Stage Hunk
+                      </button>
+                    </>
+                  )}
+                </span>
+              )}
             </div>
           );
         }

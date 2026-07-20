@@ -4724,10 +4724,34 @@ body.is-row-resizing {
   background: var(--control-bg);
 }
 
+.diff-line-hunk {
+  align-items: center;
+}
+
 .diff-hunk-text {
+  flex: 1 1 auto;
   padding: 2px 12px;
   color: var(--primary);
   white-space: pre-wrap;
+}
+
+/* Stage/discard pills pinned to the right edge of the hunk row, staying put
+   while the diff scrolls horizontally. Always visible. */
+.diff-hunk-actions {
+  position: sticky;
+  right: 0;
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 2px 8px;
+  background: var(--control-bg);
+}
+
+/* Slightly denser than a stock pill, with room for the leading icon. */
+.diff-hunk-btn {
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
 }
 
 /* File view uses a single, slightly wider line-number gutter. */

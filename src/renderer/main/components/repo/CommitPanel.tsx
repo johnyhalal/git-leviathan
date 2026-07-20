@@ -1005,6 +1005,27 @@ function WorkingChanges({
     [requestConfirm, repoPath, activeDiff, onStatusChange, onCloseDiff],
   );
 
+  const deleteFile = useCallback(
+    (file: DisplayFile) => {
+      requestConfirm({
+        message: `Delete “${file.path}”? It will be moved to the trash.`,
+        actions: [
+          {
+            label: 'Delete file',
+            busyLabel: 'Deleting…',
+            tone: 'danger',
+            onClick: async () => {
+              // The file's diff is about to vanish, so drop back to the list first.
+              if (activeDiff?.path === file.path) onCloseDiff();
+              onStatusChange(await window.api.repo.deleteFile(repoPath, file.path));
+            },
+          },
+        ],
+      });
+    },
+    [requestConfirm, repoPath, activeDiff, onStatusChange, onCloseDiff],
+  );
+
   // The three "Ignore" submenu rows for a file: the file itself, its extension,
   // and its parent directory — each appends a rule to .gitignore. The extension
   // and directory rows drop out when the file has neither.
@@ -1439,6 +1460,8 @@ function WorkingChanges({
               : { label: 'Unstage file', onClick: () => void unstage(fileMenu.file.path) },
             { label: 'Ignore', submenu: ignoreSubmenu(fileMenu.file) },
             { label: 'Discard changes', danger: true, onClick: () => discardFile(fileMenu.file) },
+            'separator',
+            { label: 'Delete file', danger: true, onClick: () => deleteFile(fileMenu.file) },
           ]}
         />
       )}
