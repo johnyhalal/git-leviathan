@@ -162,6 +162,8 @@ export type CloneResult =
 export interface LocalBranchInfo {
   /** Full short name, e.g. "feature/sidebar". */
   name: string;
+  /** The upstream (tracking) branch's short name, e.g. "origin/main"; '' when none. */
+  upstream: string;
   /** Whether this is the checked-out branch. */
   current: boolean;
   /** Commits ahead of its upstream (0 when none or no upstream). */

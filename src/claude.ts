@@ -204,6 +204,28 @@ export function formatCommitUsage(usage: CommitUsage): string {
   );
 }
 
+/** The Conventional Commits types we anchor the header on when de-preambling. */
+const COMMIT_TYPES =
+  'feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert';
+/** A valid first line: "<type>[optional (scope)][optional !]: <description>". */
+const COMMIT_HEADER_RE = new RegExp(
+  `^(?:${COMMIT_TYPES})(?:\\([^)]+\\))?!?: .+`,
+);
+
+/**
+ * Strip any conversational preamble the model prepends despite instructions
+ * (e.g. "Here is the commit message:" or "The commit message:"). Because a valid
+ * message MUST start with a Conventional Commits header, we drop everything up to
+ * the first line that matches one. If no such line exists we return the message
+ * unchanged rather than risk throwing away a legitimately-formatted message.
+ */
+function stripCommitPreamble(message: string): string {
+  const lines = message.split(/\r?\n/);
+  const start = lines.findIndex((line) => COMMIT_HEADER_RE.test(line.trim()));
+  if (start <= 0) return message.trim();
+  return lines.slice(start).join('\n').trim();
+}
+
 /**
  * Parse the `--output-format json` envelope into the message plus its token
  * usage. Falls back to treating the raw stdout as the message (with no usage)
@@ -218,11 +240,13 @@ function parseCommitResult(stdout: string): CommitMessageResult {
   } catch {
     parsed = null;
   }
-  if (!parsed || typeof parsed.result !== 'string') return { message: trimmed };
+  if (!parsed || typeof parsed.result !== 'string') {
+    return { message: stripCommitPreamble(trimmed) };
+  }
 
   const u = parsed.usage ?? {};
   return {
-    message: parsed.result.trim(),
+    message: stripCommitPreamble(parsed.result.trim()),
     usage: {
       inputTokens: u.input_tokens ?? 0,
       outputTokens: u.output_tokens ?? 0,

@@ -373,6 +373,7 @@ export function App() {
             repoPath={activeTab.repoPath}
             onError={(title, message) => showToast(title, message, 'error')}
             onNotice={(title, message) => showToast(title, message, 'info')}
+            onSuccess={(title, message) => showToast(title, message, 'green')}
             onOpenSettings={(section) => {
               setSettingsSection(section);
               setSettingsOpen(true);

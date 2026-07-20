@@ -786,19 +786,21 @@ const nonEmptyLines = (text: string): string[] =>
   text.split('\n').filter((line) => line.length > 0);
 
 async function readLocalBranches(cwd: string): Promise<LocalBranchInfo[]> {
-  // %(HEAD) is "*" for the current branch; %(upstream:track) yields text like
-  // "[ahead 2, behind 1]", "[ahead 2]", "[gone]" or empty.
+  // %(HEAD) is "*" for the current branch; %(upstream:short) is the tracking
+  // branch like "origin/main" (empty when none); %(upstream:track) yields text
+  // like "[ahead 2, behind 1]", "[ahead 2]", "[gone]" or empty.
   const out = await runGit(cwd, [
     'for-each-ref',
-    '--format=%(HEAD)\t%(refname:short)\t%(upstream:track)',
+    '--format=%(HEAD)\t%(refname:short)\t%(upstream:short)\t%(upstream:track)',
     'refs/heads',
   ]);
   return nonEmptyLines(out).map((line) => {
-    const [head, name, track = ''] = line.split('\t');
+    const [head, name, upstream = '', track = ''] = line.split('\t');
     const ahead = /ahead (\d+)/.exec(track);
     const behind = /behind (\d+)/.exec(track);
     return {
       name,
+      upstream,
       current: head === '*',
       ahead: ahead ? Number(ahead[1]) : 0,
       behind: behind ? Number(behind[1]) : 0,

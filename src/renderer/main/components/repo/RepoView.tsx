@@ -23,6 +23,8 @@ interface RepoViewProps {
   onError?: (title: string, message: string) => void;
   /** Surface an informational note (e.g. a merge that was already up to date). */
   onNotice?: (title: string, message: string) => void;
+  /** Surface a success (e.g. a completed push/pull) as a green toast. */
+  onSuccess?: (title: string, message: string) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
 }
@@ -40,6 +42,7 @@ export function RepoView({
   repoPath,
   onError,
   onNotice,
+  onSuccess,
   onOpenSettings,
 }: RepoViewProps) {
   void title;
@@ -248,11 +251,18 @@ export function RepoView({
     if (result.status === 'ok') {
       closeDiff();
       reload();
+      const head = refs?.localBranches.find((b) => b.current);
+      onSuccess?.(
+        'Pushed successfully',
+        head?.upstream
+          ? `“${head.name}” pushed to “${head.upstream}”.`
+          : 'Changes pushed to the remote.',
+      );
     } else if (result.status === 'needs-upstream')
       return { remote: result.remote, branch: result.branch };
     else onError?.('Push failed', result.message);
     return null;
-  }, [pushing, repoPath, reload, closeDiff, onError]);
+  }, [pushing, repoPath, reload, closeDiff, onError, onSuccess, refs]);
 
   // Publish a branch that has no upstream to `remote`, setting it as the upstream.
   // Runs after the user confirms the toolbar's "publish branch" bar. Reloads on
@@ -266,12 +276,13 @@ export function RepoView({
       if (result.status === 'ok') {
         closeDiff();
         reload();
+        onSuccess?.('Branch published', `“${branch}” published to “${remote}/${remoteBranch}”.`);
         return;
       }
       onError?.('Push failed', result.message);
       throw new Error(result.message);
     },
-    [repoPath, reload, closeDiff, onError],
+    [repoPath, reload, closeDiff, onError, onSuccess],
   );
 
   // Pull/fetch the current branch; reload on success (HEAD, log and ahead/behind
@@ -285,9 +296,18 @@ export function RepoView({
       if (result.status === 'ok') {
         closeDiff();
         reload();
+        const head = refs?.localBranches.find((b) => b.current);
+        if (mode === 'fetch-all') onSuccess?.('Fetched', 'Fetched all remotes.');
+        else
+          onSuccess?.(
+            'Pulled successfully',
+            head?.upstream
+              ? `“${head.name}” updated from “${head.upstream}”.`
+              : 'Pulled from the remote.',
+          );
       } else await surfaceConflictsOrError('Pull failed', result.message);
     },
-    [pulling, repoPath, reload, closeDiff, surfaceConflictsOrError],
+    [pulling, repoPath, reload, closeDiff, surfaceConflictsOrError, onSuccess, refs],
   );
 
   const checkout = useCallback(
