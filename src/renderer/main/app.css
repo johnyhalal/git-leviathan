@@ -2141,18 +2141,15 @@ h1 {
   white-space: nowrap;
 }
 
-/* Designed tooltip: an elevated bubble shown below the host on hover/focus.
-   Reusable — put `tooltip-host` + `data-tooltip="…"` on any element. */
-.tooltip-host {
-  position: relative;
-}
-
-.tooltip-host::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 50%;
-  z-index: 60;
+/* Designed tooltip: one global bubble that follows the cursor (see
+   components/TooltipLayer.tsx), keyed off `data-tooltip`. Being fixed-position
+   and portaled to <body>, it escapes any `overflow` ancestor that would clip an
+   anchored tooltip. `tooltip-host` is kept as an inert marker on call sites; the
+   layer triggers purely on the `data-tooltip` attribute. */
+.tooltip-bubble {
+  position: fixed;
+  z-index: 1100;
+  max-width: 320px;
   padding: 8px 12px 6px;
   background: var(--bg);
   color: var(--fg);
@@ -2161,41 +2158,22 @@ h1 {
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
   font-size: 12px;
   font-weight: 500;
-  line-height: 1.2;
-  white-space: nowrap;
-  opacity: 0;
+  line-height: 1.3;
+  white-space: normal;
+  overflow-wrap: anywhere;
   pointer-events: none;
-  transform: translateX(-50%) translateY(4px);
-  transition: opacity 0.12s ease, transform 0.12s ease;
-  transition-delay: 0s;
+  animation: tooltip-fade-in 0.12s ease;
 }
 
-/* Little arrow, filled to match the bubble so it reads as one shape. */
-.tooltip-host::before {
-  content: '';
-  position: absolute;
-  top: calc(100% + 3px);
-  left: 50%;
-  z-index: 61;
-  border: 5px solid transparent;
-  border-bottom-color: var(--bg-elev);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-50%);
-  transition: opacity 0.12s ease;
-}
-
-.tooltip-host:hover::after,
-.tooltip-host:focus-visible::after {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-  transition-delay: 0.35s;
-}
-
-.tooltip-host:hover::before,
-.tooltip-host:focus-visible::before {
-  opacity: 1;
-  transition-delay: 0.35s;
+@keyframes tooltip-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Branch selector dropdown. */
@@ -3685,7 +3663,7 @@ body.is-col-resizing .commit-th {
 }
 
 /* Wraps the graph SVG so an HTML tooltip host can be absolutely placed over the
-   avatar node (SVG elements can't carry the CSS `tooltip-host` pseudo-elements). */
+   avatar node (a `data-tooltip` hit-area the SVG element can't carry itself). */
 .commit-graph-wrap {
   position: relative;
 }
@@ -3696,22 +3674,6 @@ body.is-col-resizing .commit-th {
   position: absolute;
   display: block;
   border-radius: 50%;
-}
-
-/* The avatar hugs the cell's left edge, so anchor its tooltip (and arrow) to the
-   left and let it extend rightward instead of centering — which would clip. */
-.commit-graph-avatar-tip.tooltip-host::after {
-  left: 0;
-  transform: translateX(0) translateY(4px);
-}
-
-.commit-graph-avatar-tip.tooltip-host:hover::after,
-.commit-graph-avatar-tip.tooltip-host:focus-visible::after {
-  transform: translateX(0) translateY(0);
-}
-
-.commit-graph-avatar-tip.tooltip-host::before {
-  left: 50%;
 }
 
 .commit-date,
@@ -3753,8 +3715,19 @@ body.is-col-resizing .commit-th {
 .commit-panel-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 12px;
+}
+
+/* The hashline, message and meta keep their natural height; only the file list
+   below them scrolls, so the header context stays pinned while files overflow. */
+.commit-panel-body > .commit-detail-hashline,
+.commit-panel-body > .commit-amend,
+.commit-panel-body > .commit-detail-message,
+.commit-panel-body > .commit-detail-meta {
+  flex: 0 0 auto;
 }
 
 /* Warn that uncommitted work is waiting while a past commit is being viewed. */
@@ -3830,23 +3803,6 @@ body.is-col-resizing .commit-th {
 .commit-discard-btn:disabled {
   opacity: 0.4;
   cursor: default;
-}
-
-/* Anchor the discard tooltip to the button's left edge instead of centering it,
-   so the bubble opens rightward into the panel rather than being clipped by its
-   left edge; the arrow still points at the (left-hugging) button. */
-.commit-discard-btn.tooltip-host::after {
-  left: 0;
-  transform: translateX(0) translateY(4px);
-}
-
-.commit-discard-btn.tooltip-host:hover::after,
-.commit-discard-btn.tooltip-host:focus-visible::after {
-  transform: translateX(0) translateY(0);
-}
-
-.commit-discard-btn.tooltip-host::before {
-  left: 12px;
 }
 
 .commit-changes-summary {
@@ -3953,7 +3909,6 @@ body.is-row-resizing {
 .commit-detail-message {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   width: 100%;
   margin: 0 0 16px;
   padding: 8px 10px;
@@ -3966,7 +3921,16 @@ body.is-row-resizing {
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
-  min-height: 100px;
+  height: 150px;
+}
+
+.commit-detail-message-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .commit-detail-message:hover {
@@ -4145,10 +4109,23 @@ body.is-row-resizing {
 
 /* --- File lists (shared by detail + staging) --- */
 .commit-files {
-  margin-bottom: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The scrollable file list; the header/toolbar above it stays pinned. A small
+   inset keeps the last row clear of the container's bottom edge. */
+.commit-files-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 4px;
 }
 
 .commit-files-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4345,16 +4322,6 @@ body.is-row-resizing {
 
 .commit-file:hover {
   background: var(--control-bg);
-}
-
-/* File paths can be long; wrap the designed tooltip and cap it to the row width
-   so it stays inside the (overflow-clipped) commit panel instead of being cut
-   off at the edge. */
-.commit-file.tooltip-host::after {
-  white-space: normal;
-  max-width: calc(100% - 12px);
-  overflow-wrap: anywhere;
-  text-align: left;
 }
 
 .commit-file-status {
@@ -4903,26 +4870,6 @@ body.is-row-resizing {
    disabled (a disabled control gets no hover). Sits inline in the trailing row. */
 .commit-generate-tip {
   display: inline-flex;
-}
-
-/* The panel sits at the window's bottom edge, so open the bubble upward and
-   point its arrow down, rather than the default downward placement. */
-.commit-generate-tip.tooltip-host::after {
-  top: auto;
-  bottom: calc(100% + 8px);
-  transform: translateX(-50%) translateY(-4px);
-}
-
-.commit-generate-tip.tooltip-host:hover::after,
-.commit-generate-tip.tooltip-host:focus-visible::after {
-  transform: translateX(-50%) translateY(0);
-}
-
-.commit-generate-tip.tooltip-host::before {
-  top: auto;
-  bottom: calc(100% + 3px);
-  border-bottom-color: transparent;
-  border-top-color: var(--bg-elev);
 }
 
 /* Small inline loading spinner (icon-sized). */

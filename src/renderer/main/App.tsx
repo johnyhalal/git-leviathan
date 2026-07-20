@@ -10,6 +10,7 @@ import {
 import { Settings } from './components/Settings';
 import { CloneDialog } from './components/CloneDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
+import { TooltipLayer } from './components/TooltipLayer';
 import { RepoView } from './components/repo/RepoView';
 import { ActivityLog } from './components/repo/ActivityLog';
 import { GearIcon, FeedbackIcon } from '../../../assets/icons';
@@ -440,6 +441,7 @@ export function App() {
       )}
 
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      <TooltipLayer />
     </div>
   );
 }

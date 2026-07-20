@@ -470,32 +470,34 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
           </label>
         </div>
       </div>
-      {sorted === null ? (
-        <p className="commit-files-empty">Loading…</p>
-      ) : sorted.length === 0 ? (
-        <p className="commit-files-empty">No file changes</p>
-      ) : effectiveMode === 'tree' ? (
-        <div className="commit-tree">
-          <DirNode
-            dir={buildTree(sorted)}
-            depth={0}
-            asc={asc}
-            collapsed={collapsed}
-            onToggle={toggleDir}
-            onOpenFile={openFile}
-            activePath={activePath}
-          />
-        </div>
-      ) : (
-        sorted.map((file) => (
-          <FileRow
-            key={file.path}
-            file={file}
-            onOpen={() => openFile(file)}
-            selected={file.path === activePath}
-          />
-        ))
-      )}
+      <div className="commit-files-list">
+        {sorted === null ? (
+          <p className="commit-files-empty">Loading…</p>
+        ) : sorted.length === 0 ? (
+          <p className="commit-files-empty">No file changes</p>
+        ) : effectiveMode === 'tree' ? (
+          <div className="commit-tree">
+            <DirNode
+              dir={buildTree(sorted)}
+              depth={0}
+              asc={asc}
+              collapsed={collapsed}
+              onToggle={toggleDir}
+              onOpenFile={openFile}
+              activePath={activePath}
+            />
+          </div>
+        ) : (
+          sorted.map((file) => (
+            <FileRow
+              key={file.path}
+              file={file}
+              onOpen={() => openFile(file)}
+              selected={file.path === activePath}
+            />
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -695,10 +697,12 @@ function CommitDetail({
               }
             }}
           >
-            <span className="commit-detail-summary">{splitMessage(message).subject}</span>
-            {splitMessage(message).body && (
-              <span className="commit-detail-description">{splitMessage(message).body}</span>
-            )}
+            <div className="commit-detail-message-scroll">
+              <span className="commit-detail-summary">{splitMessage(message).subject}</span>
+              {splitMessage(message).body && (
+                <span className="commit-detail-description">{splitMessage(message).body}</span>
+              )}
+            </div>
           </div>
         )}
         <div className="commit-detail-meta">
