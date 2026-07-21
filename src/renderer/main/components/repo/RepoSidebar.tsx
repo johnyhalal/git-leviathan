@@ -18,10 +18,15 @@ import {
   PullRequestIcon,
   TrayIcon,
   TagIcon,
+  WorktreeIcon,
 } from '../../../../../assets/icons';
 import { RemoteAvatar } from './RemoteAvatar';
 import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
 import { StashContextMenu, type StashMenuTarget } from './StashContextMenu';
+import {
+  WorktreeContextMenu,
+  type WorktreeMenuTarget,
+} from './WorktreeContextMenu';
 import type {
   GitflowConfig,
   GitflowConfigResult,
@@ -35,12 +40,14 @@ import type {
   RepoRefs,
   StashInfo,
   TagInfo,
+  WorktreeInfo,
 } from '../../../../types/ipc';
 import { CollapsibleSection } from './CollapsibleSection';
 import { PullRequestDialog } from './PullRequestDialog';
 import { NewPullRequestDialog } from './NewPullRequestDialog';
 import { GitflowStartDialog } from './GitflowStartDialog';
 import { GitflowSettingsDialog } from './GitflowSettingsDialog';
+import { WorktreeDialog, type WorktreeBranchOption } from './WorktreeDialog';
 
 const cx = (...parts: (string | false | undefined)[]) =>
   parts.filter(Boolean).join(' ');
@@ -433,6 +440,93 @@ function StashRow({
   );
 }
 
+function WorktreeRow({
+  worktree,
+  id,
+  active,
+  onSelect,
+  onOpen,
+  onOpenMenu,
+}: RowProps & {
+  worktree: WorktreeInfo;
+  /** Open the worktree's folder as a repository in a new tab. */
+  onOpen: (path: string) => void;
+  /** Open the worktree context menu at the given point. */
+  onOpenMenu: (target: WorktreeMenuTarget, x: number, y: number) => void;
+}) {
+  const target: WorktreeMenuTarget = {
+    path: worktree.path,
+    branch: worktree.branch,
+    isMain: worktree.isMain,
+    isCurrent: worktree.isCurrent,
+    locked: worktree.locked,
+  };
+  const detail = worktree.bare
+    ? 'bare'
+    : worktree.branch ?? (worktree.head ? `detached @ ${worktree.head}` : 'detached');
+  // The menu offers open actions unless this is the current worktree, and
+  // remove/lock unless it's the main one — so it's empty (and hidden) only for the
+  // main worktree while it's the one open here.
+  const hasMenu = !worktree.isCurrent || !worktree.isMain;
+  return (
+    <div
+      className={cx(
+        'repo-list-item',
+        active === id && 'is-active',
+        worktree.isCurrent && 'is-current',
+      )}
+      style={{ paddingLeft: indent(0) }}
+      onContextMenu={(event) => {
+        if (!hasMenu) return;
+        event.preventDefault();
+        onOpenMenu(target, event.clientX, event.clientY);
+      }}
+    >
+      {worktree.isCurrent && (
+        <span className="repo-branch-check" aria-label="Current worktree">
+          <CheckIcon size={14} />
+        </span>
+      )}
+      <button
+        type="button"
+        className="repo-row-main tooltip-host"
+        aria-current={worktree.isCurrent ? 'true' : undefined}
+        onClick={() => onSelect(id)}
+        onDoubleClick={() => {
+          if (!worktree.isCurrent) onOpen(worktree.path);
+        }}
+        data-tooltip={
+          worktree.isCurrent
+            ? worktree.path
+            : `Double-click to open ${worktree.path} in a new tab`
+        }
+      >
+        {/* The main worktree is the repository itself — a plain branch icon;
+            linked worktrees get the tree icon. */}
+        {worktree.isMain ? <BranchIcon size={14} /> : <WorktreeIcon size={14} />}
+        <span className="repo-list-label">
+          {detail}
+          {worktree.locked && <span className="repo-worktree-locked"> (locked)</span>}
+        </span>
+      </button>
+      {hasMenu && (
+        <button
+          type="button"
+          className="repo-row-action tooltip-host"
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            onOpenMenu(target, rect.right, rect.bottom);
+          }}
+          data-tooltip="Worktree actions"
+          aria-label="Worktree actions"
+        >
+          <MoreIcon size={16} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 // --- Sidebar ----------------------------------------------------------------
 
 /**
@@ -444,6 +538,8 @@ type GitflowBaseRow =
   | { kind: 'remote'; branch: RemoteBranchInfo };
 
 interface RepoSidebarProps {
+  /** Absolute path of the open repository (drives the worktree dialog defaults). */
+  repoPath: string;
   /** The repo's refs, or null while still loading. */
   refs: RepoRefs | null;
   /**
@@ -478,6 +574,16 @@ interface RepoSidebarProps {
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
   onStashDrop: (index: number) => void;
+  /** A worktree was added via the dialog: refs should reload. */
+  onWorktreeAdded: () => void;
+  /** Remove the worktree at `path`; `force` when dirty, `deleteBranch` to drop its branch. */
+  onWorktreeRemove: (path: string, force: boolean, deleteBranch: boolean) => void;
+  /** Lock (`lock: true`) or unlock the worktree at `path`. */
+  onWorktreeLock: (path: string, lock: boolean) => void;
+  /** Open a worktree's folder as a repository in the current tab. */
+  onOpenWorktreeHere: (path: string) => void;
+  /** Open a worktree's folder as a repository in a new tab. */
+  onOpenWorktreeInNewTab: (path: string) => void;
   /** The repo's gitflow config, or null when it hasn't been configured yet. */
   gitflowConfig: GitflowConfig | null;
   /** Persist the repo's gitflow config; resolves with the saved config or error. */
@@ -500,6 +606,7 @@ interface RepoSidebarProps {
  * which is a separate feature.
  */
 export function RepoSidebar({
+  repoPath,
   refs,
   onSelectRef,
   onSelectStash,
@@ -512,6 +619,11 @@ export function RepoSidebar({
   onStashApply,
   onStashPop,
   onStashDrop,
+  onWorktreeAdded,
+  onWorktreeRemove,
+  onWorktreeLock,
+  onOpenWorktreeHere,
+  onOpenWorktreeInNewTab,
   gitflowConfig,
   onGitflowSaveConfig,
   onGitflowStart,
@@ -543,6 +655,19 @@ export function RepoSidebar({
   } | null>(null);
   const openStashMenu = useCallback(
     (target: StashMenuTarget, x: number, y: number) => setStashMenu({ target, x, y }),
+    [],
+  );
+  // Whether the "add a worktree" dialog is open.
+  const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
+  // The open/remove menu opened by right-clicking a worktree row; null when closed.
+  const [worktreeMenu, setWorktreeMenu] = useState<{
+    target: WorktreeMenuTarget;
+    x: number;
+    y: number;
+  } | null>(null);
+  const openWorktreeMenu = useCallback(
+    (target: WorktreeMenuTarget, x: number, y: number) =>
+      setWorktreeMenu({ target, x, y }),
     [],
   );
 
@@ -577,6 +702,8 @@ export function RepoSidebar({
   const localBranches = refs?.localBranches ?? [];
   const remoteBranches = refs?.remoteBranches ?? [];
   const stashes = refs?.stashes ?? [];
+  // All worktrees, including the main one (flagged as current in its row).
+  const worktrees = refs?.worktrees ?? [];
   const currentBranch = localBranches.find((branch) => branch.current)?.name;
 
   // The repo's gitflow branches for the section body, or null when unconfigured:
@@ -661,6 +788,37 @@ export function RepoSidebar({
         tree: buildTree(branches, (branch) => branch.name),
       }));
   }, [remoteBranches, refs?.remotes]);
+
+  // Branches offered in the worktree dialog's "Check out" select: every local
+  // branch by its bare name, then every remote branch as "<remote>/<name>", each
+  // group sorted. Remote entries carry the bare name as the default branch name.
+  const worktreeBranchOptions = useMemo<WorktreeBranchOption[]>(() => {
+    const byName = (a: { ref: string }, b: { ref: string }) =>
+      a.ref.localeCompare(b.ref, undefined, { sensitivity: 'base' });
+    const locals: WorktreeBranchOption[] = localBranches
+      .map((branch) => ({ ref: branch.name, remote: false, name: branch.name }))
+      .sort(byName);
+    const remotes: WorktreeBranchOption[] = remoteBranches
+      .map((branch) => ({
+        ref: `${branch.remote}/${branch.name}`,
+        remote: true,
+        // Default local branch name for a remote checkout, e.g. "origin-dev", so
+        // it doesn't collide with an existing local branch of the bare name.
+        name: `${branch.remote}-${branch.name}`,
+      }))
+      .sort(byName);
+    return [...locals, ...remotes];
+  }, [localBranches, remoteBranches]);
+
+  // Branches already checked out in a worktree (the main one included) — git won't
+  // let the same branch be checked out in a second worktree, so the dialog blocks it.
+  const occupiedBranches = useMemo(
+    () =>
+      (refs?.worktrees ?? [])
+        .map((worktree) => worktree.branch)
+        .filter((branch): branch is string => !!branch),
+    [refs?.worktrees],
+  );
 
   const placeholder = (empty: string) => (
     <p className="repo-section-empty">{loading ? 'Loading…' : empty}</p>
@@ -941,6 +1099,38 @@ export function RepoSidebar({
             ))}
       </CollapsibleSection>
 
+      <CollapsibleSection
+        label="Worktrees"
+        icon={<WorktreeIcon size={16} />}
+        count={worktrees.length}
+        action={
+          <button
+            type="button"
+            className="pill-btn pill-btn-green repo-worktree-new tooltip-host"
+            aria-label="Add a worktree"
+            data-tooltip="Add a worktree"
+            onClick={() => setWorktreeDialogOpen(true)}
+          >
+            <PlusIcon size={12} />
+          </button>
+        }
+        {...sectionProps('worktrees')}
+      >
+        {worktrees.length === 0
+          ? placeholder('No worktrees')
+          : worktrees.map((worktree) => (
+              <WorktreeRow
+                key={worktree.path}
+                worktree={worktree}
+                id={`worktree:${worktree.path}`}
+                active={active}
+                onSelect={setActive}
+                onOpen={onOpenWorktreeInNewTab}
+                onOpenMenu={openWorktreeMenu}
+              />
+            ))}
+      </CollapsibleSection>
+
       {stashes.length > 0 && (
         <CollapsibleSection
           label="Stashes"
@@ -1062,6 +1252,28 @@ export function RepoSidebar({
           onApply={onStashApply}
           onPop={onStashPop}
           onDrop={onStashDrop}
+        />
+      )}
+      {worktreeMenu && (
+        <WorktreeContextMenu
+          target={worktreeMenu.target}
+          x={worktreeMenu.x}
+          y={worktreeMenu.y}
+          onClose={() => setWorktreeMenu(null)}
+          onOpenHere={onOpenWorktreeHere}
+          onOpenInNewTab={onOpenWorktreeInNewTab}
+          onRemove={onWorktreeRemove}
+          onLock={onWorktreeLock}
+        />
+      )}
+      {worktreeDialogOpen && (
+        <WorktreeDialog
+          repoPath={repoPath}
+          branches={worktreeBranchOptions}
+          occupiedBranches={occupiedBranches}
+          onClose={() => setWorktreeDialogOpen(false)}
+          onCreated={onWorktreeAdded}
+          onOpen={onOpenWorktreeInNewTab}
         />
       )}
       {detailPr && dialogProvider && (

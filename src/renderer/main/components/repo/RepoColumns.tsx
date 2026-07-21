@@ -74,6 +74,16 @@ interface RepoColumnsProps {
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
   onStashDrop: (index: number) => void;
+  /** A worktree was added via the dialog: refs should reload. */
+  onWorktreeAdded: () => void;
+  /** Remove the worktree at `path`; `force` when dirty, `deleteBranch` to drop its branch. */
+  onWorktreeRemove: (path: string, force: boolean, deleteBranch: boolean) => void;
+  /** Lock (`lock: true`) or unlock the worktree at `path`. */
+  onWorktreeLock: (path: string, lock: boolean) => void;
+  /** Open a worktree's folder as a repository in the current tab. */
+  onOpenWorktreeHere: (path: string) => void;
+  /** Open a worktree's folder as a repository in a new tab. */
+  onOpenWorktreeInNewTab: (path: string) => void;
   /** The repo's gitflow config, or null when it hasn't been configured yet. */
   gitflowConfig: GitflowConfig | null;
   /** Persist the repo's gitflow config; resolves with the saved config or an error. */
@@ -122,6 +132,11 @@ export function RepoColumns({
   onStashApply,
   onStashPop,
   onStashDrop,
+  onWorktreeAdded,
+  onWorktreeRemove,
+  onWorktreeLock,
+  onOpenWorktreeHere,
+  onOpenWorktreeInNewTab,
   gitflowConfig,
   onGitflowSaveConfig,
   onGitflowStart,
@@ -225,6 +240,7 @@ export function RepoColumns({
     <div className="repo-columns">
       <div className="repo-column repo-column-left" style={{ width: leftWidth }}>
         <RepoSidebar
+          repoPath={repoPath}
           refs={refs}
           onSelectRef={selectRefTip}
           onSelectStash={selectStash}
@@ -237,6 +253,11 @@ export function RepoColumns({
           onStashApply={onStashApply}
           onStashPop={onStashPop}
           onStashDrop={onStashDrop}
+          onWorktreeAdded={onWorktreeAdded}
+          onWorktreeRemove={onWorktreeRemove}
+          onWorktreeLock={onWorktreeLock}
+          onOpenWorktreeHere={onOpenWorktreeHere}
+          onOpenWorktreeInNewTab={onOpenWorktreeInNewTab}
           gitflowConfig={gitflowConfig}
           onGitflowSaveConfig={onGitflowSaveConfig}
           onGitflowStart={onGitflowStart}
