@@ -14,6 +14,7 @@ import { TooltipLayer } from './components/TooltipLayer';
 import { RepoView } from './components/repo/RepoView';
 import { ActivityLog } from './components/repo/ActivityLog';
 import { GearIcon, FeedbackIcon } from '../../../assets/icons';
+import kofiLogo from '../../../assets/kofi_logo.webp';
 import type { RepoInfo, UpdateInfo, UpdateStatus } from '../../types/ipc';
 import { DEFAULT_UPDATE_CHECK_INTERVAL } from '../../types/ipc';
 
@@ -413,6 +414,15 @@ export function App() {
           <ActivityLog repoPath={activeTab.repoPath} openSignal={activityLogSignal} />
         )}
         {renderUpdateButton(update, updateStatus)}
+        <button
+            type="button"
+            className="statusbar-kofi tooltip-host"
+            data-tooltip="Support GitLeviathan on Ko-fi"
+            aria-label="Support GitLeviathan on Ko-fi"
+            onClick={() => window.api.app.openExternal('https://ko-fi.com/U7U51T7A0E')}
+        >
+          <img src={kofiLogo} alt="" width={16} height={13} />
+        </button>
         <button
           type="button"
           className="statusbar-feedback tooltip-host"

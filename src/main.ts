@@ -4956,8 +4956,10 @@ function registerAppIpc(): void {
     } catch {
       return;
     }
-    // Only ever hand https URLs on a supported host to the OS browser.
-    if (parsed.protocol === 'https:' && providerForHost(parsed.hostname)) {
+    // Only ever hand https URLs on an allowed host to the OS browser: the
+    // supported git providers, plus the project's Ko-fi (support) page.
+    const allowed = providerForHost(parsed.hostname) || parsed.hostname === 'ko-fi.com';
+    if (parsed.protocol === 'https:' && allowed) {
       void shell.openExternal(url);
     }
   });

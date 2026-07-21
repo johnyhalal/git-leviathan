@@ -403,6 +403,32 @@ textarea,
   background: var(--control-bg);
 }
 
+/* Ko-fi support link, sat between the feedback button and the version. */
+.statusbar-kofi {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 2px 0 0;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  opacity: 0.75;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease;
+}
+
+.statusbar-kofi img {
+  display: block;
+}
+
+.statusbar-kofi:hover {
+  opacity: 1;
+  background: var(--control-bg);
+}
+
 /* Update notice, centered in the strip independent of the right-pinned version. */
 .statusbar-update {
   position: absolute;
