@@ -68,7 +68,7 @@ export function RepoStart({
       {/* A div (not a button) so real remove/star <button>s can nest inside
           it — nesting <button> in <button> is invalid HTML. */}
       <div
-        className="repo-recent-item"
+        className="repo-recent-item tooltip-host"
         role="button"
         tabIndex={0}
         onClick={() => onSelectRecent(repo)}
@@ -78,18 +78,18 @@ export function RepoStart({
             onSelectRecent(repo);
           }
         }}
-        title={repo.path}
+        data-tooltip={repo.path}
       >
         <button
           type="button"
-          className={`repo-recent-star${repo.favorite ? ' is-favorite' : ''}`}
+          className={`repo-recent-star tooltip-host${repo.favorite ? ' is-favorite' : ''}`}
           aria-label={
             repo.favorite
               ? `Unstar ${repo.name}`
               : `Star ${repo.name} as favorite`
           }
           aria-pressed={repo.favorite ?? false}
-          title={repo.favorite ? 'Remove from favorites' : 'Add to favorites'}
+          data-tooltip={repo.favorite ? 'Remove from favorites' : 'Add to favorites'}
           onClick={(event) => {
             event.stopPropagation();
             onToggleFavorite(repo);
@@ -103,9 +103,9 @@ export function RepoStart({
         </span>
         <button
           type="button"
-          className="repo-recent-remove"
+          className="repo-recent-remove tooltip-host"
           aria-label={`Remove ${repo.name} from recent`}
-          title="Remove from recent"
+          data-tooltip="Remove from recent"
           onClick={(event) => {
             event.stopPropagation();
             onRemoveRecent(repo);

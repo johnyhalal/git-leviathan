@@ -931,6 +931,12 @@ h1 {
   background: rgba(0, 0, 0, 0.35);
 }
 
+/* A dialog layered under another one drops its own backdrop so the two don't
+   compound into a darker dim — the topmost overlay provides the single scrim. */
+.settings-overlay.is-suspended {
+  background: transparent;
+}
+
 .settings-panel {
   display: flex;
   flex-direction: column;
@@ -2540,58 +2546,103 @@ body.is-col-resizing {
 }
 
 /* Gitflow action panel. */
-.repo-gitflow {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 2px 8px 6px;
+/* The "start a gitflow branch" dialog reuses the settings overlay/panel shell;
+   it just sizes itself to its content like the other compact dialogs. */
+.gitflow-start-dialog {
+  width: min(420px, 100%);
+  height: auto;
+  max-height: calc(100vh - 48px);
 }
 
-.repo-gitflow-action {
+/* Segmented feature/release/hotfix selector. */
+.gitflow-kind-tabs {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--control-bg);
+}
+
+.gitflow-kind-tab {
+  flex: 1 1 0;
+  padding: 5px 0;
   border: none;
   border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gitflow-kind-tab:hover:not(.is-active) {
+  color: var(--fg);
+}
+
+.gitflow-kind-tab.is-active {
+  background: var(--bg-elev);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.gitflow-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.gitflow-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+/* The name row: a fixed prefix chip abutting the editable name input. */
+.gitflow-name-row {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.gitflow-name-row:focus-within {
+  border-color: var(--selection);
+}
+
+.gitflow-prefix {
+  flex: 0 0 auto;
+  max-width: 45%;
+  padding: 7px 8px;
+  border-right: 1px solid var(--border);
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gitflow-name-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 9px;
+  border: none;
   background: transparent;
   color: var(--fg);
   font-family: inherit;
   font-size: 13px;
-  text-align: left;
-  cursor: pointer;
+  outline: none;
 }
 
-.repo-gitflow-action > svg {
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-}
-
-.repo-gitflow-action:hover:not(:disabled),
-.repo-gitflow-action.is-open {
-  background: var(--control-bg);
-}
-
-.repo-gitflow-action:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.repo-gitflow-action > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.repo-gitflow-input {
-  display: block;
-  box-sizing: border-box;
-  width: auto;
-  margin: 2px 8px 4px 24px;
-  padding: 5px 8px;
+.gitflow-source {
+  width: 100%;
+  padding: 7px 9px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--bg-elev);
   color: var(--fg);
   font-family: inherit;
@@ -2599,8 +2650,78 @@ body.is-col-resizing {
   outline: none;
 }
 
-.repo-gitflow-input:focus {
+.gitflow-source:focus {
   border-color: var(--selection);
+}
+
+/* Footer: settings gear + optional Finish on the left, Cancel/Start on the right. */
+.gitflow-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.gitflow-dialog-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gitflow-dialog-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.gitflow-settings-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.gitflow-settings-link:hover {
+  background: var(--control-bg);
+  color: var(--fg);
+}
+
+.gitflow-finish-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gitflow-finish-btn:hover {
+  background: var(--control-bg);
+  color: var(--fg);
+}
+
+.gitflow-finish-btn > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitflow-start-btn {
+  text-transform: capitalize;
 }
 
 .repo-stash-item {
@@ -2774,20 +2895,51 @@ body.is-col-resizing {
   display: inline-flex;
 }
 
-.repo-pr-new {
+.repo-pr-new,
+.repo-gitflow-new {
   padding: 2px 2px;
 }
 
-/* Swap the plus button and the count on hover: the "new pull request" button
-   stays hidden until the header is hovered, and the count fades out to make
-   room for it. Scoped to the PR section via the presence of a header action. */
-.repo-section-header-row:has(.repo-section-header-action) .repo-pr-new {
+/* Per-field helper text under a gitflow settings input. */
+.gitflow-form-hint {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* Gitflow settings: two columns — base branches on the left, prefixes on the
+   right. Each column stacks its fields; the pr-form gap already spaces them. */
+.gitflow-dialog {
+  width: min(640px, 100%);
+  height: auto;
+  max-height: calc(100vh - 48px);
+}
+
+.gitflow-form-columns {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.gitflow-form-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Swap the plus button and the count on hover: the header action button stays
+   hidden until the header is hovered, and the count fades out to make room for
+   it. Scoped to sections that carry a header action (pull requests, gitflow). */
+.repo-section-header-row:has(.repo-section-header-action) .repo-pr-new,
+.repo-section-header-row:has(.repo-section-header-action) .repo-gitflow-new {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
 }
 
-.repo-section-header-row:has(.repo-section-header-action):hover .repo-pr-new {
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-pr-new,
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-gitflow-new {
   opacity: 1;
   pointer-events: auto;
 }
@@ -4180,6 +4332,7 @@ body.is-row-resizing {
 }
 
 .commit-files-sort,
+.commit-files-viewall,
 .commit-files-viewswitch button {
   display: inline-flex;
   gap: 6px;
@@ -4198,6 +4351,7 @@ body.is-row-resizing {
 }
 
 .commit-files-sort:hover,
+.commit-files-viewall:hover,
 .commit-files-viewswitch button:hover {
   color: var(--fg);
   border-color: var(--fg-muted);
@@ -4220,7 +4374,8 @@ body.is-row-resizing {
   gap: 6px;
 }
 
-.commit-files-viewswitch button.active {
+.commit-files-viewswitch button.active,
+.commit-files-viewall.active {
   color: var(--primary);
   border-color: var(--primary);
   background: color-mix(in srgb, var(--primary) 12%, transparent);
@@ -4228,18 +4383,6 @@ body.is-row-resizing {
 
 .commit-files-viewall {
   justify-self: end;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  cursor: pointer;
-  user-select: none;
-}
-
-.commit-files-viewall input {
-  accent-color: var(--primary);
-  cursor: pointer;
 }
 
 /* Unchanged files (only shown in "View all files" mode) read as muted, so the

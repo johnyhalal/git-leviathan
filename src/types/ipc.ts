@@ -248,6 +248,31 @@ export interface UndoRedoState {
 export type GitflowKind = 'feature' | 'release' | 'hotfix';
 
 /**
+ * The repo's gitflow branch/prefix configuration, stored in the repository's own
+ * git config under the standard git-flow keys (so it interoperates with the
+ * `git flow` CLI and travels with the repo):
+ * - `mainBranch`    → `gitflow.branch.master`  (production/main branch)
+ * - `developBranch` → `gitflow.branch.develop` (integration branch)
+ * - `*Prefix`       → `gitflow.prefix.<kind>`  (keeps its trailing `/`)
+ *
+ * A topic branch is `<kindPrefix><name>`. A repo is considered "configured" when
+ * `developBranch` is present; until then the sidebar's `+` opens the settings
+ * dialog instead of the actions popover.
+ */
+export interface GitflowConfig {
+  mainBranch: string;
+  developBranch: string;
+  featurePrefix: string;
+  releasePrefix: string;
+  hotfixPrefix: string;
+}
+
+/** Result of saving the gitflow config: the stored config, or an error message. */
+export type GitflowConfigResult =
+  | { status: 'ok'; config: GitflowConfig }
+  | { status: 'error'; message: string };
+
+/**
  * How the toolbar's pull action reconciles with the upstream:
  * - `ff`        — `git pull` (fast-forward when possible, else a merge)
  * - `ff-only`   — `git pull --ff-only` (refuse anything but a fast-forward)
@@ -459,7 +484,18 @@ export interface MarkResolvedResult {
 }
 
 /** Outcome of a commit. */
-export type CommitResult = { status: 'ok' } | { status: 'error'; message: string };
+export type CommitResult =
+  | { status: 'ok' }
+  | {
+      status: 'error';
+      message: string;
+      /**
+       * The failure was a repository hook (pre-commit/commit-msg) rejecting the
+       * commit — its full output is in the activity log, so the renderer offers a
+       * shortcut there instead of dumping raw hook noise into the toast.
+       */
+      hookFailure?: boolean;
+    };
 
 /**
  * Outcome of a push. Beyond ok/error it can report `needs-upstream`: the current
@@ -513,6 +549,10 @@ export const RepoChannels = {
   deleteFile: 'repo:delete-file',
   /** Renderer -> main (invoke): commit the staged changes. */
   commit: 'repo:commit',
+  /** Renderer -> main (invoke): read this repo's persisted commit-message draft. */
+  commitDraft: 'repo:commit-draft',
+  /** Renderer -> main (invoke): persist (or clear) this repo's commit-message draft. */
+  setCommitDraft: 'repo:set-commit-draft',
   /** Renderer -> main (invoke): read HEAD's full commit message (for amend prefill). */
   headMessage: 'repo:head-message',
   /** Renderer -> main (invoke): reword a commit's message (amend / rebase). */
@@ -553,6 +593,10 @@ export const RepoChannels = {
   stashPop: 'repo:stash-pop',
   /** Renderer -> main (invoke): discard a stash (`git stash drop`). */
   stashDrop: 'repo:stash-drop',
+  /** Renderer -> main (invoke): read the repo's gitflow config, or null when unset. */
+  gitflowConfig: 'repo:gitflow-config',
+  /** Renderer -> main (invoke): save the repo's gitflow config to its git config. */
+  gitflowSaveConfig: 'repo:gitflow-save-config',
   /** Renderer -> main (invoke): start a gitflow topic branch. */
   gitflowStart: 'repo:gitflow-start',
   /** Renderer -> main (invoke): finish the current gitflow topic branch. */
@@ -1034,6 +1078,14 @@ export interface RepoApi {
    * rewrites HEAD in place (`git commit --amend`) instead of adding a new commit.
    */
   commit(path: string, message: string, amend?: boolean): Promise<CommitResult>;
+  /**
+   * Read this repo's persisted commit-message draft — the unsent message typed
+   * into the commit panel, kept in the git dir so it survives restarts (empty
+   * string if none / not a repo).
+   */
+  commitDraft(path: string): Promise<string>;
+  /** Persist this repo's commit-message draft; an empty message clears it. */
+  setCommitDraft(path: string, message: string): Promise<void>;
   /** Read HEAD's full commit message (empty string if none / not a repo). */
   headMessage(path: string): Promise<string>;
   /**
@@ -1161,11 +1213,28 @@ export interface RepoApi {
   /** Discard the stash at `index` (`git stash drop`). Returns fresh refs. */
   stashDrop(path: string, index: number): Promise<RefsMutationResult>;
   /**
-   * Start a gitflow topic branch: create and check out `<kind>/<name>` off the
-   * appropriate base (develop for feature/release, main for hotfix — falling
-   * back to the current branch when the base doesn't exist). Returns fresh refs.
+   * Read the repo's gitflow config (branch names + topic prefixes) from its git
+   * config, or `null` when the repo hasn't been configured yet.
    */
-  gitflowStart(path: string, kind: GitflowKind, name: string): Promise<RefsMutationResult>;
+  gitflowConfig(path: string): Promise<GitflowConfig | null>;
+  /**
+   * Persist the repo's gitflow config to its git config (the standard git-flow
+   * keys). Returns the stored config, or an error when a value is rejected.
+   */
+  gitflowSaveConfig(path: string, config: GitflowConfig): Promise<GitflowConfigResult>;
+  /**
+   * Start a gitflow topic branch: create and check out `<prefix><name>` off
+   * `source` (any branch/ref the caller picked — e.g. the configured develop
+   * branch or the current branch). When `source` is omitted or empty, falls back
+   * to the configured base (develop for feature/release, main for hotfix, then
+   * the current branch). Returns fresh refs.
+   */
+  gitflowStart(
+    path: string,
+    kind: GitflowKind,
+    name: string,
+    source?: string,
+  ): Promise<RefsMutationResult>;
   /**
    * Finish the current gitflow topic branch: merge it (no-ff) into its base
    * branch, delete the topic branch, and leave the base checked out. Errors if

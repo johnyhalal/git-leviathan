@@ -128,9 +128,9 @@ export function ConflictResolver({
                 return (
                   <button
                     key={file.path}
-                    className={`merge-rail-item${file.path === selected ? ' is-active' : ''}`}
+                    className={`merge-rail-item tooltip-host${file.path === selected ? ' is-active' : ''}`}
                     onClick={() => setSelected(file.path)}
-                    title={file.path}
+                    data-tooltip={file.path}
                   >
                     <span className="merge-rail-name">
                       {dir && <span className="merge-rail-dir">{dir}</span>}
@@ -170,11 +170,11 @@ export function ConflictResolver({
                     Use theirs (whole file)
                   </button>
                 </div>
-                <button
-                  className="clone-submit"
-                  disabled={busy || !canMarkResolved}
-                  onClick={() => merged !== null && void resolve({ kind: 'content', text: merged })}
-                  title={
+                {/* Tooltip lives on the wrapper span: a disabled button gets no
+                    hover, so the "why it's disabled" hint would never show. */}
+                <span
+                  className="tooltip-host"
+                  data-tooltip={
                     kind === 'both-deleted' || content?.binary
                       ? 'Pick a whole side for this file'
                       : merged === null
@@ -182,8 +182,14 @@ export function ConflictResolver({
                         : undefined
                   }
                 >
-                  Mark resolved
-                </button>
+                  <button
+                    className="clone-submit"
+                    disabled={busy || !canMarkResolved}
+                    onClick={() => merged !== null && void resolve({ kind: 'content', text: merged })}
+                  >
+                    Mark resolved
+                  </button>
+                </span>
               </footer>
             )}
           </div>

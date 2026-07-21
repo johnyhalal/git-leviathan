@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type UIEvent } from 'react';
 import type {
   CommitLogEntry,
   ConflictFile,
+  GitflowConfig,
+  GitflowConfigResult,
   GitflowKind,
   RepoRefs,
   WorkingStatus,
@@ -72,8 +74,12 @@ interface RepoColumnsProps {
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
   onStashDrop: (index: number) => void;
-  /** Start a gitflow topic branch of `kind` named `name`. */
-  onGitflowStart: (kind: GitflowKind, name: string) => void;
+  /** The repo's gitflow config, or null when it hasn't been configured yet. */
+  gitflowConfig: GitflowConfig | null;
+  /** Persist the repo's gitflow config; resolves with the saved config or an error. */
+  onGitflowSaveConfig: (config: GitflowConfig) => Promise<GitflowConfigResult>;
+  /** Start a gitflow topic branch of `kind` named `name`, based off `source`. */
+  onGitflowStart: (kind: GitflowKind, name: string, source: string) => void;
   /** Finish the current gitflow topic branch. */
   onGitflowFinish: () => void;
   onError?: (title: string, message: string) => void;
@@ -116,6 +122,8 @@ export function RepoColumns({
   onStashApply,
   onStashPop,
   onStashDrop,
+  gitflowConfig,
+  onGitflowSaveConfig,
   onGitflowStart,
   onGitflowFinish,
   onError,
@@ -229,6 +237,8 @@ export function RepoColumns({
           onStashApply={onStashApply}
           onStashPop={onStashPop}
           onStashDrop={onStashDrop}
+          gitflowConfig={gitflowConfig}
+          onGitflowSaveConfig={onGitflowSaveConfig}
           onGitflowStart={onGitflowStart}
           onGitflowFinish={onGitflowFinish}
           onOpenSettings={onOpenSettings}

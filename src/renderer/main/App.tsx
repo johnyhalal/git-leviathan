@@ -40,8 +40,8 @@ function renderUpdateButton(update: UpdateInfo | null, status: UpdateStatus) {
     return (
       <button
         type="button"
-        className="statusbar-update"
-        title="Restart to finish updating"
+        className="statusbar-update tooltip-host"
+        data-tooltip="Restart to finish updating"
         onClick={() => api.install()}
       >
         Restart to update{version ? ` (v${version})` : ''}
@@ -54,7 +54,7 @@ function renderUpdateButton(update: UpdateInfo | null, status: UpdateStatus) {
   // download-progress events, so we can't show a real percentage.
   if (status.state === 'downloading') {
     return (
-      <span className="statusbar-download" title="Downloading the update">
+      <span className="statusbar-download tooltip-host" data-tooltip="Downloading the update">
         <span>Downloading update{version ? ` v${version}` : ''}…</span>
         <span className="statusbar-progress" aria-hidden="true">
           <span className="statusbar-progress-bar" />
@@ -72,8 +72,8 @@ function renderUpdateButton(update: UpdateInfo | null, status: UpdateStatus) {
   return (
     <button
       type="button"
-      className="statusbar-update"
-      title={canAutoUpdate ? 'Download and install the update' : 'Open the release page'}
+      className="statusbar-update tooltip-host"
+      data-tooltip={canAutoUpdate ? 'Download and install the update' : 'Open the release page'}
       onClick={() => (canAutoUpdate ? api.download() : api.openRelease(update.releaseUrl))}
     >
       Update available (v{update.version})
@@ -92,6 +92,8 @@ export function App() {
   const [cloneOpen, setCloneOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastData[]>([]);
+  // Bumped to ask the status-bar ActivityLog to open (e.g. from a hook-failure toast).
+  const [activityLogSignal, setActivityLogSignal] = useState(0);
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
@@ -353,9 +355,9 @@ export function App() {
         <div className="topbar-actions">
           <button
             type="button"
-            className="icon-button"
+            className="icon-button tooltip-host"
             aria-label="Settings"
-            title="Settings"
+            data-tooltip="Settings"
             onClick={() => {
               setSettingsSection(undefined);
               setSettingsOpen(true);
@@ -371,7 +373,21 @@ export function App() {
           <RepoView
             title={activeTab.title}
             repoPath={activeTab.repoPath}
-            onError={(title, message) => showToast(title, message, 'error')}
+            onError={(title, message, opts) =>
+              showToast(
+                title,
+                message,
+                'error',
+                opts?.activityLog
+                  ? {
+                      action: {
+                        label: 'View log',
+                        onClick: () => setActivityLogSignal((n) => n + 1),
+                      },
+                    }
+                  : undefined,
+              )
+            }
             onNotice={(title, message) => showToast(title, message, 'info')}
             onSuccess={(title, message) => showToast(title, message, 'green')}
             onOpenSettings={(section) => {
@@ -393,12 +409,14 @@ export function App() {
       </main>
 
       <footer className="statusbar">
-        {activeTab.repoPath && <ActivityLog repoPath={activeTab.repoPath} />}
+        {activeTab.repoPath && (
+          <ActivityLog repoPath={activeTab.repoPath} openSignal={activityLogSignal} />
+        )}
         {renderUpdateButton(update, updateStatus)}
         <button
           type="button"
-          className="statusbar-feedback"
-          title="Report a bug or request a feature"
+          className="statusbar-feedback tooltip-host"
+          data-tooltip="Report a bug or request a feature"
           onClick={() => setFeedbackOpen(true)}
         >
           <FeedbackIcon size={13} />

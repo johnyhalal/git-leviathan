@@ -39,8 +39,8 @@ export function BranchSelect({ branch, branches, onSelect }: BranchSelectProps) 
     <div className="branch-select" ref={rootRef}>
       <button
         type="button"
-        className="repo-branch-pill"
-        title={branch}
+        className="repo-branch-pill tooltip-host"
+        data-tooltip={branch}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}

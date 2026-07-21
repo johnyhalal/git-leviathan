@@ -12,6 +12,8 @@ import {
   type RefsMutationResult,
   type UndoRedoState,
   type GitflowKind,
+  type GitflowConfig,
+  type GitflowConfigResult,
   type CloneProgress,
   type RepoActivityEvent,
   type CloneRequest,
@@ -129,6 +131,10 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.deleteFile, path, file) as Promise<WorkingStatus>,
     commit: (path: string, message: string, amend?: boolean) =>
       ipcRenderer.invoke(RepoChannels.commit, path, message, amend) as Promise<CommitResult>,
+    commitDraft: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.commitDraft, path) as Promise<string>,
+    setCommitDraft: (path: string, message: string) =>
+      ipcRenderer.invoke(RepoChannels.setCommitDraft, path, message) as Promise<void>,
     headMessage: (path: string) =>
       ipcRenderer.invoke(RepoChannels.headMessage, path) as Promise<string>,
     reword: (path: string, hash: string, message: string) =>
@@ -185,8 +191,12 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.stashPop, path, index) as Promise<RefsMutationResult>,
     stashDrop: (path: string, index: number) =>
       ipcRenderer.invoke(RepoChannels.stashDrop, path, index) as Promise<RefsMutationResult>,
-    gitflowStart: (path: string, kind: GitflowKind, name: string) =>
-      ipcRenderer.invoke(RepoChannels.gitflowStart, path, kind, name) as Promise<RefsMutationResult>,
+    gitflowConfig: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.gitflowConfig, path) as Promise<GitflowConfig | null>,
+    gitflowSaveConfig: (path: string, config: GitflowConfig) =>
+      ipcRenderer.invoke(RepoChannels.gitflowSaveConfig, path, config) as Promise<GitflowConfigResult>,
+    gitflowStart: (path: string, kind: GitflowKind, name: string, source?: string) =>
+      ipcRenderer.invoke(RepoChannels.gitflowStart, path, kind, name, source) as Promise<RefsMutationResult>,
     gitflowFinish: (path: string) =>
       ipcRenderer.invoke(RepoChannels.gitflowFinish, path) as Promise<RefsMutationResult>,
     mergeState: (path: string) =>

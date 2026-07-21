@@ -22,7 +22,6 @@ import {
   probeClaude,
   generateCommitMessage,
   claudeErrorMessage,
-  formatCommitUsage,
   isRunnable,
 } from './claude';
 import {
@@ -46,6 +45,8 @@ import {
   type RepoActivityEvent,
   type UndoRedoState,
   type GitflowKind,
+  type GitflowConfig,
+  type GitflowConfigResult,
   type StashInfo,
   type CommitLogEntry,
   type CommitRefDecoration,
@@ -771,6 +772,12 @@ async function validateBranchPair(
   return null;
 }
 
+/** Whether `ref` resolves to a commit in the repo (a branch, tag, or sha). */
+async function refExists(cwd: string, ref: string): Promise<boolean> {
+  const out = await runGit(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  return out.trim().length > 0;
+}
+
 /** The first of `candidates` that exists as a local branch, or null. */
 async function firstExistingBranch(
   cwd: string,
@@ -907,12 +914,72 @@ function hookFailureMessage(err: unknown): string | null {
   return null;
 }
 
+/**
+ * True when the repo has an executable hook among `names`. A pre-commit /
+ * commit-msg hook aborts a commit with only its *own* output — git adds no line
+ * of its own (unlike pre-push, which git names) — so we can't recognise the
+ * abort from stderr. Presence of an enabled hook is the signal instead; the
+ * hook's output has already streamed to the activity log, so callers can point
+ * the user there rather than surfacing raw hook noise in a toast.
+ */
+async function hasEnabledHook(cwd: string, names: string[]): Promise<boolean> {
+  const rel = (await runGit(cwd, ['rev-parse', '--git-path', 'hooks'])).trim();
+  if (!rel) return false;
+  const hooksDir = path.isAbsolute(rel) ? rel : path.join(cwd, rel);
+  for (const name of names) {
+    try {
+      await fs.promises.access(path.join(hooksDir, name), fs.constants.X_OK);
+      return true;
+    } catch {
+      // Missing or non-executable — try the next candidate.
+    }
+  }
+  return false;
+}
+
+/**
+ * True when a failed git child spoke in git's *own* voice (a `fatal:`/`error:`
+ * line or the well-known empty-commit phrasing) rather than leaving only a
+ * hook's output. Lets a commit distinguish "git rejected this" (show the
+ * message) from "a hook rejected this" (point at the activity log).
+ */
+function looksLikeNativeGitError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const rec = err as Record<string, unknown>;
+  const text = `${String(rec.stderr ?? '')}\n${String(rec.stdout ?? '')}`;
+  return (
+    /^\s*(fatal|error):/im.test(text) ||
+    /nothing to commit|no changes added to commit|working tree clean|changes not staged/i.test(text)
+  );
+}
+
+/**
+ * Strip ANSI escape sequences (SGR colors, cursor moves) from text. Hook runners
+ * like Pest emit richly-colored output; the raw escapes are noise in a toast.
+ */
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPE_RE, '');
+}
+
+/**
+ * Path of the file holding a repo's unsent commit-message draft, or '' when the
+ * git dir can't be resolved. It lives in the git dir (like git's own
+ * `COMMIT_EDITMSG`) rather than the work tree, so a saved draft never shows up
+ * as an untracked change.
+ */
+async function commitDraftFile(repoPath: string): Promise<string> {
+  const gitDir = (await runGit(repoPath, ['rev-parse', '--absolute-git-dir'])).trim();
+  return gitDir ? path.join(gitDir, 'GITLEVIATHAN_MSG') : '';
+}
+
 /** Pull a concise message out of a failed git exec (its last stderr line). */
 function gitErrorMessage(err: unknown, fallback: string): string {
   const hook = hookFailureMessage(err);
   if (hook) return hook;
   if (err && typeof err === 'object' && 'stderr' in err) {
-    const stderr = String((err as { stderr: unknown }).stderr ?? '').trim();
+    const stderr = stripAnsi(String((err as { stderr: unknown }).stderr ?? '')).trim();
     const lines = stderr.split('\n').map((line) => line.trim()).filter(Boolean);
     if (lines.length > 0) return lines[lines.length - 1];
   }
@@ -920,6 +987,82 @@ function gitErrorMessage(err: unknown, fallback: string): string {
 }
 
 const GITFLOW_KINDS: GitflowKind[] = ['feature', 'release', 'hotfix'];
+
+/** Fallback gitflow config for a repo that hasn't been configured. */
+const GITFLOW_DEFAULTS: GitflowConfig = {
+  mainBranch: 'main',
+  developBranch: 'develop',
+  featurePrefix: 'feature/',
+  releasePrefix: 'release/',
+  hotfixPrefix: 'hotfix/',
+};
+
+/** The git config key backing each `GitflowConfig` field. */
+const GITFLOW_CONFIG_KEYS: Record<keyof GitflowConfig, string> = {
+  mainBranch: 'gitflow.branch.master',
+  developBranch: 'gitflow.branch.develop',
+  featurePrefix: 'gitflow.prefix.feature',
+  releasePrefix: 'gitflow.prefix.release',
+  hotfixPrefix: 'gitflow.prefix.hotfix',
+};
+
+/**
+ * Read the repo's gitflow config from its git config. Returns `null` when the
+ * repo isn't configured (no `gitflow.branch.develop`); otherwise fills any empty
+ * key from `GITFLOW_DEFAULTS` so callers always get a complete config.
+ */
+async function readGitflowConfig(cwd: string): Promise<GitflowConfig | null> {
+  const read = async (key: string) =>
+    (await runGit(cwd, ['config', '--get', key])).trim();
+  const developBranch = await read(GITFLOW_CONFIG_KEYS.developBranch);
+  if (!developBranch) return null;
+  const [mainBranch, featurePrefix, releasePrefix, hotfixPrefix] = await Promise.all([
+    read(GITFLOW_CONFIG_KEYS.mainBranch),
+    read(GITFLOW_CONFIG_KEYS.featurePrefix),
+    read(GITFLOW_CONFIG_KEYS.releasePrefix),
+    read(GITFLOW_CONFIG_KEYS.hotfixPrefix),
+  ]);
+  return {
+    mainBranch: mainBranch || GITFLOW_DEFAULTS.mainBranch,
+    developBranch,
+    featurePrefix: featurePrefix || GITFLOW_DEFAULTS.featurePrefix,
+    releasePrefix: releasePrefix || GITFLOW_DEFAULTS.releasePrefix,
+    hotfixPrefix: hotfixPrefix || GITFLOW_DEFAULTS.hotfixPrefix,
+  };
+}
+
+/** The configured topic-branch prefix for a gitflow kind. */
+function gitflowPrefix(config: GitflowConfig, kind: GitflowKind): string {
+  return kind === 'feature'
+    ? config.featurePrefix
+    : kind === 'release'
+      ? config.releasePrefix
+      : config.hotfixPrefix;
+}
+
+/** The base branch a gitflow kind branches off / finishes into. */
+function gitflowBase(config: GitflowConfig, kind: GitflowKind): string {
+  return kind === 'hotfix' ? config.mainBranch : config.developBranch;
+}
+
+/** Which gitflow kind `branch` belongs to by its configured prefix, or null. */
+function gitflowKindOf(config: GitflowConfig, branch: string): GitflowKind | null {
+  return GITFLOW_KINDS.find((kind) => branch.startsWith(gitflowPrefix(config, kind))) ?? null;
+}
+
+/**
+ * Validate one gitflow config value bound for git config. Values are ref/prefix
+ * fragments, so keep them to a safe slug (letters, digits, `._/-`) that can't
+ * inject flags or shell metacharacters — the same guard used for topic names.
+ */
+function isGitflowValue(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    !value.startsWith('-') &&
+    /^[A-Za-z0-9._/-]+$/.test(value)
+  );
+}
 
 const PULL_MODES: PullMode[] = ['ff', 'ff-only', 'rebase', 'fetch-all'];
 
@@ -2895,9 +3038,51 @@ function registerRepoIpc(): void {
       try {
         await spawnGit(repoPath, args, 'commit');
       } catch (err) {
+        // A pre-commit / commit-msg hook aborts with only its own output (git
+        // adds no line of its own), which is noisy and often ANSI-styled in a
+        // toast. When such a hook is installed and git didn't speak up itself,
+        // treat it as a hook rejection and point the user at the activity log,
+        // where the hook's full output already streamed.
+        if (
+          !looksLikeNativeGitError(err) &&
+          (await hasEnabledHook(repoPath, ['pre-commit', 'commit-msg', 'prepare-commit-msg']))
+        ) {
+          return { status: 'error', message: 'A commit hook rejected the commit.', hookFailure: true };
+        }
         return { status: 'error', message: gitErrorMessage(err, 'Commit failed.') };
       }
       return { status: 'ok' };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.commitDraft,
+    async (_event, repoPath: unknown): Promise<string> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return '';
+      const file = await commitDraftFile(repoPath);
+      if (!file) return '';
+      try {
+        return await fs.promises.readFile(file, 'utf8');
+      } catch {
+        // No draft saved yet.
+        return '';
+      }
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.setCommitDraft,
+    async (_event, repoPath: unknown, message: unknown): Promise<void> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return;
+      if (typeof message !== 'string') return;
+      const file = await commitDraftFile(repoPath);
+      if (!file) return;
+      try {
+        if (message.length === 0) await fs.promises.rm(file, { force: true });
+        else await fs.promises.writeFile(file, message, 'utf8');
+      } catch {
+        // Best-effort persistence — a lost draft isn't worth an error dialog.
+      }
     },
   );
 
@@ -3343,12 +3528,63 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.gitflowConfig,
+    async (_event, repoPath: unknown): Promise<GitflowConfig | null> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return null;
+      return readGitflowConfig(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.gitflowSaveConfig,
+    async (_event, repoPath: unknown, config: unknown): Promise<GitflowConfigResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (!config || typeof config !== 'object') {
+        return { status: 'error', message: 'Invalid gitflow settings.' };
+      }
+      const raw = config as Record<keyof GitflowConfig, unknown>;
+      const fields: { key: keyof GitflowConfig; label: string }[] = [
+        { key: 'mainBranch', label: 'main branch' },
+        { key: 'developBranch', label: 'develop branch' },
+        { key: 'featurePrefix', label: 'feature prefix' },
+        { key: 'releasePrefix', label: 'release prefix' },
+        { key: 'hotfixPrefix', label: 'hotfix prefix' },
+      ];
+      const valid: GitflowConfig = { ...GITFLOW_DEFAULTS };
+      for (const { key, label } of fields) {
+        const value = typeof raw[key] === 'string' ? (raw[key] as string).trim() : '';
+        if (!isGitflowValue(value)) {
+          return { status: 'error', message: `Enter a valid ${label}.` };
+        }
+        valid[key] = value;
+      }
+      // Write each key to the repo's git config. These are local config writes,
+      // not ref mutations, so they don't go through mutateRepo.
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+      try {
+        for (const key of Object.keys(GITFLOW_CONFIG_KEYS) as (keyof GitflowConfig)[]) {
+          await execFileAsync(gitBin, ['config', GITFLOW_CONFIG_KEYS[key], valid[key]], {
+            cwd: repoPath,
+            env,
+          });
+        }
+      } catch (err) {
+        return { status: 'error', message: gitErrorMessage(err, 'Could not save gitflow settings.') };
+      }
+      return { status: 'ok', config: valid };
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.gitflowStart,
     async (
       _event,
       repoPath: unknown,
       kind: unknown,
       name: unknown,
+      source: unknown,
     ): Promise<RefsMutationResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
@@ -3361,15 +3597,33 @@ function registerRepoIpc(): void {
       if (!slug || !/^[A-Za-z0-9._/-]+$/.test(slug) || slug.startsWith('-')) {
         return { status: 'error', message: 'Enter a valid branch name.' };
       }
-      const branch = `${kind}/${slug}`;
+      const config = (await readGitflowConfig(repoPath)) ?? GITFLOW_DEFAULTS;
+      const branch = `${gitflowPrefix(config, kind)}${slug}`;
       if (await localBranchExists(repoPath, branch)) {
         return { status: 'error', message: `Branch “${branch}” already exists.` };
       }
-      // feature/release branch off develop; hotfix off main. Fall back to the
-      // current HEAD when the conventional base branch isn't present.
-      const bases =
-        kind === 'hotfix' ? ['main', 'master'] : ['develop'];
-      const base = await firstExistingBranch(repoPath, bases);
+      // Base the branch on the caller's chosen source when given (validated as a
+      // real ref so it can't inject flags/paths); otherwise fall back to the
+      // configured base — develop for feature/release, main for hotfix — then the
+      // conventional names, then the current HEAD.
+      let base: string | null;
+      const picked = typeof source === 'string' ? source.trim() : '';
+      if (picked) {
+        if (
+          picked.startsWith('-') ||
+          !/^[A-Za-z0-9._/-]+$/.test(picked) ||
+          !(await refExists(repoPath, picked))
+        ) {
+          return { status: 'error', message: 'Choose a valid source branch.' };
+        }
+        base = picked;
+      } else {
+        const bases =
+          kind === 'hotfix'
+            ? [config.mainBranch, 'main', 'master']
+            : [config.developBranch, 'develop'];
+        base = await firstExistingBranch(repoPath, bases);
+      }
       const args = base
         ? ['checkout', '-b', branch, base]
         : ['checkout', '-b', branch];
@@ -3383,20 +3637,24 @@ function registerRepoIpc(): void {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
       }
+      const config = (await readGitflowConfig(repoPath)) ?? GITFLOW_DEFAULTS;
       const branch = await currentBranchName(repoPath);
-      const kind = GITFLOW_KINDS.find((k) => branch.startsWith(`${k}/`));
+      const kind = gitflowKindOf(config, branch);
       if (!kind) {
         return {
           status: 'error',
           message: 'Not on a gitflow branch (feature/…, release/…, hotfix/…).',
         };
       }
-      const bases = kind === 'hotfix' ? ['main', 'master'] : ['develop'];
+      const bases =
+        kind === 'hotfix'
+          ? [config.mainBranch, 'main', 'master']
+          : [config.developBranch, 'develop'];
       const base = await firstExistingBranch(repoPath, bases);
       if (!base) {
         return {
           status: 'error',
-          message: `No base branch (${bases.join('/')}) to finish “${branch}” into.`,
+          message: `No base branch (${gitflowBase(config, kind)}) to finish “${branch}” into.`,
         };
       }
       // Switch to the base, merge the topic branch with a merge commit, then
@@ -4623,7 +4881,7 @@ function registerClaudeIpc(): void {
         .map((s) => s.trim())
         .filter(Boolean);
       try {
-        const { message, usage } = await generateCommitMessage(
+        const { message } = await generateCommitMessage(
           bin,
           diff,
           recentSubjects,
@@ -4631,18 +4889,6 @@ function registerClaudeIpc(): void {
         );
         if (!message.trim()) {
           return { status: 'error', message: 'Claude returned an empty message.' };
-        }
-        // Surface the model's token usage/cost in the repo's activity log so it
-        // sits alongside git output, not just the main-process console.
-        if (usage) {
-          emitActivity({
-            repoPath,
-            op: 'generate commit message',
-            kind: 'line',
-            stream: 'stdout',
-            text: `claude: ${formatCommitUsage(usage)}`,
-            ts: Date.now(),
-          });
         }
         return { status: 'ok', message: message.trim() };
       } catch (err) {

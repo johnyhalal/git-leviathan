@@ -156,9 +156,9 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd, onReorder }: 
           className="tabs-action">
         <button
           type="button"
-          className="tab-add"
+          className="tab-add tooltip-host"
           aria-label="New tab"
-          title="New tab"
+          data-tooltip="New tab"
           onClick={onAdd}
         >
           <PlusIcon />

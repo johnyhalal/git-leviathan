@@ -5,6 +5,12 @@ import { GLOBAL_ACTIVITY_PATH, type RepoActivityEvent } from '../../../../types/
 interface ActivityLogProps {
   /** The repo whose git activity this indicator shows; events for others are ignored. */
   repoPath: string;
+  /**
+   * A monotonically increasing counter; each increment opens the log popup.
+   * Lets an outside trigger (e.g. a hook-failure toast's "View log" button)
+   * pop the transcript without owning this component's internal state.
+   */
+  openSignal?: number;
 }
 
 /** One rendered row in the log: a command boundary or a line of git output. */
@@ -30,7 +36,7 @@ const MAX_RECORDS = 1000;
  * output (a `pre-commit` test run, a `pre-push` check). State is in-memory and
  * per session: it resets when the tab switches to another repo.
  */
-export function ActivityLog({ repoPath }: ActivityLogProps) {
+export function ActivityLog({ repoPath, openSignal }: ActivityLogProps) {
   const [records, setRecords] = useState<LogRecord[]>([]);
   const [running, setRunning] = useState<string | null>(null);
   // The outcome of the last finished command, for the status color.
@@ -62,6 +68,12 @@ export function ActivityLog({ repoPath }: ActivityLogProps) {
       });
     });
   }, [repoPath]);
+
+  // An outside trigger (the hook-failure toast) asked to open the transcript.
+  // Skip the initial 0 so the popup only opens on a real bump.
+  useEffect(() => {
+    if (openSignal) setOpen(true);
+  }, [openSignal]);
 
   // Keep the newest output in view while the popup is open.
   useLayoutEffect(() => {
@@ -108,9 +120,9 @@ export function ActivityLog({ repoPath }: ActivityLogProps) {
     <>
       <button
         type="button"
-        className={`activity-indicator activity-indicator--${state}`}
+        className={`activity-indicator activity-indicator--${state} tooltip-host`}
         onClick={() => setOpen(true)}
-        title="Show activity log"
+        data-tooltip="Show activity log"
       >
         <ListIcon />
         <span className="activity-indicator__summary">{summary}</span>

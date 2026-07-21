@@ -179,7 +179,7 @@ interface ClaudeJsonResult {
   usage?: ClaudeUsage;
 }
 
-/** Normalized token usage/cost for a single generation, for the activity log. */
+/** Normalized token usage/cost parsed from a single generation. */
 export interface CommitUsage {
   inputTokens: number;
   outputTokens: number;
@@ -192,16 +192,6 @@ export interface CommitUsage {
 export interface CommitMessageResult {
   message: string;
   usage?: CommitUsage;
-}
-
-/** One human-readable line summarizing a generation's token usage and cost. */
-export function formatCommitUsage(usage: CommitUsage): string {
-  const cost =
-    typeof usage.costUsd === 'number' ? `, cost $${usage.costUsd.toFixed(4)}` : '';
-  return (
-    `token usage — input ${usage.inputTokens}, output ${usage.outputTokens}, ` +
-    `cache read ${usage.cacheReadTokens}, cache write ${usage.cacheWriteTokens}${cost}`
-  );
 }
 
 /** The Conventional Commits types we anchor the header on when de-preambling. */

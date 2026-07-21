@@ -16,6 +16,7 @@ import {
   CertificateIcon,
   ChevronDownIcon,
   FolderIcon,
+  LayersIcon,
   ListIcon,
   MinusIcon,
   PencilIcon,
@@ -88,8 +89,8 @@ function SummaryCounter({ length }: { length: number }) {
   const remaining = SUMMARY_LIMIT - length;
   return (
     <span
-      className={`commit-summary-counter${remaining < 0 ? ' is-over' : ''}`}
-      title={`${SUMMARY_LIMIT}-character summary guideline`}
+      className={`commit-summary-counter tooltip-host${remaining < 0 ? ' is-over' : ''}`}
+      data-tooltip={`${SUMMARY_LIMIT}-character summary guideline`}
       aria-hidden="true"
     >
       {remaining}
@@ -161,11 +162,11 @@ function FileRow({ file, action, showDir = true, indent, onOpen, selected, onCon
       }
     >
       {file.status ? (
-        <span className={`commit-file-status status-${file.status}`} title={file.status}>
+        <span className={`commit-file-status status-${file.status} tooltip-host`} data-tooltip={file.status}>
           {statusIcon(file.status)}
         </span>
       ) : (
-        <span className="commit-file-status" title="unchanged" aria-hidden="true" />
+        <span className="commit-file-status tooltip-host" data-tooltip="unchanged" aria-hidden="true" />
       )}
       <span className="commit-file-path">
         {showDir && dirName(file.path) && (
@@ -176,8 +177,8 @@ function FileRow({ file, action, showDir = true, indent, onOpen, selected, onCon
       {action && (
         <button
           type="button"
-          className={`pill-btn commit-file-action${action.variant ? ` pill-btn-${action.variant}` : ''}`}
-          title={action.title}
+          className={`pill-btn commit-file-action tooltip-host${action.variant ? ` pill-btn-${action.variant}` : ''}`}
+          data-tooltip={action.title}
           aria-label={action.title}
           // Don't let the stage/unstage control also open the diff.
           onClick={(event) => {
@@ -406,19 +407,19 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
       <div className="commit-files-header commit-files-header-toolbar">
         <span className="commit-files-counts" aria-hidden="true">
           {counts.modified > 0 && (
-            <span className="commit-files-count commit-files-modified" title="Modified files">
+            <span className="commit-files-count commit-files-modified tooltip-host" data-tooltip="Modified files">
               <PencilIcon size={12} />
               {counts.modified} modified
             </span>
           )}
           {counts.added > 0 && (
-            <span className="commit-files-count commit-files-added" title="Added files">
+            <span className="commit-files-count commit-files-added tooltip-host" data-tooltip="Added files">
               <PlusIcon size={12} />
               {counts.added} added
             </span>
           )}
           {counts.deleted > 0 && (
-            <span className="commit-files-count commit-files-deleted" title="Deleted files">
+            <span className="commit-files-count commit-files-deleted tooltip-host" data-tooltip="Deleted files">
               <MinusIcon size={12} />
               {counts.deleted} deleted
             </span>
@@ -427,8 +428,8 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
         <div className="commit-files-controls">
           <button
             type="button"
-            className="commit-files-sort"
-            title={asc ? 'Sorted A→Z (click for Z→A)' : 'Sorted Z→A (click for A→Z)'}
+            className="commit-files-sort tooltip-host"
+            data-tooltip={asc ? 'Sorted A→Z (click for Z→A)' : 'Sorted Z→A (click for A→Z)'}
             aria-label="Toggle sort order"
             onClick={() => setAsc((v) => !v)}
           >
@@ -440,19 +441,17 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
             {!viewAll && (
               <button
                 type="button"
-                className={effectiveMode === 'list' ? 'active' : ''}
-                title="List view"
+                className={`${effectiveMode === 'list' ? 'active' : ''}`}
                 aria-pressed={effectiveMode === 'list'}
                 onClick={() => setMode('list')}
               >
                 <ListIcon size={14} />
-                List
+                Path
               </button>
             )}
             <button
               type="button"
-              className={effectiveMode === 'tree' ? 'active' : ''}
-              title="Tree view"
+              className={`${effectiveMode === 'tree' ? 'active' : ''}`}
               aria-pressed={effectiveMode === 'tree'}
               onClick={() => setMode('tree')}
             >
@@ -460,14 +459,16 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
               Tree
             </button>
           </div>
-          <label className="commit-files-viewall">
-            <input
-              type="checkbox"
-              checked={viewAll}
-              onChange={(event) => setViewAll(event.target.checked)}
-            />
-            View all files
-          </label>
+          <button
+            type="button"
+            className={`commit-files-viewall tooltip-host${viewAll ? ' active' : ''}`}
+            data-tooltip={viewAll ? 'Showing all files (click to show changes only)' : 'Show all files in this commit'}
+            aria-label="View all files"
+            aria-pressed={viewAll}
+            onClick={() => setViewAll((v) => !v)}
+          >
+            <LayersIcon size={14} />
+          </button>
         </div>
       </div>
       <div className="commit-files-list">
@@ -521,7 +522,7 @@ interface CommitDetailProps {
   onOpenDiff: (target: DiffTarget) => void;
   /** The diff target currently shown, so its row can be highlighted. */
   activeDiff: DiffTarget | null;
-  onError?: (title: string, message: string) => void;
+  onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
 }
 
 /** Read-only view of a selected historical commit; files load on demand. */
@@ -626,8 +627,8 @@ function CommitDetail({
         <div className="commit-detail-hashline">
           {signed && (
             <span
-              className="commit-detail-signed"
-              title="Signed commit (verified GPG signature)"
+              className="commit-detail-signed tooltip-host"
+              data-tooltip="Signed commit (verified GPG signature)"
             >
               <CertificateIcon size={14} />
             </span>
@@ -729,8 +730,8 @@ function CommitDetail({
                   <div key={parent}>
                     <button
                       type="button"
-                      className="commit-detail-parent-hash"
-                      title={`Select parent ${parent}`}
+                      className="commit-detail-parent-hash tooltip-host"
+                      data-tooltip={`Jump to commit in graph`}
                       onClick={() => onSelectCommit(parent)}
                     >
                       {parent.slice(0, 7)}
@@ -861,7 +862,7 @@ interface WorkingChangesProps {
   onCloseDiff: () => void;
   /** The diff target currently shown, so its row can be highlighted. */
   activeDiff: DiffTarget | null;
-  onError?: (title: string, message: string) => void;
+  onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
 }
@@ -1100,7 +1101,7 @@ function WorkingChanges({
     const result = await window.api.repo.commit(repoPath, message, amendCommit);
     if (result.status === 'error') {
       setBusy(false);
-      onError?.('Commit failed', result.message);
+      onError?.('Commit failed', result.message, { activityLog: result.hookFailure });
       return;
     }
     onMessageChange('');
@@ -1215,8 +1216,8 @@ function WorkingChanges({
       <div className="commit-changes-controls">
         <button
           type="button"
-          className="commit-files-sort"
-          title={asc ? 'Sorted A→Z (click for Z→A)' : 'Sorted Z→A (click for A→Z)'}
+          className="commit-files-sort tooltip-host"
+          data-tooltip={asc ? 'Sorted A→Z (click for Z→A)' : 'Sorted Z→A (click for A→Z)'}
           aria-label="Toggle sort order"
           onClick={() => setAsc((v) => !v)}
         >
@@ -1227,18 +1228,16 @@ function WorkingChanges({
         <div className="commit-files-viewswitch" role="group" aria-label="File view mode">
           <button
             type="button"
-            className={mode === 'list' ? 'active' : ''}
-            title="List view"
+            className={`${mode === 'list' ? 'active' : ''}`}
             aria-pressed={mode === 'list'}
             onClick={() => setMode('list')}
           >
             <ListIcon size={14} />
-            List
+            Path
           </button>
           <button
             type="button"
-            className={mode === 'tree' ? 'active' : ''}
-            title="Tree view"
+            className={`${mode === 'tree' ? 'active' : ''}`}
             aria-pressed={mode === 'tree'}
             onClick={() => setMode('tree')}
           >
@@ -1504,7 +1503,7 @@ interface CommitPanelProps {
   onCloseDiff: () => void;
   /** The diff target currently shown, so its file row can be highlighted. */
   activeDiff: DiffTarget | null;
-  onError?: (title: string, message: string) => void;
+  onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
 }

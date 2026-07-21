@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CommitLogEntry,
+  GitflowConfig,
+  GitflowConfigResult,
   GitflowKind,
   MergeState,
   PullMode,
@@ -20,7 +22,7 @@ interface RepoViewProps {
   title: string;
   repoPath: string;
   /** Surface a failure (e.g. a checkout or commit that couldn't complete). */
-  onError?: (title: string, message: string) => void;
+  onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
   /** Surface an informational note (e.g. a merge that was already up to date). */
   onNotice?: (title: string, message: string) => void;
   /** Surface a success (e.g. a completed push/pull) as a green toast. */
@@ -106,14 +108,40 @@ export function RepoView({
   const applyMergeRef = useRef(applyMergeState);
   applyMergeRef.current = applyMergeState;
 
-  // A typed-but-uncommitted message belongs to one repo; drop it when the tab
-  // switches to another (this view is reused across repos, not remounted).
+  // Which repo's draft `commitMessage` currently reflects. Guards the save
+  // effect below so the empty value shown while a draft loads can't clobber the
+  // stored draft (the load is async).
+  const draftLoadedFor = useRef<string | null>(null);
+
+  // A typed-but-uncommitted message belongs to one repo. Load its persisted
+  // draft when the tab switches to another repo (this view is reused across
+  // repos, not remounted), so a message survives restarts like staged files do.
   useEffect(() => {
+    let live = true;
+    draftLoadedFor.current = null;
     setCommitMessage('');
     setCreatingBranch(false);
     setResolverOpen(false);
     hadMergeRef.current = false;
+    void window.api.repo.commitDraft(repoPath).then((draft) => {
+      if (!live) return;
+      setCommitMessage(draft);
+      draftLoadedFor.current = repoPath;
+    });
+    return () => {
+      live = false;
+    };
   }, [repoPath]);
+
+  // Persist the draft (debounced) so it survives a restart. Skipped until the
+  // draft for this repo has loaded, so the initial empty value can't wipe it.
+  useEffect(() => {
+    if (draftLoadedFor.current !== repoPath) return;
+    const handle = window.setTimeout(() => {
+      void window.api.repo.setCommitDraft(repoPath, commitMessage);
+    }, 400);
+    return () => window.clearTimeout(handle);
+  }, [repoPath, commitMessage]);
 
   useEffect(() => {
     let live = true;
@@ -394,10 +422,34 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
+  // The repo's gitflow config (branch names + prefixes), or null when it hasn't
+  // been configured yet — which makes the sidebar's `+` open the settings dialog
+  // rather than the actions popover. Loaded per repo.
+  const [gitflowConfig, setGitflowConfig] = useState<GitflowConfig | null>(null);
+  useEffect(() => {
+    let live = true;
+    setGitflowConfig(null);
+    void window.api.repo.gitflowConfig(repoPath).then((config) => {
+      if (live) setGitflowConfig(config);
+    });
+    return () => {
+      live = false;
+    };
+  }, [repoPath]);
+
+  const gitflowSaveConfig = useCallback(
+    async (config: GitflowConfig): Promise<GitflowConfigResult> => {
+      const result = await window.api.repo.gitflowSaveConfig(repoPath, config);
+      if (result.status === 'ok') setGitflowConfig(result.config);
+      return result;
+    },
+    [repoPath],
+  );
+
   const gitflowStart = useCallback(
-    (kind: GitflowKind, name: string) =>
+    (kind: GitflowKind, name: string, source: string) =>
       runMutation('Gitflow start failed', () =>
-        window.api.repo.gitflowStart(repoPath, kind, name),
+        window.api.repo.gitflowStart(repoPath, kind, name, source),
       ),
     [repoPath, runMutation],
   );
@@ -596,7 +648,9 @@ export function RepoView({
           onStashApply={(index) => void stashApply(index)}
           onStashPop={(index) => void stashPop(index)}
           onStashDrop={(index) => void stashDrop(index)}
-          onGitflowStart={(kind, name) => void gitflowStart(kind, name)}
+          gitflowConfig={gitflowConfig}
+          onGitflowSaveConfig={gitflowSaveConfig}
+          onGitflowStart={(kind, name, source) => void gitflowStart(kind, name, source)}
           onGitflowFinish={() => void gitflowFinish()}
           onError={onError}
           onOpenSettings={onOpenSettings}

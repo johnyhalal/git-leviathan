@@ -344,12 +344,12 @@ function RefBadge({
 
   return (
     <span
-      className={classes.join(' ')}
+      className={`${classes.join(' ')} tooltip-host`}
       // Tie the badge to its branch's graph lane: a translucent lane color,
       // more opaque for the checked-out branch. Exposed as a var so the hover
       // overlay can composite it over an opaque surface (see app.css).
       style={{ '--ref-bg': badgeAlpha(color, group.isHead) } as CSSProperties}
-      title={
+      data-tooltip={
         checkoutable ? `Double-click to check out ${group.name}` : `${group.name} — ${refWhere(group)}`
       }
       draggable={draggable}
@@ -594,19 +594,19 @@ function WorkingMessageCell({ working }: { working: CellContext['working'] }) {
         />
         <span className="commit-working-counts" aria-hidden="true">
           {counts.modified > 0 && (
-            <span className="commit-working-count commit-working-modified" title="Modified files">
+            <span className="commit-working-count commit-working-modified tooltip-host" data-tooltip="Modified files">
               <PencilIcon size={12} />
               {counts.modified}
             </span>
           )}
           {counts.added > 0 && (
-            <span className="commit-working-count commit-working-added" title="Added files">
+            <span className="commit-working-count commit-working-added tooltip-host" data-tooltip="Added files">
               <PlusIcon size={12} />
               {counts.added}
             </span>
           )}
           {counts.deleted > 0 && (
-            <span className="commit-working-count commit-working-deleted" title="Deleted files">
+            <span className="commit-working-count commit-working-deleted tooltip-host" data-tooltip="Deleted files">
               <MinusIcon size={12} />
               {counts.deleted}
             </span>
@@ -757,7 +757,7 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
     case 'message':
       if (commit.working) return <WorkingMessageCell key={key} working={ctx.working} />;
       return (
-        <td key={key} className="commit-message" title={commit.subject}>
+        <td key={key} className="commit-message tooltip-host" data-tooltip={commit.subject}>
           <div className="commit-cell-inset">{commit.subject}</div>
         </td>
       );

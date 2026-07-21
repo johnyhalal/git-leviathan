@@ -136,18 +136,18 @@ export function DiffView({ repoPath, target, onClose, onWorkingStatusChange }: D
     <div className="diff-view">
       <header className="diff-header">
         <div className="diff-header-file">
-          <span className={`commit-file-status status-${status}`} title={status}>
+          <span className={`commit-file-status status-${status} tooltip-host`} data-tooltip={status}>
             {statusIcon(status)}
           </span>
-          <span className="diff-header-path" title={path}>
+          <span className="diff-header-path tooltip-host" data-tooltip={path}>
             {dirName(path) && <span className="diff-header-dir">{dirName(path)}</span>}
             <span className="diff-header-name">{baseName(path)}</span>
           </span>
         </div>
         <button
           type="button"
-          className="diff-close"
-          title="Close diff"
+          className="diff-close tooltip-host"
+          data-tooltip="Close diff"
           aria-label="Close diff"
           onClick={onClose}
         >
@@ -177,16 +177,16 @@ export function DiffView({ repoPath, target, onClose, onWorkingStatusChange }: D
         <div className="diff-steppers">
           <button
             type="button"
-            className="diff-step diff-step-prev"
-            title="Previous difference"
+            className="diff-step diff-step-prev tooltip-host"
+            data-tooltip="Previous difference"
             aria-label="Previous difference"
           >
             <ChevronDownIcon size={14} />
           </button>
           <button
             type="button"
-            className="diff-step diff-step-next"
-            title="Next difference"
+            className="diff-step diff-step-next tooltip-host"
+            data-tooltip="Next difference"
             aria-label="Next difference"
           >
             <ChevronDownIcon size={14} />
@@ -253,8 +253,8 @@ function DiffBody({
                   {onUnstageHunk ? (
                     <button
                       type="button"
-                      className="pill-btn pill-btn-red diff-hunk-btn"
-                      title="Unstage this hunk"
+                      className="pill-btn pill-btn-red diff-hunk-btn tooltip-host"
+                      data-tooltip="Unstage this hunk"
                       onClick={() => onUnstageHunk(thisHunk)}
                     >
                       Unstage Hunk
@@ -263,16 +263,16 @@ function DiffBody({
                     <>
                       <button
                         type="button"
-                        className="pill-btn pill-btn-red diff-hunk-btn"
-                        title="Discard this hunk"
+                        className="pill-btn pill-btn-red diff-hunk-btn tooltip-host"
+                        data-tooltip="Discard this hunk"
                         onClick={() => onDiscardHunk?.(thisHunk)}
                       >
                         Discard Hunk
                       </button>
                       <button
                         type="button"
-                        className="pill-btn pill-btn-green diff-hunk-btn"
-                        title="Stage this hunk"
+                        className="pill-btn pill-btn-green diff-hunk-btn tooltip-host"
+                        data-tooltip="Stage this hunk"
                         onClick={() => onStageHunk?.(thisHunk)}
                       >
                         Stage Hunk

@@ -23,6 +23,8 @@ import { RemoteAvatar } from './RemoteAvatar';
 import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
 import { StashContextMenu, type StashMenuTarget } from './StashContextMenu';
 import type {
+  GitflowConfig,
+  GitflowConfigResult,
   GitflowKind,
   IntegrationProvider,
   LocalBranchInfo,
@@ -37,6 +39,8 @@ import type {
 import { CollapsibleSection } from './CollapsibleSection';
 import { PullRequestDialog } from './PullRequestDialog';
 import { NewPullRequestDialog } from './NewPullRequestDialog';
+import { GitflowStartDialog } from './GitflowStartDialog';
+import { GitflowSettingsDialog } from './GitflowSettingsDialog';
 
 const cx = (...parts: (string | false | undefined)[]) =>
   parts.filter(Boolean).join(' ');
@@ -219,16 +223,16 @@ function LocalBranchRow({
       )}
       <button
         type="button"
-        className="repo-row-main"
+        className="repo-row-main tooltip-host"
         aria-current={branch.current ? 'true' : undefined}
         onClick={() => onSelect(id)}
         onDoubleClick={() => {
           if (!branch.current) onCheckout(branch.name);
         }}
-        title={`Double-click to check out ${branch.name}`}
+        data-tooltip={`Double-click to check out ${branch.name}`}
       >
         <BranchIcon size={14} />
-        <span className="repo-list-label" title={branch.name}>
+        <span className="repo-list-label tooltip-host" data-tooltip={branch.name}>
           {label}
         </span>
         {(branch.ahead > 0 || branch.behind > 0) && (
@@ -240,12 +244,12 @@ function LocalBranchRow({
       </button>
       <button
         type="button"
-        className="repo-row-action"
+        className="repo-row-action tooltip-host"
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           onOpenMenu(target, rect.right, rect.bottom);
         }}
-        title="Branch actions"
+        data-tooltip="Branch actions"
         aria-label="Branch actions"
       >
         <MoreIcon size={16} />
@@ -292,24 +296,24 @@ function RemoteBranchRow({
     >
       <button
         type="button"
-        className="repo-row-main"
+        className="repo-row-main tooltip-host"
         onClick={() => onSelect(id)}
         onDoubleClick={() => onCheckout(name, remote)}
-        title={`Double-click to check out ${name}`}
+        data-tooltip={`Double-click to check out ${name}`}
       >
         <BranchIcon size={14} />
-        <span className="repo-list-label" title={full}>
+        <span className="repo-list-label tooltip-host" data-tooltip={full}>
           {label}
         </span>
       </button>
       <button
         type="button"
-        className="repo-row-action"
+        className="repo-row-action tooltip-host"
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           onOpenMenu(target, rect.right, rect.bottom);
         }}
-        title="Branch actions"
+        data-tooltip="Branch actions"
         aria-label="Branch actions"
       >
         <MoreIcon size={16} />
@@ -328,19 +332,19 @@ function PullRequestRow({
   return (
     <button
       type="button"
-      className={cx('repo-list-item', active === id && 'is-active')}
+      className={cx('repo-list-item', 'tooltip-host', active === id && 'is-active')}
       style={{ paddingLeft: indent(0) }}
       onClick={() => {
         onSelect(id);
         onOpen(pr);
       }}
-      title={pr.title}
+      data-tooltip={pr.title}
     >
       <span className={cx('repo-pr-icon', `pr-state-${pr.state}`)}>
         <PullRequestIcon size={14} />
       </span>
       <span className="repo-pr-number">#{pr.number}</span>
-      <span className="repo-list-label" title={pr.title}>
+      <span className="repo-list-label tooltip-host" data-tooltip={pr.title}>
         {pr.title}
       </span>
       <span className={cx('repo-pr-state', `pr-state-${pr.state}`)}>
@@ -359,7 +363,7 @@ function TagRow({ tag, id, active, onSelect }: RowProps & { tag: TagInfo }) {
       onClick={() => onSelect(id)}
     >
       <TagIcon size={14} />
-      <span className="repo-list-label" title={tag.name}>
+      <span className="repo-list-label tooltip-host" data-tooltip={tag.name}>
         {tag.name}
       </span>
     </button>
@@ -392,9 +396,9 @@ function StashRow({
     >
       <button
         type="button"
-        className="repo-row-main"
+        className="repo-row-main tooltip-host"
         onClick={() => onSelect(id)}
-        title={stash.branch ? `${stash.message} on: ${stash.branch}` : stash.message}
+        data-tooltip={stash.branch ? `${stash.message} on: ${stash.branch}` : stash.message}
       >
         <TrayIcon size={14} />
         <span className="repo-list-label">
@@ -409,7 +413,7 @@ function StashRow({
       </button>
       <button
         type="button"
-        className="repo-row-action"
+        className="repo-row-action tooltip-host"
         // Anchor the menu at the button so a plain left-click opens the same
         // apply/pop/delete menu the right-click gesture does.
         onClick={(event) => {
@@ -420,7 +424,7 @@ function StashRow({
             rect.bottom,
           );
         }}
-        title="Stash actions"
+        data-tooltip="Stash actions"
         aria-label="Stash actions"
       >
         <MoreIcon size={16} />
@@ -429,99 +433,15 @@ function StashRow({
   );
 }
 
-const GITFLOW_ACTIONS: { kind: GitflowKind; label: string }[] = [
-  { kind: 'feature', label: 'Feature' },
-  { kind: 'release', label: 'Release' },
-  { kind: 'hotfix', label: 'Hotfix' },
-];
-
-/** Which gitflow kind the branch belongs to (feature/release/hotfix), or null. */
-function gitflowKindOf(branch: string | undefined): GitflowKind | null {
-  if (!branch) return null;
-  return GITFLOW_ACTIONS.find(({ kind }) => branch.startsWith(`${kind}/`))?.kind ?? null;
-}
+// --- Sidebar ----------------------------------------------------------------
 
 /**
- * Gitflow actions: three "Start …" buttons that reveal an inline name input,
- * and a "Finish" button enabled only while a gitflow topic branch is checked
- * out. Starting creates `<kind>/<name>`; finishing merges it back into its base.
+ * One base-branch row in the Gitflow list: the configured main/develop branch,
+ * resolved to whichever of local/remote it actually exists as.
  */
-function GitflowPanel({
-  currentBranch,
-  onStart,
-  onFinish,
-}: {
-  currentBranch: string | undefined;
-  onStart: (kind: GitflowKind, name: string) => void;
-  onFinish: () => void;
-}) {
-  const [openKind, setOpenKind] = useState<GitflowKind | null>(null);
-  const [name, setName] = useState('');
-
-  const currentKind = gitflowKindOf(currentBranch);
-
-  const submit = () => {
-    const trimmed = name.trim();
-    if (openKind && trimmed) {
-      onStart(openKind, trimmed);
-      setName('');
-      setOpenKind(null);
-    }
-  };
-
-  return (
-    <div className="repo-gitflow">
-      {GITFLOW_ACTIONS.map(({ kind, label }) => (
-        <Fragment key={kind}>
-          <button
-            type="button"
-            className={cx('repo-gitflow-action', openKind === kind && 'is-open')}
-            onClick={() => {
-              setName('');
-              setOpenKind((prev) => (prev === kind ? null : kind));
-            }}
-          >
-            <PlusIcon size={14} />
-            <span>Start {label}</span>
-          </button>
-          {openKind === kind && (
-            <input
-              className="repo-gitflow-input"
-              autoFocus
-              value={name}
-              placeholder={`${kind}/name`}
-              onChange={(event) => setName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') submit();
-                else if (event.key === 'Escape') {
-                  setOpenKind(null);
-                  setName('');
-                }
-              }}
-              onBlur={() => setOpenKind(null)}
-            />
-          )}
-        </Fragment>
-      ))}
-      <button
-        type="button"
-        className="repo-gitflow-action"
-        disabled={currentKind === null}
-        onClick={onFinish}
-        title={
-          currentKind
-            ? `Finish ${currentBranch} into its base branch`
-            : 'Check out a gitflow branch to finish it'
-        }
-      >
-        <CheckIcon size={14} />
-        <span>{currentKind ? `Finish ${currentBranch}` : 'Finish current'}</span>
-      </button>
-    </div>
-  );
-}
-
-// --- Sidebar ----------------------------------------------------------------
+type GitflowBaseRow =
+  | { kind: 'local'; branch: LocalBranchInfo }
+  | { kind: 'remote'; branch: RemoteBranchInfo };
 
 interface RepoSidebarProps {
   /** The repo's refs, or null while still loading. */
@@ -558,8 +478,12 @@ interface RepoSidebarProps {
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
   onStashDrop: (index: number) => void;
-  /** Start a gitflow topic branch of `kind` named `name`. */
-  onGitflowStart: (kind: GitflowKind, name: string) => void;
+  /** The repo's gitflow config, or null when it hasn't been configured yet. */
+  gitflowConfig: GitflowConfig | null;
+  /** Persist the repo's gitflow config; resolves with the saved config or error. */
+  onGitflowSaveConfig: (config: GitflowConfig) => Promise<GitflowConfigResult>;
+  /** Start a gitflow topic branch of `kind` named `name`, based off `source`. */
+  onGitflowStart: (kind: GitflowKind, name: string, source: string) => void;
   /** Finish the current gitflow topic branch. */
   onGitflowFinish: () => void;
   /** Open the settings modal, optionally to a section (e.g. Integrations). */
@@ -588,11 +512,17 @@ export function RepoSidebar({
   onStashApply,
   onStashPop,
   onStashDrop,
+  gitflowConfig,
+  onGitflowSaveConfig,
   onGitflowStart,
   onGitflowFinish,
   onOpenSettings,
 }: RepoSidebarProps) {
   const [active, setActive] = useState<string | null>(null);
+  // Whether the "start a gitflow branch" dialog is open.
+  const [gitflowStartOpen, setGitflowStartOpen] = useState(false);
+  // Whether the gitflow settings dialog is open.
+  const [gitflowSettingsOpen, setGitflowSettingsOpen] = useState(false);
   // The branch delete menu opened by right-clicking a branch row, anchored at the
   // click point; null when closed.
   const [contextMenu, setContextMenu] = useState<{
@@ -648,6 +578,55 @@ export function RepoSidebar({
   const remoteBranches = refs?.remoteBranches ?? [];
   const stashes = refs?.stashes ?? [];
   const currentBranch = localBranches.find((branch) => branch.current)?.name;
+
+  // The repo's gitflow branches for the section body, or null when unconfigured:
+  // the configured base branches (main + develop) followed by the topic branches
+  // grouped by kind (feature/release/hotfix) via their prefixes. Locals are always
+  // listed (a just-started branch that hasn't been pushed lives only here); remotes
+  // are listed too, minus any whose bare name already exists locally so a pushed
+  // branch isn't shown twice. `count` totals every row, for the header badge.
+  const gitflowBranches = useMemo(() => {
+    if (!gitflowConfig) return null;
+    const localNames = new Set(localBranches.map((branch) => branch.name));
+
+    // Base branches, in config order, preferring the local branch and falling
+    // back to a remote when the base exists only on a remote.
+    const bases: GitflowBaseRow[] = [];
+    const seenBase = new Set<string>();
+    for (const name of [gitflowConfig.mainBranch, gitflowConfig.developBranch]) {
+      if (seenBase.has(name)) continue;
+      seenBase.add(name);
+      const local = localBranches.find((branch) => branch.name === name);
+      if (local) {
+        bases.push({ kind: 'local', branch: local });
+        continue;
+      }
+      const remote = remoteBranches.find((branch) => branch.name === name);
+      if (remote) bases.push({ kind: 'remote', branch: remote });
+    }
+
+    const defs: { kind: GitflowKind; label: string; prefix: string }[] = [
+      { kind: 'feature', label: 'Feature', prefix: gitflowConfig.featurePrefix },
+      { kind: 'release', label: 'Release', prefix: gitflowConfig.releasePrefix },
+      { kind: 'hotfix', label: 'Hotfix', prefix: gitflowConfig.hotfixPrefix },
+    ];
+    const groups = defs
+      .map(({ kind, label, prefix }) => ({
+        kind,
+        label,
+        prefix,
+        locals: localBranches.filter((branch) => branch.name.startsWith(prefix)),
+        remotes: remoteBranches.filter(
+          (branch) => branch.name.startsWith(prefix) && !localNames.has(branch.name),
+        ),
+      }))
+      .filter((group) => group.locals.length > 0 || group.remotes.length > 0);
+
+    const count =
+      bases.length +
+      groups.reduce((sum, group) => sum + group.locals.length + group.remotes.length, 0);
+    return { bases, groups, count };
+  }, [gitflowConfig, localBranches, remoteBranches]);
 
   // Descending so the newest/highest tag (e.g. v0.2.0 before v0.1.0) is first.
   // `numeric` compares version segments as numbers, so v0.10 sorts above v0.2.
@@ -788,13 +767,112 @@ export function RepoSidebar({
       <CollapsibleSection
         label="Gitflow"
         icon={<GitflowIcon size={16} />}
+        count={gitflowBranches?.count}
+        action={
+          <button
+            type="button"
+            className="pill-btn pill-btn-green repo-gitflow-new tooltip-host"
+            aria-label={gitflowConfig ? 'Gitflow actions' : 'Set up gitflow'}
+            data-tooltip={gitflowConfig ? 'Gitflow actions' : 'Set up gitflow'}
+            onClick={() => {
+              // Unconfigured repos go straight to the settings dialog; configured
+              // ones open the "start a branch" dialog.
+              if (gitflowConfig) setGitflowStartOpen(true);
+              else setGitflowSettingsOpen(true);
+            }}
+          >
+            <PlusIcon size={12} />
+          </button>
+        }
         {...sectionProps('gitflow')}
       >
-        <GitflowPanel
-          currentBranch={currentBranch}
-          onStart={onGitflowStart}
-          onFinish={onGitflowFinish}
-        />
+        {gitflowBranches === null ? (
+          <p className="repo-section-empty">
+            Gitflow isn’t set up for this repo yet — use + to configure branch names.
+          </p>
+        ) : gitflowBranches.count === 0 ? (
+          <p className="repo-section-empty">
+            Use + to start a feature, release, or hotfix branch.
+          </p>
+        ) : (
+          <>
+            {/* Configured base branches (main/develop) at the top level. */}
+            {gitflowBranches.bases.map((row) =>
+              row.kind === 'local' ? (
+                <LocalBranchRow
+                  key={`gf-base-local:${row.branch.name}`}
+                  branch={row.branch}
+                  label={row.branch.name}
+                  depth={0}
+                  id={`local:${row.branch.name}`}
+                  active={active}
+                  onSelect={(id) => {
+                    setActive(id);
+                    onSelectRef?.(row.branch.name);
+                  }}
+                  onCheckout={onCheckout}
+                  onOpenMenu={openBranchMenu}
+                />
+              ) : (
+                <RemoteBranchRow
+                  key={`gf-base-remote:${row.branch.remote}/${row.branch.name}`}
+                  full={`${row.branch.remote}/${row.branch.name}`}
+                  name={row.branch.name}
+                  remote={row.branch.remote}
+                  label={`${row.branch.remote}/${row.branch.name}`}
+                  depth={0}
+                  id={`remote:${row.branch.remote}/${row.branch.name}`}
+                  active={active}
+                  onSelect={(id) => {
+                    setActive(id);
+                    onSelectRef?.(`${row.branch.remote}/${row.branch.name}`);
+                  }}
+                  onCheckout={onCheckout}
+                  onOpenMenu={openBranchMenu}
+                />
+              ),
+            )}
+            {/* Topic branches, grouped by kind. */}
+            {gitflowBranches.groups.map((group) => (
+              <TreeFolder key={group.kind} name={group.label} depth={0} icon={<BranchIcon size={14} />}>
+                {group.locals.map((branch) => (
+                  <LocalBranchRow
+                    key={`gf-local:${branch.name}`}
+                    branch={branch}
+                    label={branch.name.slice(group.prefix.length) || branch.name}
+                    depth={1}
+                    id={`local:${branch.name}`}
+                    active={active}
+                    onSelect={(id) => {
+                      setActive(id);
+                      onSelectRef?.(branch.name);
+                    }}
+                    onCheckout={onCheckout}
+                    onOpenMenu={openBranchMenu}
+                  />
+                ))}
+                {group.remotes.map((branch) => (
+                  <RemoteBranchRow
+                    key={`gf-remote:${branch.remote}/${branch.name}`}
+                    full={`${branch.remote}/${branch.name}`}
+                    name={branch.name}
+                    remote={branch.remote}
+                    label={`${branch.remote}/${branch.name.slice(group.prefix.length) || branch.name}`}
+                    depth={1}
+                    id={`remote:${branch.remote}/${branch.name}`}
+                    active={active}
+                    onSelect={(id) => {
+                      setActive(id);
+                      onSelectRef?.(`${branch.remote}/${branch.name}`);
+                    }}
+                    onCheckout={onCheckout}
+                    onOpenMenu={openBranchMenu}
+                  />
+                ))}
+              </TreeFolder>
+            ))}
+          </>
+        )}
       </CollapsibleSection>
 
       <CollapsibleSection
@@ -894,9 +972,9 @@ export function RepoSidebar({
           prProvider && dialogProvider ? (
             <button
               type="button"
-              className="pill-btn pill-btn-green repo-pr-new"
+              className="pill-btn pill-btn-green repo-pr-new tooltip-host"
               aria-label="New pull request"
-              title="New pull request"
+              data-tooltip="New pull request"
               onClick={() => setCreatingPr(true)}
             >
               <PlusIcon size={12} />
@@ -939,6 +1017,27 @@ export function RepoSidebar({
               />
             ))}
       </CollapsibleSection>
+      {gitflowStartOpen && gitflowConfig && (
+        <GitflowStartDialog
+          config={gitflowConfig}
+          currentBranch={currentBranch}
+          branchOptions={prBranchOptions}
+          onStart={onGitflowStart}
+          onFinish={onGitflowFinish}
+          // Layer the settings dialog on top rather than replacing this one, so
+          // closing settings returns here with the in-progress form intact.
+          onOpenSettings={() => setGitflowSettingsOpen(true)}
+          onClose={() => setGitflowStartOpen(false)}
+          suspended={gitflowSettingsOpen}
+        />
+      )}
+      {gitflowSettingsOpen && (
+        <GitflowSettingsDialog
+          config={gitflowConfig}
+          onSave={onGitflowSaveConfig}
+          onClose={() => setGitflowSettingsOpen(false)}
+        />
+      )}
       {contextMenu && (
         <BranchContextMenu
           targets={[contextMenu.target]}

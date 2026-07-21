@@ -43,6 +43,13 @@ sudo rpm -i GitLeviathan-Linux-x64.rpm
 Swap `x64` for `arm64` on ARM machines (e.g. a Raspberry Pi or an arm64 server).
 
 ## Features
+asdf
+asdfgsdfg
+ertzerzz
+45674567
+
+tzuitzuitzitz
+tzuitzui
 
 ### Repository management
 

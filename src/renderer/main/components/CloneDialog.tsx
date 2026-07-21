@@ -265,8 +265,8 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps) {
                     </label>
                     <div className="clone-directory">
                       <span
-                        className="clone-directory-prefix"
-                        title={destination}
+                        className="clone-directory-prefix tooltip-host"
+                        data-tooltip={destination}
                       >
                         {destination ? `${destination}/` : ''}
                       </span>

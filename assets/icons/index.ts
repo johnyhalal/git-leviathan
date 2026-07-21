@@ -30,6 +30,7 @@ export { SortIcon } from './SortIcon';
 export { TrashIcon } from './TrashIcon';
 export { ListIcon } from './ListIcon';
 export { TreeIcon } from './TreeIcon';
+export { LayersIcon } from './LayersIcon';
 export { UndoIcon } from './UndoIcon';
 export { RedoIcon } from './RedoIcon';
 export { SparkleIcon } from './SparkleIcon';
