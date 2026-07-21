@@ -1,0 +1,636 @@
+/* Three-column body. */
+.repo-columns {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.repo-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.repo-column-left {
+  flex: 0 0 auto;
+  background: var(--panel-bg);
+}
+
+.repo-column-center {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+}
+
+.repo-column-right {
+  flex: 0 0 auto;
+  background: var(--panel-bg);
+  min-width: 350px;
+}
+
+/* A 5px hit area whose visible 1px line is drawn via content-box clipping. */
+.repo-resize-handle {
+  flex: 0 0 5px;
+  background: var(--border);
+  background-clip: content-box;
+  cursor: col-resize;
+}
+
+.repo-resize-handle:hover {
+  background-color: var(--primary);
+}
+
+.repo-resize-handle-left {
+  padding-right: 4px;
+}
+
+.repo-resize-handle-right {
+  padding-left: 4px;
+}
+
+body.is-col-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Sidebar collapsible sections. */
+.repo-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: 100%;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.repo-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.repo-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-section-header:hover {
+  background: var(--control-bg);
+}
+
+.repo-section-chevron {
+  display: inline-flex;
+  color: var(--fg-muted);
+  transition: transform 0.15s ease;
+}
+
+.repo-section-chevron.is-collapsed {
+  transform: rotate(-90deg);
+}
+
+.repo-section-icon {
+  display: inline-flex;
+  color: var(--fg-muted);
+}
+
+.repo-section-label {
+  flex: 1;
+}
+
+.repo-section-count {
+  color: var(--recent-item-fg);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.repo-section-body {
+  padding: 2px 4px 8px 8px;
+}
+
+.repo-section-empty {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* Sidebar list rows (branches / remotes / PRs / tags). */
+.repo-list-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-list-item > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.repo-list-item:hover {
+  background: var(--control-bg);
+}
+
+.repo-list-item.is-active {
+  background: color-mix(in srgb, var(--selection) 18%, transparent);
+}
+
+/* The checked-out branch keeps a green highlight at all times — and stays green
+   even when it's also the selected row (green wins over the blue selection). */
+.repo-list-item.is-current,
+.repo-list-item.is-current.is-active {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--current) 18%, transparent);
+}
+
+.repo-list-item.is-current > svg,
+.repo-branch-check {
+  color: var(--current);
+}
+
+/* Pulled out of the flex flow and placed in the padding gutter just left of the
+   branch icon, so every branch icon stays in the same column whether or not the
+   row is the checked-out one. Its `left` is set inline to track the row's indent. */
+.repo-branch-check {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 4px;
+  display: inline-flex;
+}
+
+.repo-list-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-branch-track {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Gitflow action panel. */
+/* The "start a gitflow branch" dialog reuses the settings overlay/panel shell;
+   it just sizes itself to its content like the other compact dialogs. */
+.gitflow-start-dialog {
+  width: min(420px, 100%);
+  height: auto;
+  max-height: calc(100vh - 48px);
+}
+
+/* Segmented feature/release/hotfix selector. */
+.gitflow-kind-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--control-bg);
+}
+
+.gitflow-kind-tab {
+  flex: 1 1 0;
+  padding: 5px 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gitflow-kind-tab:hover:not(.is-active) {
+  color: var(--fg);
+}
+
+.gitflow-kind-tab.is-active {
+  background: var(--bg-elev);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.gitflow-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.gitflow-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+/* The name row: a fixed prefix chip abutting the editable name input. */
+.gitflow-name-row {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.gitflow-prefix {
+  flex: 0 0 auto;
+  max-width: 45%;
+  padding: 7px 8px;
+  border-right: 1px solid var(--border);
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gitflow-name-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 9px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+.gitflow-name-input:focus {
+  outline: 1px solid var(--selection);
+  outline-offset: -1px;
+}
+
+.gitflow-source-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+}
+
+.gitflow-source-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.gitflow-source-option input {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.gitflow-source-option.is-disabled {
+  color: var(--fg-muted);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Footer: settings gear + optional Finish on the left, Cancel/Start on the right. */
+.gitflow-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.gitflow-dialog-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gitflow-dialog-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.gitflow-settings-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.gitflow-settings-link:hover {
+  background: var(--control-bg);
+  color: var(--fg);
+}
+
+.gitflow-finish-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gitflow-finish-btn:hover {
+  background: var(--control-bg);
+  color: var(--fg);
+}
+
+.gitflow-finish-btn > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitflow-start-btn {
+  text-transform: capitalize;
+}
+
+.repo-stash-item {
+  gap: 4px;
+}
+
+/* The branch suffix ("… on: <branch>") is de-emphasised. */
+.repo-stash-branch {
+  font-style: italic;
+  opacity: 0.5;
+}
+
+/* Rows that carry a trailing hover action (branches, stashes): the clickable
+   label is a `.repo-row-main` button so the action can sit beside it as its own
+   button (a row can't be one button wrapping another). */
+.repo-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-row-main > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+/* Keep the checked-out branch's icon green now that it lives inside the button. */
+.repo-list-item.is-current .repo-row-main > svg {
+  color: var(--current);
+}
+
+/* The "more options" button that opens a row's context menu; shown only on row
+   hover (or when keyboard-focused). */
+.repo-row-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.repo-list-item:hover .repo-row-action,
+.repo-row-action:focus-visible {
+  opacity: 1;
+}
+
+.repo-row-action:hover {
+  opacity: 1;
+  background: var(--control-bg);
+  color: var(--fg);
+}
+
+/* Collapsible folder rows in the branch tree. */
+.repo-tree-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-tree-folder-header:hover {
+  background: var(--control-bg);
+}
+
+.repo-tree-folder-header > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.repo-tree-folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A remote's owner avatar (GitHub), shown in place of the generic remote glyph
+   on the sidebar's remote folder and on commit-list remote badges. Sizing comes
+   from the element's width/height attributes so both call sites can differ. */
+.repo-remote-avatar {
+  flex: 0 0 auto;
+  border-radius: 3px;
+  object-fit: cover;
+  background: var(--control-bg);
+}
+
+/* Pull requests. */
+.repo-pr-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+.repo-pr-number {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.repo-pr-state {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.pr-state-open {
+  color: #2ea043;
+}
+
+.pr-state-draft {
+  color: var(--fg-muted);
+}
+
+.pr-state-merged {
+  color: #8b5cf6;
+}
+
+.pr-state-closed {
+  color: var(--danger);
+}
+
+/* "New pull request" button in the section header, and the connect hint. */
+.repo-section-header-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.repo-section-header-row .repo-section-header {
+  flex: 1 1 auto;
+}
+
+/* Overlaid at the right edge (not in flow) so the count keeps the right-most
+   spot; the plus fades in over it on hover as the count fades out. */
+.repo-section-header-action {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+}
+
+.repo-pr-new,
+.repo-gitflow-new {
+  padding: 2px 2px;
+}
+
+/* Per-field helper text under a gitflow settings input. */
+.gitflow-form-hint {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* Gitflow settings: two columns — base branches on the left, prefixes on the
+   right. Each column stacks its fields; the pr-form gap already spaces them. */
+.gitflow-dialog {
+  width: min(640px, 100%);
+  height: auto;
+  max-height: calc(100vh - 48px);
+}
+
+.gitflow-form-columns {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.gitflow-form-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Swap the plus button and the count on hover: the header action button stays
+   hidden until the header is hovered, and the count fades out to make room for
+   it. Scoped to sections that carry a header action (pull requests, gitflow). */
+.repo-section-header-row:has(.repo-section-header-action) .repo-pr-new,
+.repo-section-header-row:has(.repo-section-header-action) .repo-gitflow-new {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-pr-new,
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-gitflow-new {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.repo-section-header-row:has(.repo-section-header-action) .repo-section-count {
+  transition: opacity 0.12s ease;
+}
+
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-section-count {
+  opacity: 0;
+}
+
+.repo-pr-connect {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.repo-pr-connect:hover {
+  color: var(--fg);
+}
+

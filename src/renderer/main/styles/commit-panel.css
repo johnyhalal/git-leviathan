@@ -1,0 +1,1127 @@
+/* --- Working-tree changes (staging + commit) --- */
+/* Header: a trash discard button on the left, the change summary centered. */
+.commit-changes-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.commit-discard-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.commit-discard-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 80%, transparent);
+}
+
+.commit-discard-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.commit-changes-summary {
+  flex: 1;
+  text-align: center;
+  /* Balance the trash button so the text stays visually centered. */
+  margin-right: 26px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+.commit-changes-summary strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Shared sort / list-tree controls governing both working sections. */
+.commit-changes-controls {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Sort pinned left; the list/tree switch centered across the controls row. */
+.commit-changes-controls .commit-files-viewswitch {
+  grid-column: 2;
+  justify-self: center;
+}
+
+/* The two working sections stack vertically and share the body between them,
+   split by a draggable divider; each section scrolls independently. */
+.commit-changes-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.commit-changes-section {
+  flex-basis: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 10px 12px 0;
+}
+
+.commit-changes-section .commit-files-header {
+  flex: 0 0 auto;
+}
+
+.commit-changes-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+/* Draggable horizontal divider between the unstaged and staged sections. */
+.commit-split-handle {
+  flex: 0 0 5px;
+  margin: 0 12px;
+  background: var(--border);
+  background-clip: content-box;
+  padding: 2px 0;
+  cursor: row-resize;
+}
+
+.commit-split-handle:hover {
+  background-color: var(--primary);
+}
+
+body.is-row-resizing {
+  cursor: row-resize;
+  user-select: none;
+}
+
+/* --- Commit detail (selected historical commit) --- */
+/* Centered hash line; a certificate icon sits to its left for signed commits. */
+.commit-detail-hashline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.commit-detail-signed {
+  display: inline-flex;
+  align-items: center;
+  color: var(--current);
+}
+
+/* Display mode: looks like a textarea but is inert until clicked. The border
+   stays invisible until hover, hinting the message is editable (amendable).
+   The first line reads as the summary, the rest as the description. */
+.commit-detail-message {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 0 0 16px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  height: 150px;
+}
+
+.commit-detail-message-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.commit-detail-message:hover {
+  border-color: var(--primary);
+}
+
+.commit-detail-summary {
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.commit-detail-description {
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Edit mode: subject + description fields with save/cancel underneath. */
+.commit-amend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.commit-amend-subject,
+.commit-amend-body {
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.commit-amend-subject {
+  border-radius: 8px 8px 0 0;
+}
+.commit-amend-body {
+  resize: none;
+  border-radius: 0 0 8px 8px;
+}
+
+.commit-amend-subject:focus,
+.commit-amend-body:focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+/* Shown only when amending an older (non-HEAD) commit: warns that the reword
+   rebases and rewrites every descendant onto new hashes. */
+.commit-amend-warning {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.commit-amend-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.commit-amend-cancel,
+.commit-amend-save {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  color: var(--fg);
+  background: var(--bg-elev);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.commit-amend-save {
+  background: var(--current);
+  border-color: var(--current);
+}
+
+.commit-amend-cancel:hover {
+  border-color: var(--fg-muted);
+}
+
+.commit-amend-save:disabled,
+.commit-amend-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.commit-detail-meta {
+  margin: 0 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.commit-detail-avatar {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--control-bg);
+}
+
+.commit-detail-author {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.commit-detail-author-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.commit-detail-author-date {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.commit-detail-author-date i {
+  font-style: italic;
+}
+
+.commit-detail-parents {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.commit-detail-parents-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.commit-detail-parents-hashes {
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.commit-detail-parent-sep {
+  color: var(--fg-muted);
+}
+
+.commit-detail-parent-hash {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.commit-detail-parent-hash:hover {
+  text-decoration: underline;
+}
+
+.commit-detail-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* --- File lists (shared by detail + staging) --- */
+.commit-files {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The scrollable file list; the header/toolbar above it stays pinned. A small
+   inset keeps the last row clear of the container's bottom edge. */
+.commit-files-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 4px;
+}
+
+.commit-files-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+/* Commit-detail files header: two rows — a change/added/deleted counts summary
+   over a sort / list-tree / view-all control strip. */
+.commit-files-header-toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.commit-files-counts {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+  height: 20px;
+}
+
+.commit-files-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.commit-files-count svg {
+  display: block;
+}
+
+.commit-files-modified svg {
+  color: #e0823d;
+}
+.commit-files-added svg {
+  color: #2ea043;
+}
+.commit-files-deleted svg {
+  color: var(--danger);
+}
+
+.commit-files-controls {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.commit-files-sort,
+.commit-files-viewall,
+.commit-files-viewswitch button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.commit-files-sort {
+  justify-self: start;
+}
+
+.commit-files-sort:hover,
+.commit-files-viewall:hover,
+.commit-files-viewswitch button:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.commit-files-sort-icon {
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+
+/* Descending flips the wide→narrow arrow glyph vertically. */
+.commit-files-sort-icon.desc {
+  transform: scaleY(-1);
+}
+
+/* Segmented list/tree switch: two buttons joined into one pill, centered in the
+   controls row between the sort control and the "View all files" checkbox. */
+.commit-files-viewswitch {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.commit-files-viewswitch button.active,
+.commit-files-viewall.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.commit-files-viewall {
+  justify-self: end;
+}
+
+/* Unchanged files (only shown in "View all files" mode) read as muted, so the
+   commit's actual changes still stand out. */
+.commit-file-unchanged .commit-file-name {
+  color: var(--fg-muted);
+}
+
+/* Tree view: collapsible folder rows above indented file rows. */
+.commit-tree-dir {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.commit-tree-dir:hover {
+  background: var(--control-bg);
+}
+
+.commit-tree-caret {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  transition: transform 0.15s ease;
+}
+
+.commit-tree-caret.collapsed {
+  transform: rotate(-90deg);
+}
+
+.commit-tree-dir > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.commit-tree-dir-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-files-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  line-height: 22px;
+}
+
+.commit-files-bulk {
+  font-size: 10px;
+}
+
+.commit-files-empty {
+  margin: 0;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.commit-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.commit-file:hover {
+  background: var(--control-bg);
+}
+
+.commit-file-status {
+  flex: 0 0 auto;
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.commit-file-status svg {
+  display: block;
+}
+
+.status-modified {
+  color: #e0823d;
+}
+
+.status-added {
+  color: #2ea043;
+}
+
+.status-deleted {
+  color: var(--danger);
+}
+
+.status-renamed {
+  color: var(--primary);
+}
+
+.commit-file-path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  overflow: hidden;
+  font-size: 14px;
+}
+
+/* The directory prefix truncates with an ellipsis when the row is tight; the
+   file name (below) never shrinks, so it stays fully readable. The full path is
+   still available via the row's title tooltip. */
+.commit-file-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.commit-file-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Row control: a pill that stays hidden until its file row is hovered. */
+.commit-file-action {
+  font-size: 10px;
+  flex: 0 0 auto;
+  opacity: 0;
+}
+
+.commit-file:hover .commit-file-action {
+  opacity: 1;
+}
+
+/* A file row that opens the center diff viewer: clickable, with the currently
+   open file highlighted. */
+.commit-file.is-openable {
+  cursor: pointer;
+}
+
+.commit-file.is-open {
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+}
+
+.commit-file.is-open .commit-file-name {
+  color: var(--fg);
+}
+
+/* --- Center-column file diff viewer (swaps in over the commit list) --- */
+.diff-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* Header: the file path (with its status glyph) over a close button. */
+.diff-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-header-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.diff-header-path {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.diff-header-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.diff-header-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.diff-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.diff-close:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+  background: var(--control-bg);
+}
+
+/* Secondary nav: a centered file/diff switch with prev/next steppers at the end. */
+.diff-subnav {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-viewswitch {
+  grid-column: 2;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.diff-viewswitch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.diff-viewswitch button:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.diff-viewswitch button.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.diff-steppers {
+  grid-column: 3;
+  justify-self: end;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.diff-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.diff-step:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+/* The prev stepper is the shared chevron flipped to point the other way. */
+.diff-step-prev svg {
+  transform: rotate(180deg);
+}
+
+/* Body: line-numbered, monospaced diff / file content that scrolls both ways. */
+.diff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.diff-empty {
+  margin: 0;
+  padding: 16px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+/* Rows size to their content (so long lines scroll) but never below the
+   viewport width (so row backgrounds fill it). */
+.diff-lines {
+  width: max-content;
+  min-width: 100%;
+}
+
+.diff-line {
+  display: flex;
+  align-items: flex-start;
+  width: max-content;
+  min-width: 100%;
+}
+
+.diff-gutter {
+  flex: 0 0 auto;
+  width: 48px;
+  padding: 0 8px;
+  text-align: right;
+  color: var(--fg-muted);
+  background: var(--panel-bg);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  -webkit-user-select: none;
+  font-variant-numeric: tabular-nums;
+  position: sticky;
+  left: 0;
+}
+
+.diff-sign {
+  flex: 0 0 auto;
+  width: 18px;
+  text-align: center;
+  color: var(--fg-muted);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.diff-code {
+  padding-right: 12px;
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* highlight.js token colors, driven by the per-theme --syn-* vars. The .hljs
+   wrapper class carries no background/color of its own (we inherit the row's). */
+.diff-code.hljs {
+  color: inherit;
+  background: transparent;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag {
+  color: var(--syn-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-char.escape_ {
+  color: var(--syn-string);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+.hljs-number,
+.hljs-literal {
+  color: var(--syn-number);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: var(--syn-function);
+}
+.hljs-type,
+.hljs-title.class_,
+.hljs-built_in,
+.hljs-variable.language_ {
+  color: var(--syn-type);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: var(--syn-attr);
+}
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--syn-tag);
+}
+.hljs-meta,
+.hljs-comment .hljs-doctag {
+  color: var(--syn-meta);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+.diff-line-add {
+  background: color-mix(in srgb, #2ea043 14%, transparent);
+}
+
+.diff-line-add .diff-sign {
+  color: #2ea043;
+}
+
+.diff-line-delete {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.diff-line-delete .diff-sign {
+  color: var(--danger);
+}
+
+/* Hunk separator spans the full row with its raw @@ heading. */
+.diff-line-hunk {
+  background: var(--control-bg);
+}
+
+.diff-line-hunk {
+  align-items: center;
+}
+
+.diff-hunk-text {
+  flex: 1 1 auto;
+  padding: 2px 12px;
+  color: var(--primary);
+  white-space: pre-wrap;
+}
+
+/* Stage/discard pills pinned to the right edge of the hunk row, staying put
+   while the diff scrolls horizontally. Always visible. */
+.diff-hunk-actions {
+  position: sticky;
+  right: 0;
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 2px 8px;
+  background: var(--control-bg);
+}
+
+/* Slightly denser than a stock pill, with room for the leading icon. */
+.diff-hunk-btn {
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+/* File view uses a single, slightly wider line-number gutter. */
+.diff-lines-file .diff-gutter {
+  width: 56px;
+}
+
+/* --- Commit message box (working-tree view) --- */
+.commit-message-box {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* Two-field message editor (summary + description), matching the amend fields:
+   both fields join into one bordered box with a divider between them. */
+.commit-message-fields {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  /* No `overflow: hidden` here — it would clip the generate button's tooltip,
+     which pops above the top field. The first/last fields round their own outer
+     corners instead so the box still reads as one rounded shape. */
+}
+
+.commit-message-subject {
+  border-top-left-radius: 7px;
+  border-top-right-radius: 7px;
+}
+
+.commit-message-description {
+  border-bottom-left-radius: 7px;
+  border-bottom-right-radius: 7px;
+}
+
+.commit-message-fields:focus-within {
+  border-color: var(--primary);
+}
+
+.commit-message-subject,
+.commit-message-description {
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  outline: none;
+}
+
+.commit-message-subject {
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Wraps the summary input so its char counter can float at the trailing edge
+   without disturbing the field's full-width divider. Shared by the working
+   commit box and the amend view. */
+.commit-message-subject-row {
+  position: relative;
+  display: flex;
+}
+
+.commit-message-subject-row > input {
+  flex: 1;
+  /* Leave room so typed text never slips under the counter. */
+  padding-right: 40px;
+}
+
+/* Working commit box: the subject field carries the inline "Generate with
+   Claude" button beside its counter, so it needs more trailing clearance. */
+.commit-message-subject-row--generate > input {
+  padding-right: 72px;
+}
+
+/* Groups the generate button and the char counter at the field's trailing edge.
+   The counter's own absolute positioning is neutralised so it flows in here. */
+.commit-subject-trailing {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.commit-subject-trailing .commit-summary-counter {
+  position: static;
+  top: auto;
+  right: auto;
+  transform: none;
+}
+
+/* Compact the pill so it sits comfortably within the field's height. */
+.commit-subject-trailing .commit-generate-btn {
+  padding: 3px;
+  line-height: 0;
+}
+
+.commit-summary-counter {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/* Over the guideline: soft yellow warning, never a hard block. */
+.commit-summary-counter.is-over {
+  color: #d29922;
+}
+
+/* Action row below the message fields, holding the "Push after commit" toggle. */
+.commit-message-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.commit-action-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.commit-action-check input {
+  cursor: pointer;
+  margin: 0;
+}
+
+/* Wraps the generate button so its tooltip still shows while the button is
+   disabled (a disabled control gets no hover). Sits inline in the trailing row. */
+.commit-generate-tip {
+  display: inline-flex;
+}
+
+/* Small inline loading spinner (icon-sized). */
+.mini-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: mini-spin 0.6s linear infinite;
+}
+
+@keyframes mini-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.commit-message-description {
+  resize: none;
+  height: 80px;
+}
+
+.commit-submit {
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #08312c;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.commit-submit:disabled {
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  cursor: default;
+}
+

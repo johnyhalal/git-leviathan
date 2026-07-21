@@ -1,0 +1,77 @@
+/* Reusable pill button. Base handles shape/typography; a color modifier
+   (.pill-btn-green | -red | -yellow | -gray) tints border, text, and fill.
+   The tint is driven by `--pill-color` so every variant shares one ruleset. */
+.pill-btn {
+  --pill-color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--pill-color) 50%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--pill-color) 20%, transparent);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pill-btn:hover {
+  background: color-mix(in srgb, var(--pill-color) 40%, transparent);
+  border-color: var(--pill-color);
+}
+
+.pill-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pill-btn-green {
+  --pill-color: #2ea043;
+}
+
+.pill-btn-red {
+  --pill-color: var(--danger);
+}
+
+.pill-btn-yellow {
+  --pill-color: #d29922;
+}
+
+.pill-btn-gray {
+  --pill-color: var(--fg-muted);
+}
+
+/* Gradient variant. Unlike the single-tint variants above (which flow through
+   `--pill-color`), rainbow paints a translucent gradient fill (padding-box)
+   inside a solid gradient border (border-box). Adjust the stops to taste;
+   purple → pink for now. */
+.pill-btn-rainbow {
+  --rainbow-from: #a855f7;
+  --rainbow-to: #ec4899;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--rainbow-from) 22%, var(--bg)),
+        color-mix(in srgb, var(--rainbow-to) 22%, var(--bg))
+      )
+      padding-box,
+    linear-gradient(135deg, var(--rainbow-from), var(--rainbow-to)) border-box;
+  color: var(--fg);
+}
+
+.pill-btn-rainbow:hover {
+  border-color: transparent;
+  background:
+    linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--rainbow-from) 38%, var(--bg)),
+        color-mix(in srgb, var(--rainbow-to) 38%, var(--bg))
+      )
+      padding-box,
+    linear-gradient(135deg, var(--rainbow-from), var(--rainbow-to)) border-box;
+}
+

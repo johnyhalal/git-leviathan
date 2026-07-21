@@ -1,0 +1,243 @@
+/* ---- Repo start (empty tab: open / clone / create + recents) ------------- */
+
+.repo-start {
+  align-self: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  overflow-y: auto;
+}
+
+.repo-start-inner {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding-bottom: 24px;
+}
+
+.repo-start-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.repo-start-title {
+  margin: 0;
+  font-family: 'Roboto', sans-serif;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.repo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.repo-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.repo-action:hover:not(:disabled):not(.is-disabled) {
+  background: var(--bg-elev);
+  border-color: var(--fg-muted);
+}
+
+.repo-recent {
+  display: flex;
+  flex-direction: column;
+}
+
+.repo-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  transition: border-color 0.15s ease;
+  margin-bottom: 10px;
+}
+
+.repo-search:focus-within {
+  border-color: var(--fg-muted);
+}
+
+.repo-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.repo-search-input::placeholder {
+  color: var(--fg-muted);
+}
+
+.repo-recent-title {
+  margin: 0px 0 15px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.repo-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.repo-recent-group-title {
+  margin: 16px 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.repo-recent-list + .repo-recent-group-title {
+  margin-top: 18px;
+}
+
+.repo-recent-item {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 40px 10px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--recent-item-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.repo-recent-item:hover {
+  background: var(--control-bg);
+}
+
+.repo-recent-star {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.repo-recent-item:hover .repo-recent-star,
+.repo-recent-star:focus-visible {
+  opacity: 0.7;
+}
+
+.repo-recent-star:hover {
+  background: var(--border);
+  opacity: 1;
+}
+
+/* A starred repo always shows its filled yellow star, even un-hovered. */
+.repo-recent-star.is-favorite {
+  color: #f5b301;
+  opacity: 1;
+}
+
+.repo-recent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.repo-recent-remove {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.repo-recent-item:hover .repo-recent-remove,
+.repo-recent-remove:focus-visible {
+  opacity: 0.7;
+}
+
+.repo-recent-remove:hover {
+  background: var(--border);
+  opacity: 1;
+}
+
+.repo-recent-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.repo-recent-path {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-recent-empty {
+  margin: 0;
+  padding: 20px 12px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+

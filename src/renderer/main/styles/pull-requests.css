@@ -1,0 +1,192 @@
+/* ---- Pull request dialogs (detail + new), over the settings overlay ------ */
+.pr-dialog {
+  width: min(640px, 100%);
+  height: auto;
+  max-height: calc(100vh - 48px);
+}
+
+.pr-dialog-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pr-dialog-heading h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pr-dialog-number {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pr-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pr-dialog-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pr-dialog-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.pr-dialog-avatar {
+  border-radius: 50%;
+  background: var(--control-bg);
+}
+
+.pr-dialog-branches {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+.pr-dialog-branch {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.pr-dialog-dates {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.pr-dialog-description {
+  margin: 0;
+  padding: 12px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pr-dialog-empty {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.pr-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- New pull request form ---------------------------------------------- */
+.pr-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pr-form-branches {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.pr-form-into {
+  padding-bottom: 8px;
+  color: var(--fg-muted);
+}
+
+.pr-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pr-form-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.pr-form-field input,
+.pr-form-field select,
+.pr-form-field textarea {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.pr-form-field textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.pr-form-field input:focus,
+.pr-form-field select:focus,
+.pr-form-field textarea:focus {
+  outline: none;
+  border-color: var(--accent, #2ea043);
+}
+
+.pr-form-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pr-form-hint {
+  margin: -6px 0 0;
+  color: #d29922;
+  font-size: 12px;
+}
+
+.pr-form-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.pr-form .pr-dialog-footer {
+  padding: 4px 0 0;
+  border-top: none;
+}
+

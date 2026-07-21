@@ -1,0 +1,457 @@
+/* ---- Repository view ----------------------------------------------------- */
+
+/* When a repo is open the content area fills instead of centering its child. */
+.content-repo {
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.repo-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  /* Positioning context for the confirm bar that overlays the toolbar. */
+  position: relative;
+}
+
+/* Global confirmation bar: overlays the whole toolbar. Raised by any view via
+   useConfirm(); reusable for any confirm, not tied to one action. */
+.confirm-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Matches the toolbar height so it covers it exactly. */
+  height: 70px;
+  /* Above the toolbar (z-index: 10) so it fully occludes it. */
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--primary) 10%, var(--bg-elev));
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  /* Slides down from behind the toolbar's top edge as it opens. */
+  transform-origin: top center;
+  animation: confirm-bar-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Bar drops in from above; contents ease up just behind it. */
+@keyframes confirm-bar-in {
+  from {
+    transform: translateY(-100%);
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+  to {
+    transform: translateY(0);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+}
+
+@keyframes confirm-bar-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.confirm-bar-text,
+.confirm-bar-actions {
+  animation: confirm-bar-content-in 320ms ease-out 80ms both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm-bar,
+  .confirm-bar-text,
+  .confirm-bar-input,
+  .confirm-bar-actions {
+    animation: none;
+  }
+}
+
+.confirm-bar-text {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--fg);
+}
+
+.confirm-bar-input {
+  flex: 0 1 220px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  animation: confirm-bar-content-in 320ms ease-out 80ms both;
+}
+
+.confirm-bar-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.confirm-bar-input:disabled {
+  opacity: 0.5;
+}
+
+.confirm-bar-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+/* Base button; per-action color comes from the tone modifier below. */
+.confirm-bar-btn {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 14px;
+  color: var(--fg);
+  background: var(--bg);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.confirm-bar-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Neutral: the default button and the built-in Cancel. */
+.confirm-bar-btn-default:hover:not(:disabled) {
+  border-color: var(--fg-muted);
+}
+
+/* Primary: the affirmative accent action. */
+.confirm-bar-btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #08312c;
+}
+
+/* Danger: destructive actions. */
+.confirm-bar-btn-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* Repo toolbar: branch pill (left), sync actions (centered). */
+.repo-toolbar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 70px;
+  padding: 0 12px;
+  gap: 12px;
+  background: var(--toolbar-bg);
+  /* Lift the toolbar above the columns below so action tooltips, which overflow
+     downward past the bar, aren't painted over by the (later-in-DOM) columns. */
+  position: relative;
+  z-index: 10;
+}
+
+.repo-toolbar-left {
+  flex: 1;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.repo-toolbar-center {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+.repo-toolbar-right {
+  flex: 1;
+}
+
+.repo-branch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.repo-branch-pill:hover {
+  border-color: var(--primary);
+}
+
+.repo-branch-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* Sync actions: label stacked over icon, centered. */
+.repo-action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 60px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.repo-action:hover:not(:disabled):not(.is-disabled) {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+/* `.is-disabled` (aria-disabled) mirrors the native `:disabled` look but keeps
+   the element hover-capable so its tooltip still shows. */
+.repo-action:disabled,
+.repo-action.is-disabled {
+  color: var(--fg-muted);
+  background: transparent;
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* The toolbar toggle that opens the inline "new branch" input stays lit while
+   the input is showing. */
+.repo-action.is-active {
+  color: var(--fg);
+  border-color: var(--primary);
+  background: var(--control-bg);
+}
+
+.repo-action-label {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Designed tooltip: one global bubble that follows the cursor (see
+   components/TooltipLayer.tsx), keyed off `data-tooltip`. Being fixed-position
+   and portaled to <body>, it escapes any `overflow` ancestor that would clip an
+   anchored tooltip. `tooltip-host` is kept as an inert marker on call sites; the
+   layer triggers purely on the `data-tooltip` attribute. */
+.tooltip-bubble {
+  position: fixed;
+  z-index: 1100;
+  max-width: 320px;
+  padding: 8px 12px 6px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  animation: tooltip-fade-in 0.12s ease;
+}
+
+@keyframes tooltip-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Branch selector dropdown. */
+.branch-select {
+  position: relative;
+}
+
+.branch-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 260px;
+  max-height: 340px;
+  padding: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.branch-select-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.branch-select-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.branch-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+}
+
+.branch-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.branch-select-option > svg {
+  color: var(--fg-muted);
+  flex: 0 0 auto;
+}
+
+.branch-select-option:hover {
+  background: var(--control-bg);
+}
+
+.branch-select-option.is-current {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.branch-select-option.is-current > svg {
+  color: var(--primary);
+}
+
+.branch-select-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* Pull split button (main action + caret menu). */
+.pull-action {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.pull-action-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+}
+
+.pull-action-main .repo-action-label {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pull-action-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.pull-action-caret:hover {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+.pull-action-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 240px;
+  padding: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.pull-action-option {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pull-action-option:hover {
+  background: var(--control-bg);
+}
+
+.pull-action-option.is-current {
+  color: var(--primary);
+  font-weight: 600;
+}
+

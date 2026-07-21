@@ -1,0 +1,157 @@
+/* ---- Clone dialog (reuses the settings modal shell) ---------------------- */
+
+.clone-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.clone-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.clone-connect {
+  align-self: center;
+  margin-top: 12px;
+}
+
+.clone-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin-bottom: 8px;
+}
+
+.clone-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.clone-input:focus {
+  border-color: var(--primary);
+}
+
+.clone-input::placeholder {
+  color: var(--fg-muted);
+}
+
+/* Destination is picked via the native dialog; the field just displays it. */
+.clone-input[readonly] {
+  cursor: pointer;
+}
+
+.clone-picker {
+  display: flex;
+  gap: 8px;
+}
+
+.clone-picker .clone-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Directory name: a read-only destination prefix joined to the editable name. */
+.clone-directory {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.clone-directory-prefix {
+  display: flex;
+  align-items: center;
+  flex: 0 0 50%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Ellipsize the start of the path so the tail (the folder) stays visible. */
+  direction: rtl;
+  text-align: left;
+}
+
+.clone-directory-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.clone-browse {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.clone-browse:hover {
+  border-color: var(--fg-muted);
+}
+
+.clone-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.clone-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.clone-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #06251f;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    opacity 0.15s ease,
+    filter 0.15s ease;
+}
+
+.clone-submit:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.clone-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+

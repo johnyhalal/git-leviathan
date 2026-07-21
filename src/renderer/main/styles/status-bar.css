@@ -1,0 +1,164 @@
+/* ---- Content ------------------------------------------------------------- */
+
+.content {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  min-height: 0;
+}
+
+/* ---- Status bar (footer) ------------------------------------------------- */
+
+/* Thin strip pinned to the bottom; version sits in the right corner. */
+.statusbar {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 28px;
+  padding: 0 12px;
+  background: var(--panel-bg);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.statusbar-version {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* Report-a-bug / feature-request trigger, pinned just left of the version. */
+.statusbar-feedback {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 12px 0 0;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.statusbar-feedback:hover {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+/* Update notice, centered in the strip independent of the right-pinned version. */
+.statusbar-update {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.statusbar-update:hover {
+  text-decoration: underline;
+}
+
+/* Downloading notice: plain, non-interactive text (no cursor/hover) plus an
+   indeterminate progress bar. Squirrel gives no percentage, so the bar just
+   animates to show liveness. */
+.statusbar-download {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.statusbar-progress {
+  position: relative;
+  width: 80px;
+  height: 3px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--primary) 20%, transparent);
+}
+
+.statusbar-progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--primary);
+  animation: statusbar-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes statusbar-progress-slide {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+h1 {
+  margin: 0;
+  font-family: 'Roboto', sans-serif;
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 15px;
+}
+
+/* Ko-fi support link, sat between the feedback button and the version. */
+.statusbar-kofi {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 2px 0 0;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  opacity: 0.75;
+  transition:
+          opacity 0.15s ease,
+          background 0.15s ease;
+}
+.statusbar-kofi img {
+  display: block;
+}
+.statusbar-kofi:hover {
+  opacity: 1;
+  background: var(--control-bg);
+}

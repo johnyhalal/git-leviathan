@@ -1,0 +1,147 @@
+/* ---- Integrations (provider connect rows) -------------------------------- */
+
+.integration-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.integration-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--control-bg);
+  color: var(--fg);
+}
+
+.integration-avatar {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+}
+
+.settings-connect {
+  height: 34px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 9px;
+  background: var(--primary);
+  color: #06251f;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.settings-connect:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.settings-connect:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-connect.is-connected {
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+
+.settings-connect.is-connected:hover:not(:disabled) {
+  filter: none;
+  border-color: var(--fg-muted);
+}
+
+.integration-error {
+  color: var(--danger, #e5534b);
+}
+
+/* Device-flow "enter this code" state. */
+.integration-connecting {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+}
+
+.integration-code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.integration-code {
+  flex: 1 1 auto;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-align: center;
+}
+
+.integration-verification {
+  word-break: break-all;
+}
+
+.integration-connecting-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* Generate-and-upload SSH key row (shown under a connected account). */
+.integration-sshkey {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+/* First line: the "SSH Key" header and the add/remove button on the edges. */
+.integration-sshkey-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* Second line: the key details, full width. */
+.integration-sshkey-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.integration-sshkey-result code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+
+.integration-sshkey-public {
+  flex: 1 1 auto;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+

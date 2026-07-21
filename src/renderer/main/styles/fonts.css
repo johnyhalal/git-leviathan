@@ -1,0 +1,122 @@
+/* ---- Fonts (self-hosted variable woff2, bundled into ASAR) --------------- */
+/* Weight axis 100-900 in one file per subset; the browser only fetches
+   latin-ext when a glyph in that range is used. */
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../../../../assets/fonts/Roboto-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../../../../assets/fonts/Roboto-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  --bg: #f5f5f7;
+  --bg-elev: #ffffff;
+  /* The side panels (sidebar + commit panel) sit 10% lighter than the app bg.
+     Defined once against var(--bg), so it tracks the per-theme --bg override. */
+  --panel-bg: color-mix(in srgb, var(--bg) 90%, #fff 4%);
+  --toolbar-bg: color-mix(in srgb, var(--bg) 90%, #fff 8%);
+  --fg: #1d1d1f;
+  --fg-muted: #505053;
+  --primary: #43d7c7;
+  --primary-dark: #1f9e90;
+  --recent-item-fg: var(--primary-dark);
+  --border: rgba(0, 0, 0, 0.1);
+  --control-bg: rgba(0, 0, 0, 0.05);
+  --danger: #d92d20;
+  /* Light-blue accent for list selection; green for the checked-out branch. */
+  --selection: #3b82f6;
+  --current: #16a34a;
+  /* Syntax token palette (GitHub-light-ish), consumed by the .hljs-* rules. */
+  --syn-keyword: #cf222e;
+  --syn-string: #0a3069;
+  --syn-comment: #6e7781;
+  --syn-number: #0550ae;
+  --syn-function: #8250df;
+  --syn-type: #953800;
+  --syn-attr: #0550ae;
+  --syn-tag: #116329;
+  --syn-meta: #6e7781;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e24;
+    --bg-elev: #2a2a33;
+    --fg: #f2f2f5;
+    --fg-muted: #a1a1aa;
+    --recent-item-fg: var(--primary);
+    --border: rgba(255, 255, 255, 0.12);
+    --control-bg: rgba(255, 255, 255, 0.08);
+    --danger: #f97066;
+    --selection: #60a5fa;
+    --current: #4ade80;
+    /* Syntax token palette (GitHub-dark-ish). */
+    --syn-keyword: #ff7b72;
+    --syn-string: #a5d6ff;
+    --syn-comment: #8b949e;
+    --syn-number: #79c0ff;
+    --syn-function: #d2a8ff;
+    --syn-type: #ffa657;
+    --syn-attr: #79c0ff;
+    --syn-tag: #7ee787;
+    --syn-meta: #8b949e;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* The UI chrome is non-selectable by default (it behaves like a native app,
+     not a document). Content the user legitimately copies opts back in below:
+     form fields, the diff code, commit messages, and the activity log. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+[contenteditable='true'],
+.diff-code,
+.commit-detail-message,
+.commit-message-subject,
+.commit-message-description,
+.activity-log__body {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
