@@ -90,8 +90,7 @@ export function GitflowStartDialog({
   const defaultSource = (nextKind: GitflowKind): string => {
     const base = baseOf(config, nextKind);
     if (sourceOptions.includes(base)) return base;
-    if (currentBranch && sourceOptions.includes(currentBranch)) return currentBranch;
-    return sourceOptions[0] ?? '';
+    return currentBranch ?? sourceOptions[0] ?? '';
   };
 
   const [name, setName] = useState('');
@@ -110,6 +109,22 @@ export function GitflowStartDialog({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose, suspended]);
+
+  // The "From" choices: the kind's base branch ("latest develop") and the
+  // checked-out branch. The base is disabled when the repo has no such branch
+  // to start from; the two collapse to one when the current branch *is* the base.
+  const base = baseOf(config, kind);
+  const baseAvailable = sourceOptions.includes(base);
+  const sourceRadios: { value: string; label: string; disabled: boolean }[] = [
+    { value: base, label: `Latest ${base}`, disabled: !baseAvailable },
+  ];
+  if ((currentBranch ?? '') !== base) {
+    sourceRadios.push({
+      value: currentBranch ?? '',
+      label: currentBranch ? `Current branch (${currentBranch})` : 'Current branch',
+      disabled: false,
+    });
+  }
 
   const prefix = prefixOf(config, kind);
   const trimmed = name.trim();
@@ -187,21 +202,27 @@ export function GitflowStartDialog({
             </span>
           </label>
 
-          <label className="gitflow-field">
+          <div className="gitflow-field">
             <span className="gitflow-field-label">From</span>
-            <select
-              className="gitflow-source"
-              value={source}
-              onChange={(event) => setSource(event.target.value)}
-            >
-              {sourceOptions.length === 0 && <option value="">(current branch)</option>}
-              {sourceOptions.map((branchName) => (
-                <option key={branchName} value={branchName}>
-                  {branchName === baseOf(config, kind) ? `${branchName} (default)` : branchName}
-                </option>
+            <div className="gitflow-source-options" role="radiogroup" aria-label="Source branch">
+              {sourceRadios.map((option) => (
+                <label
+                  key={option.value || 'current'}
+                  className={cx('gitflow-source-option', option.disabled && 'is-disabled')}
+                >
+                  <input
+                    type="radio"
+                    name="gitflow-source"
+                    value={option.value}
+                    checked={source === option.value}
+                    disabled={option.disabled}
+                    onChange={() => setSource(option.value)}
+                  />
+                  <span>{option.label}</span>
+                </label>
               ))}
-            </select>
-          </label>
+            </div>
+          </div>
 
           <div className="gitflow-dialog-footer">
             <div className="gitflow-dialog-footer-left">

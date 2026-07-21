@@ -2609,10 +2609,6 @@ body.is-col-resizing {
   overflow: hidden;
 }
 
-.gitflow-name-row:focus-within {
-  border-color: var(--selection);
-}
-
 .gitflow-prefix {
   flex: 0 0 auto;
   max-width: 45%;
@@ -2636,22 +2632,39 @@ body.is-col-resizing {
   font-family: inherit;
   font-size: 13px;
   outline: none;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
 }
 
-.gitflow-source {
-  width: 100%;
-  padding: 7px 9px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-elev);
-  color: var(--fg);
-  font-family: inherit;
+.gitflow-name-input:focus {
+  outline: 1px solid var(--selection);
+  outline-offset: -1px;
+}
+
+.gitflow-source-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+}
+
+.gitflow-source-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
-  outline: none;
+  color: var(--fg);
+  cursor: pointer;
 }
 
-.gitflow-source:focus {
-  border-color: var(--selection);
+.gitflow-source-option input {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.gitflow-source-option.is-disabled {
+  color: var(--fg-muted);
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* Footer: settings gear + optional Finish on the left, Cancel/Start on the right. */
@@ -3343,7 +3356,7 @@ body.is-col-resizing .commit-th {
 
 .commit-refs-inner {
   display: flex;
-  gap: 4px;
+  gap: 0px;
   overflow: hidden;
   /* Positioning context for a hovered badge that expands over its neighbours. */
   position: relative;
