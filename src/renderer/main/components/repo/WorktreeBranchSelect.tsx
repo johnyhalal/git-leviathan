@@ -50,6 +50,8 @@ export function WorktreeBranchSelect({
   }, [open]);
 
   const selected = options.find((option) => option.ref === value);
+  // A short list is easy to scan, so only offer search once it's worth it.
+  const showSearch = options.length > 6;
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -85,18 +87,20 @@ export function WorktreeBranchSelect({
 
       {open && (
         <div className="wt-select-menu" role="listbox">
-          <div className="wt-select-search">
-            <SearchIcon size={16} />
-            <input
-              type="text"
-              placeholder="Search branches…"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              autoFocus
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </div>
+          {showSearch && (
+            <div className="wt-select-search">
+              <SearchIcon size={16} />
+              <input
+                type="text"
+                placeholder="Search branches…"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                autoFocus
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+          )}
           <div className="wt-select-list">
             {filtered.length === 0 ? (
               <p className="wt-select-empty">No branches match.</p>

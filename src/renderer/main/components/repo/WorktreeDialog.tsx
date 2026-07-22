@@ -73,9 +73,18 @@ export function WorktreeDialog({
   // What we'll actually create: the typed name, or the default when left blank.
   const branch = name.trim() || defaultName;
 
-  // A branch can only be checked out in one worktree at a time, so block a name
-  // already taken by an existing worktree (the user must pick a fresh branch name).
-  const branchTaken = branch.length > 0 && occupiedBranches.includes(branch);
+  // The worktree always gets a fresh branch forked from the selected base, so the
+  // name must be free — not already a local branch (git would refuse to create it,
+  // or silently reuse it), and not one already checked out in another worktree.
+  // The base's own name is offered as the default, so a local base needs renaming.
+  const branchError =
+    branch.length === 0
+      ? null
+      : occupiedBranches.includes(branch)
+        ? `“${branch}” is already checked out in another worktree — enter a new branch name.`
+        : branches.some((option) => !option.remote && option.name === branch)
+          ? `A local branch named “${branch}” already exists — enter a different name.`
+          : null;
 
   // Suggested location: a "<repo>.worktrees" sibling folder, one subfolder per
   // branch — e.g. "/repos/app" → "/repos/app.worktrees/origin-dev". Empty until a
@@ -129,7 +138,7 @@ export function WorktreeDialog({
     targetPath.length > 0 &&
     branch.length > 0 &&
     checkout.length > 0 &&
-    !branchTaken;
+    !branchError;
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -200,15 +209,12 @@ export function WorktreeDialog({
               autoCorrect="off"
               onChange={(event) => setName(event.target.value)}
             />
-            {branchTaken ? (
-              <span className="pr-form-hint worktree-hint-error">
-                “{branch}” is already checked out in another worktree — enter a new
-                branch name.
-              </span>
+            {branchError ? (
+              <span className="pr-form-hint worktree-hint-error">{branchError}</span>
             ) : (
               <span className="pr-form-hint">
-                Leave as-is to check out this branch, or enter a new name to create a
-                branch from it.
+                A new branch with this name is created from the selected one — it
+                can’t match an existing branch.
               </span>
             )}
           </label>

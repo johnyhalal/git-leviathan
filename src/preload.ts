@@ -205,12 +205,13 @@ const api: ExposedApi = {
         worktreePath,
         options,
       ) as Promise<RefsMutationResult>,
-    worktreeLock: (path: string, worktreePath: string, lock: boolean) =>
+    worktreeLock: (path: string, worktreePath: string, lock: boolean, reason?: string) =>
       ipcRenderer.invoke(
         RepoChannels.worktreeLock,
         path,
         worktreePath,
         lock,
+        reason,
       ) as Promise<RefsMutationResult>,
     isWorktree: (path: string) =>
       ipcRenderer.invoke(RepoChannels.isWorktree, path) as Promise<boolean>,

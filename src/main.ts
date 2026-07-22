@@ -910,7 +910,16 @@ async function readStashes(cwd: string): Promise<StashInfo[]> {
  * The block whose path is the current tab's top-level is flagged `isCurrent`.
  */
 async function readWorktrees(cwd: string): Promise<WorktreeInfo[]> {
-  const out = await runGit(cwd, ['worktree', 'list', '--porcelain']);
+  // `core.quotePath=false` keeps non-ASCII bytes in paths and the lock reason raw
+  // (UTF-8) instead of C-quoting them (e.g. "á" → \303\241), which would show up
+  // mangled in the UI.
+  const out = await runGit(cwd, [
+    '-c',
+    'core.quotePath=false',
+    'worktree',
+    'list',
+    '--porcelain',
+  ]);
   if (!out.trim()) return [];
   const current = normalizePath((await runGit(cwd, ['rev-parse', '--show-toplevel'])).trim());
   const trees: WorktreeInfo[] = [];
@@ -920,13 +929,19 @@ async function readWorktrees(cwd: string): Promise<WorktreeInfo[]> {
     let branch: string | undefined;
     let bare = false;
     let locked = false;
+    let lockReason: string | undefined;
     for (const line of nonEmptyLines(block)) {
       if (line.startsWith('worktree ')) treePath = line.slice('worktree '.length);
       else if (line.startsWith('HEAD ')) head = line.slice('HEAD '.length).slice(0, 7);
       else if (line.startsWith('branch '))
         branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
       else if (line === 'bare') bare = true;
-      else if (line === 'locked' || line.startsWith('locked ')) locked = true;
+      else if (line === 'locked' || line.startsWith('locked ')) {
+        locked = true;
+        // A reason, when given, follows on the same line: "locked <reason>".
+        const reason = line.slice('locked'.length).trim();
+        if (reason) lockReason = reason;
+      }
     }
     if (!treePath) continue;
     trees.push({
@@ -935,6 +950,7 @@ async function readWorktrees(cwd: string): Promise<WorktreeInfo[]> {
       branch,
       bare,
       locked,
+      lockReason,
       // Porcelain lists the primary worktree first.
       isMain: trees.length === 0,
       isCurrent: normalizePath(treePath) === current,
@@ -3689,23 +3705,31 @@ function registerRepoIpc(): void {
         return { status: 'error', message: 'No worktree was specified.' };
       }
       const opts = (options ?? {}) as { force?: boolean; deleteBranch?: boolean };
-      const steps: string[][] = [];
       const removeArgs = ['worktree', 'remove'];
       if (opts.force === true) removeArgs.push('--force');
       removeArgs.push(treePath);
-      steps.push(removeArgs);
-      // Optionally delete the branch the worktree had checked out. Resolve it from
-      // the repo's own worktree list (authoritative), and delete it *after* the
-      // worktree is gone so it's no longer checked out anywhere. Skip a detached
-      // worktree (no branch to delete).
-      if (opts.deleteBranch === true) {
+      const steps: string[][] = [removeArgs];
+
+      // When removing the worktree we're running from, its directory (our cwd) is
+      // deleted by the remove step — so a follow-up `git branch -D`, and the final
+      // refs read, would fail with "cannot change to '…': No such file or
+      // directory". Run the steps from the main worktree instead, which survives.
+      const removingSelf = normalizePath(repoPath) === normalizePath(treePath);
+      let cwd = repoPath;
+      if (opts.deleteBranch === true || removingSelf) {
         const trees = await readWorktrees(repoPath);
-        const branch = trees.find(
-          (tree) => normalizePath(tree.path) === normalizePath(treePath),
-        )?.branch;
-        if (branch) steps.push(['branch', '-D', branch]);
+        if (removingSelf) cwd = trees.find((tree) => tree.isMain)?.path ?? repoPath;
+        // Optionally delete the branch the worktree had checked out — resolved from
+        // the repo's own worktree list, deleted *after* the worktree is gone (so
+        // it's no longer checked out). A detached worktree has no branch to drop.
+        if (opts.deleteBranch === true) {
+          const branch = trees.find(
+            (tree) => normalizePath(tree.path) === normalizePath(treePath),
+          )?.branch;
+          if (branch) steps.push(['branch', '-D', branch]);
+        }
       }
-      return mutateRepo(repoPath, steps, 'Could not remove the worktree.');
+      return mutateRepo(cwd, steps, 'Could not remove the worktree.');
     },
   );
 
@@ -3716,6 +3740,7 @@ function registerRepoIpc(): void {
       repoPath: unknown,
       worktreePath: unknown,
       lock: unknown,
+      reason: unknown,
     ): Promise<RefsMutationResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
@@ -3724,12 +3749,20 @@ function registerRepoIpc(): void {
       if (!treePath || treePath.startsWith('-')) {
         return { status: 'error', message: 'No worktree was specified.' };
       }
-      const verb = lock === true ? 'lock' : 'unlock';
-      return mutateRepo(
-        repoPath,
-        [['worktree', verb, treePath]],
-        `Could not ${verb} the worktree.`,
-      );
+      if (lock !== true) {
+        return mutateRepo(
+          repoPath,
+          [['worktree', 'unlock', treePath]],
+          'Could not unlock the worktree.',
+        );
+      }
+      const args = ['worktree', 'lock'];
+      // An optional reason recorded with the lock. `--reason` takes it as its own
+      // value (array args, no shell), so it's safe as free text; cap the length.
+      const why = typeof reason === 'string' ? reason.trim() : '';
+      if (why) args.push('--reason', why.slice(0, 500));
+      args.push(treePath);
+      return mutateRepo(repoPath, [args], 'Could not lock the worktree.');
     },
   );
 

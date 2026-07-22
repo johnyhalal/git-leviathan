@@ -567,8 +567,14 @@ body.is-col-resizing {
   padding: 2px 2px;
 }
 
-/* Muted "(locked)" suffix on a locked worktree row. */
-.repo-worktree-locked {
+/* Lock badge in the gutter, left of the icon, on a locked worktree row. Mirrors
+   the branch-check placement so the worktree icon stays column-aligned. */
+.repo-worktree-lock {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 4px;
+  display: inline-flex;
   color: var(--fg-muted);
 }
 
@@ -694,6 +700,9 @@ body.is-col-resizing {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  /* Cap a long branch list and scroll inside it, so the popup never runs off. */
+  max-height: 150px;
+  min-height: 0;
   overflow-y: auto;
 }
 

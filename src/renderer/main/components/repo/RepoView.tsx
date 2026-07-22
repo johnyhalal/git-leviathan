@@ -18,6 +18,7 @@ import { RepoColumns } from './RepoColumns';
 import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
 import { ConfirmProvider } from '../ConfirmBar';
+import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 
 interface RepoViewProps {
   title: string;
@@ -34,8 +35,12 @@ interface RepoViewProps {
   onOpenRepo?: (repo: RepoInfo) => void;
   /** Open a repository (e.g. a worktree's folder) in a new tab. */
   onOpenRepoInNewTab?: (repo: RepoInfo) => void;
-  /** A worktree at this path was removed: close any tabs open on that folder. */
-  onWorktreeRemoved?: (path: string) => void;
+  /**
+   * A worktree at `path` was removed: close any tabs open on that folder. When a
+   * closed tab was the active one, prefer switching to `originalRepoPath` (the
+   * worktree's parent repo) if a tab for it is open.
+   */
+  onWorktreeRemoved?: (path: string, originalRepoPath?: string) => void;
 }
 
 /**
@@ -434,20 +439,38 @@ export function RepoView({
   );
 
   const worktreeRemove = useCallback(
-    async (path: string, force: boolean, deleteBranch: boolean) => {
-      const result = await runMutation('Remove worktree failed', () =>
-        window.api.repo.worktreeRemove(repoPath, path, { force, deleteBranch }),
-      );
-      // On success, close any tabs still open on the now-removed worktree folder.
-      if (result.status === 'ok') onWorktreeRemoved?.(path);
+    async (
+      path: string,
+      force: boolean,
+      deleteBranch: boolean,
+    ): Promise<WorktreeRemoveOutcome> => {
+      const result = await window.api.repo.worktreeRemove(repoPath, path, {
+        force,
+        deleteBranch,
+      });
+      if (result.status === 'ok') {
+        // The worktree's parent repo — its main worktree, listed from any worktree
+        // — so a closed tab can fall back to the original repo's tab if it's open.
+        const originalRepo = refs?.worktrees.find((tree) => tree.isMain)?.path;
+        reload();
+        // Close any tabs still open on the now-removed worktree folder.
+        onWorktreeRemoved?.(path, originalRepo);
+        return 'ok';
+      }
+      // git refuses to delete a worktree with uncommitted/untracked changes (or a
+      // locked one) unless --force is given — its message says "use --force". Let
+      // the caller offer to force rather than surfacing that as a dead-end error.
+      if (!force && /--force/.test(result.message)) return 'needs-force';
+      onError?.('Remove worktree failed', result.message);
+      return 'error';
     },
-    [repoPath, runMutation, onWorktreeRemoved],
+    [repoPath, refs, reload, onWorktreeRemoved, onError],
   );
 
   const worktreeLock = useCallback(
-    (path: string, lock: boolean) =>
+    (path: string, lock: boolean, reason?: string) =>
       runMutation(lock ? 'Lock worktree failed' : 'Unlock worktree failed', () =>
-        window.api.repo.worktreeLock(repoPath, path, lock),
+        window.api.repo.worktreeLock(repoPath, path, lock, reason),
       ),
     [repoPath, runMutation],
   );
@@ -694,10 +717,8 @@ export function RepoView({
           onStashPop={(index) => void stashPop(index)}
           onStashDrop={(index) => void stashDrop(index)}
           onWorktreeAdded={reload}
-          onWorktreeRemove={(path, force, deleteBranch) =>
-            void worktreeRemove(path, force, deleteBranch)
-          }
-          onWorktreeLock={(path, lock) => void worktreeLock(path, lock)}
+          onWorktreeRemove={worktreeRemove}
+          onWorktreeLock={(path, lock, reason) => void worktreeLock(path, lock, reason)}
           onOpenWorktreeHere={openWorktreeHere}
           onOpenWorktreeInNewTab={openWorktreeInNewTab}
           gitflowConfig={gitflowConfig}

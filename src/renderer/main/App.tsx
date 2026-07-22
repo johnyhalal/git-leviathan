@@ -292,9 +292,11 @@ export function App() {
   /**
    * Close every tab whose repo is at `path` — used when a worktree is removed, so
    * its (now-deleted) folder isn't left open. Keeps at least one tab, replacing an
-   * emptied-out list with a fresh blank tab, and moves off a closed active tab.
+   * emptied-out list with a fresh blank tab. When the active tab was one of those
+   * closed, switch to the worktree's original repo tab (`preferPath`) if it's
+   * open, else the last remaining tab.
    */
-  const closeTabsForPath = (path: string) => {
+  const closeTabsForPath = (path: string, preferPath?: string) => {
     const remaining = tabs.filter((tab) => tab.repoPath !== path);
     if (remaining.length === tabs.length) return; // nothing matched
     if (remaining.length === 0) {
@@ -305,7 +307,10 @@ export function App() {
     }
     setTabs(remaining);
     if (!remaining.some((tab) => tab.id === activeId)) {
-      setActiveId(remaining[remaining.length - 1].id);
+      const original = preferPath
+        ? remaining.find((tab) => tab.repoPath === preferPath)
+        : undefined;
+      setActiveId((original ?? remaining[remaining.length - 1]).id);
     }
   };
 

@@ -12,6 +12,7 @@ import {
   FolderIcon,
   GitflowIcon,
   LocalIcon,
+  LockIcon,
   MoreIcon,
   PlusIcon,
   RemoteIcon,
@@ -26,6 +27,7 @@ import { StashContextMenu, type StashMenuTarget } from './StashContextMenu';
 import {
   WorktreeContextMenu,
   type WorktreeMenuTarget,
+  type WorktreeRemoveOutcome,
 } from './WorktreeContextMenu';
 import type {
   GitflowConfig,
@@ -482,9 +484,14 @@ function WorktreeRow({
         onOpenMenu(target, event.clientX, event.clientY);
       }}
     >
-      {worktree.isCurrent && (
-        <span className="repo-branch-check" aria-label="Current worktree">
-          <CheckIcon size={14} />
+      {worktree.locked && (
+        <span
+          className="repo-worktree-lock tooltip-host"
+          aria-label="Locked worktree"
+          // Always "Locked", with the reason appended when git recorded one.
+          data-tooltip={worktree.lockReason ? `Locked: ${worktree.lockReason}` : 'Locked'}
+        >
+          <LockIcon size={12} />
         </span>
       )}
       <button
@@ -504,10 +511,7 @@ function WorktreeRow({
         {/* The main worktree is the repository itself — a plain branch icon;
             linked worktrees get the tree icon. */}
         {worktree.isMain ? <BranchIcon size={14} /> : <WorktreeIcon size={14} />}
-        <span className="repo-list-label">
-          {detail}
-          {worktree.locked && <span className="repo-worktree-locked"> (locked)</span>}
-        </span>
+        <span className="repo-list-label">{detail}</span>
       </button>
       {hasMenu && (
         <button
@@ -576,10 +580,14 @@ interface RepoSidebarProps {
   onStashDrop: (index: number) => void;
   /** A worktree was added via the dialog: refs should reload. */
   onWorktreeAdded: () => void;
-  /** Remove the worktree at `path`; `force` when dirty, `deleteBranch` to drop its branch. */
-  onWorktreeRemove: (path: string, force: boolean, deleteBranch: boolean) => void;
-  /** Lock (`lock: true`) or unlock the worktree at `path`. */
-  onWorktreeLock: (path: string, lock: boolean) => void;
+  /** Remove the worktree at `path`; resolves whether it needs a forced retry. */
+  onWorktreeRemove: (
+    path: string,
+    force: boolean,
+    deleteBranch: boolean,
+  ) => Promise<WorktreeRemoveOutcome>;
+  /** Lock (`lock: true`, with optional reason) or unlock the worktree at `path`. */
+  onWorktreeLock: (path: string, lock: boolean, reason?: string) => void;
   /** Open a worktree's folder as a repository in the current tab. */
   onOpenWorktreeHere: (path: string) => void;
   /** Open a worktree's folder as a repository in a new tab. */

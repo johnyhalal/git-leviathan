@@ -220,6 +220,8 @@ export interface WorktreeInfo {
   bare: boolean;
   /** True when git reports the worktree as locked. */
   locked: boolean;
+  /** The lock reason, when one was given (`git worktree lock --reason`). */
+  lockReason?: string;
 }
 
 /** Options for adding a worktree (`git worktree add`). */
@@ -1281,12 +1283,14 @@ export interface RepoApi {
   /**
    * Lock (`lock: true`) or unlock the linked worktree at `worktreePath`
    * (`git worktree lock` / `unlock`). A locked worktree can't be pruned or removed
-   * without `--force`. Returns fresh refs.
+   * without `--force`. When locking, `reason` is recorded as the lock reason
+   * (`--reason`); ignored when unlocking. Returns fresh refs.
    */
   worktreeLock(
     path: string,
     worktreePath: string,
     lock: boolean,
+    reason?: string,
   ): Promise<RefsMutationResult>;
   /**
    * Whether `path` is itself a *linked* worktree (i.e. one added via

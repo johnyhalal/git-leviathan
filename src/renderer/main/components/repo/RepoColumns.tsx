@@ -9,6 +9,7 @@ import type {
   WorkingStatus,
 } from '../../../../types/ipc';
 import { RepoSidebar } from './RepoSidebar';
+import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 import { CommitList } from './CommitList';
 import { CommitPanel } from './CommitPanel';
 import { DiffView, type DiffTarget } from './DiffView';
@@ -76,10 +77,14 @@ interface RepoColumnsProps {
   onStashDrop: (index: number) => void;
   /** A worktree was added via the dialog: refs should reload. */
   onWorktreeAdded: () => void;
-  /** Remove the worktree at `path`; `force` when dirty, `deleteBranch` to drop its branch. */
-  onWorktreeRemove: (path: string, force: boolean, deleteBranch: boolean) => void;
-  /** Lock (`lock: true`) or unlock the worktree at `path`. */
-  onWorktreeLock: (path: string, lock: boolean) => void;
+  /** Remove the worktree at `path`; resolves whether it needs a forced retry. */
+  onWorktreeRemove: (
+    path: string,
+    force: boolean,
+    deleteBranch: boolean,
+  ) => Promise<WorktreeRemoveOutcome>;
+  /** Lock (`lock: true`, with optional reason) or unlock the worktree at `path`. */
+  onWorktreeLock: (path: string, lock: boolean, reason?: string) => void;
   /** Open a worktree's folder as a repository in the current tab. */
   onOpenWorktreeHere: (path: string) => void;
   /** Open a worktree's folder as a repository in a new tab. */
