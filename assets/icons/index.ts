@@ -5,6 +5,7 @@ export { PlusIcon } from './PlusIcon';
 export { MinusIcon } from './MinusIcon';
 export { PencilIcon } from './PencilIcon';
 export { FolderIcon } from './FolderIcon';
+export { FolderCogIcon } from './FolderCogIcon';
 export { CloneIcon } from './CloneIcon';
 export { FolderPlusIcon } from './FolderPlusIcon';
 export { SearchIcon } from './SearchIcon';

@@ -434,7 +434,7 @@ export function App() {
               setSettingsOpen(true);
             }}
           >
-            <GearIcon />
+            <GearIcon size={14} />
           </button>
         </div>
       </header>

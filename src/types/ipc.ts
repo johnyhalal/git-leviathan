@@ -313,6 +313,38 @@ export type GitflowConfigResult =
   | { status: 'error'; message: string };
 
 /**
+ * The repo's per-repository commit identity, read from its git config. Both
+ * fields reflect the *effective* value (local override falling back to global)
+ * when read, but are written to the repo's **local** config so they only ever
+ * scope this repository. Empty strings mean the value is unset everywhere.
+ */
+export interface RepoConfig {
+  userName: string;
+  userEmail: string;
+}
+
+/** Result of saving the repo config: the stored config, or an error message. */
+export type RepoConfigResult =
+  | { status: 'ok'; config: RepoConfig }
+  | { status: 'error'; message: string };
+
+/**
+ * Git LFS state for a repository, driving the repo settings' Git LFS tab. The
+ * app bundles git-lfs (via dugite), so availability/version aren't surfaced —
+ * only what the repo tracks. Tracking a pattern lazily runs `git lfs install
+ * --local`, so there's no separate "enable" step.
+ */
+export interface LfsStatus {
+  /** Patterns tracked by LFS, read from the repo's `.gitattributes`. */
+  patterns: string[];
+}
+
+/** Result of an LFS mutation: the repo's fresh LFS status, or an error message. */
+export type LfsResult =
+  | { status: 'ok'; lfs: LfsStatus }
+  | { status: 'error'; message: string };
+
+/**
  * How the toolbar's pull action reconciles with the upstream:
  * - `ff`        — `git pull` (fast-forward when possible, else a merge)
  * - `ff-only`   — `git pull --ff-only` (refuse anything but a fast-forward)
@@ -647,6 +679,16 @@ export const RepoChannels = {
   isWorktree: 'repo:is-worktree',
   /** Renderer -> main (invoke): whether a would-be path sits inside a git work tree. */
   pathInsideWorktree: 'repo:path-inside-worktree',
+  /** Renderer -> main (invoke): read the repo's commit-identity config. */
+  repoConfig: 'repo:config',
+  /** Renderer -> main (invoke): save the repo's commit identity to its local git config. */
+  repoSaveConfig: 'repo:save-config',
+  /** Renderer -> main (invoke): read the repo's Git LFS status. */
+  repoLfsStatus: 'repo:lfs-status',
+  /** Renderer -> main (invoke): track a pattern with Git LFS. */
+  repoLfsTrack: 'repo:lfs-track',
+  /** Renderer -> main (invoke): stop tracking a pattern with Git LFS. */
+  repoLfsUntrack: 'repo:lfs-untrack',
   /** Renderer -> main (invoke): read the repo's gitflow config, or null when unset. */
   gitflowConfig: 'repo:gitflow-config',
   /** Renderer -> main (invoke): save the repo's gitflow config to its git config. */
@@ -1330,6 +1372,22 @@ export interface RepoApi {
    * nesting a new worktree within another repository's working directory.
    */
   pathInsideWorktree(path: string): Promise<boolean>;
+  /**
+   * Read the repo's commit identity (`user.name` / `user.email`) — the effective
+   * value, so a repo with no local override shows the inherited global one.
+   */
+  repoConfig(path: string): Promise<RepoConfig>;
+  /**
+   * Persist the repo's commit identity to its **local** git config (never global).
+   * Returns the stored config, or an error when a value is rejected.
+   */
+  repoSaveConfig(path: string, config: RepoConfig): Promise<RepoConfigResult>;
+  /** Read the repo's Git LFS status (the patterns it tracks). */
+  repoLfsStatus(path: string): Promise<LfsStatus>;
+  /** Track `pattern` with Git LFS (ensures LFS is installed, writes `.gitattributes`). */
+  repoLfsTrack(path: string, pattern: string): Promise<LfsResult>;
+  /** Stop tracking `pattern` with Git LFS; returns fresh status. */
+  repoLfsUntrack(path: string, pattern: string): Promise<LfsResult>;
   /**
    * Read the repo's gitflow config (branch names + topic prefixes) from its git
    * config, or `null` when the repo hasn't been configured yet.

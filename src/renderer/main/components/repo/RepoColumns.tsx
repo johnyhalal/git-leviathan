@@ -3,12 +3,12 @@ import type {
   CommitLogEntry,
   ConflictFile,
   GitflowConfig,
-  GitflowConfigResult,
   GitflowKind,
   RepoRefs,
   WorkingStatus,
 } from '../../../../types/ipc';
 import { RepoSidebar } from './RepoSidebar';
+import type { RepoSettingsTabId } from './RepoSettingsDialog';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 import { CommitList } from './CommitList';
 import { CommitPanel } from './CommitPanel';
@@ -95,8 +95,6 @@ interface RepoColumnsProps {
   onOpenWorktreeInNewTab: (path: string) => void;
   /** The repo's gitflow config, or null when it hasn't been configured yet. */
   gitflowConfig: GitflowConfig | null;
-  /** Persist the repo's gitflow config; resolves with the saved config or an error. */
-  onGitflowSaveConfig: (config: GitflowConfig) => Promise<GitflowConfigResult>;
   /** Start a gitflow topic branch of `kind` named `name`, based off `source`. */
   onGitflowStart: (kind: GitflowKind, name: string, source: string) => void;
   /** Finish the current gitflow topic branch. */
@@ -104,6 +102,8 @@ interface RepoColumnsProps {
   onError?: (title: string, message: string) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
+  /** Open the per-repository settings dialog, optionally to a specific tab. */
+  onOpenRepoSettings?: (tab?: RepoSettingsTabId) => void;
 }
 
 /**
@@ -149,11 +149,11 @@ export function RepoColumns({
   onOpenWorktreeHere,
   onOpenWorktreeInNewTab,
   gitflowConfig,
-  onGitflowSaveConfig,
   onGitflowStart,
   onGitflowFinish,
   onError,
   onOpenSettings,
+  onOpenRepoSettings,
 }: RepoColumnsProps) {
   const { leftWidth, rightWidth, startResize } = useResizableColumns(240, 320);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
@@ -272,10 +272,10 @@ export function RepoColumns({
           onOpenWorktreeHere={onOpenWorktreeHere}
           onOpenWorktreeInNewTab={onOpenWorktreeInNewTab}
           gitflowConfig={gitflowConfig}
-          onGitflowSaveConfig={onGitflowSaveConfig}
           onGitflowStart={onGitflowStart}
           onGitflowFinish={onGitflowFinish}
           onOpenSettings={onOpenSettings}
+          onOpenRepoSettings={onOpenRepoSettings}
         />
       </div>
 

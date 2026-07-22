@@ -1,5 +1,5 @@
 import type { PullMode } from '../../../../types/ipc';
-import { PushIcon, StashIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon } from '../../../../../assets/icons';
+import { PushIcon, StashIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon, FolderCogIcon } from '../../../../../assets/icons';
 import { BranchSelect } from './BranchSelect';
 import { PullAction } from './PullAction';
 import { useConfirm } from '../ConfirmBar';
@@ -49,6 +49,8 @@ interface RepoToolbarProps {
   undoLabel: string | null;
   /** Label of the action the next redo would re-apply, or null when there's none. */
   redoLabel: string | null;
+  /** Open the per-repository settings dialog (commit identity, remotes). */
+  onOpenRepoSettings: () => void;
 }
 
 /**
@@ -75,6 +77,7 @@ export function RepoToolbar({
   onRedo,
   undoLabel,
   redoLabel,
+  onOpenRepoSettings,
 }: RepoToolbarProps) {
   const requestConfirm = useConfirm();
 
@@ -176,7 +179,17 @@ export function RepoToolbar({
         </button>
       </div>
 
-      <div className="repo-toolbar-right" />
+      <div className="repo-toolbar-right">
+        <button
+          type="button"
+          className="repo-settings-button tooltip-host"
+          data-tooltip="Repository settings"
+          aria-label="Repository settings"
+          onClick={onOpenRepoSettings}
+        >
+          <FolderCogIcon size={22} />
+        </button>
+      </div>
     </div>
   );
 }

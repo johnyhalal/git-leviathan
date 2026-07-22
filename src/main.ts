@@ -47,6 +47,10 @@ import {
   type GitflowKind,
   type GitflowConfig,
   type GitflowConfigResult,
+  type RepoConfig,
+  type RepoConfigResult,
+  type LfsStatus,
+  type LfsResult,
   type StashInfo,
   type WorktreeInfo,
   type WorktreeAddOptions,
@@ -1167,6 +1171,47 @@ function isGitflowValue(value: unknown): value is string {
     value.length > 0 &&
     !value.startsWith('-') &&
     /^[A-Za-z0-9._/-]+$/.test(value)
+  );
+}
+
+/**
+ * Read a repo's Git LFS status — the patterns it tracks. Read straight from
+ * `.gitattributes` (the file `git lfs track` writes) rather than parsing `git
+ * lfs track`'s human output, so it stays reliable. The app bundles git-lfs (via
+ * dugite), so availability/version aren't part of the model.
+ */
+async function readLfsStatus(cwd: string): Promise<LfsStatus> {
+  // First whitespace-delimited token of each `.gitattributes` line that routes
+  // through the lfs filter is a tracked pattern.
+  const patterns: string[] = [];
+  try {
+    const attributes = await fs.promises.readFile(path.join(cwd, '.gitattributes'), 'utf8');
+    for (const line of attributes.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#') || !/\bfilter=lfs\b/.test(trimmed)) continue;
+      const pattern = trimmed.split(/\s+/)[0];
+      if (pattern && !patterns.includes(pattern)) patterns.push(pattern);
+    }
+  } catch {
+    /* no .gitattributes → no tracked patterns */
+  }
+
+  return { patterns };
+}
+
+/**
+ * Validate an LFS pattern bound for `git lfs track`. Patterns are gitattributes
+ * globs, so allow the glob/path characters but reject anything that could be
+ * read as a flag or inject shell metacharacters (git runs via execFile, but the
+ * pattern still lands in `.gitattributes`).
+ */
+function isLfsPattern(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 200 &&
+    !value.startsWith('-') &&
+    /^[A-Za-z0-9._*?/[\]-]+$/.test(value)
   );
 }
 
@@ -3884,6 +3929,122 @@ function registerRepoIpc(): void {
       }
       const out = await runGit(dir, ['rev-parse', '--is-inside-work-tree']);
       return out.trim() === 'true';
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.repoConfig,
+    async (_event, repoPath: unknown): Promise<RepoConfig> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { userName: '', userEmail: '' };
+      }
+      // Read the *effective* identity (local override falls back to global) so a
+      // repo without a local override still pre-fills the inherited value.
+      const [userName, userEmail] = await Promise.all([
+        runGit(repoPath, ['config', '--get', 'user.name']),
+        runGit(repoPath, ['config', '--get', 'user.email']),
+      ]);
+      return { userName: userName.trim(), userEmail: userEmail.trim() };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.repoSaveConfig,
+    async (_event, repoPath: unknown, config: unknown): Promise<RepoConfigResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (!config || typeof config !== 'object') {
+        return { status: 'error', message: 'Invalid repository settings.' };
+      }
+      const raw = config as Record<keyof RepoConfig, unknown>;
+      const fields: { key: keyof RepoConfig; gitKey: string; label: string }[] = [
+        { key: 'userName', gitKey: 'user.name', label: 'commit author name' },
+        { key: 'userEmail', gitKey: 'user.email', label: 'commit author email' },
+      ];
+      const valid: RepoConfig = { userName: '', userEmail: '' };
+      for (const { key, label } of fields) {
+        const value = typeof raw[key] === 'string' ? (raw[key] as string).trim() : '';
+        // Names/emails legitimately contain spaces, `@` and dots, so no slug
+        // guard here — just require a non-empty value that can't be read as a flag.
+        if (!value || value.startsWith('-')) {
+          return { status: 'error', message: `Enter a valid ${label}.` };
+        }
+        valid[key] = value;
+      }
+      // Write to the repo's **local** config so we never touch the user's global
+      // identity. Plain config writes, not ref mutations, so no mutateRepo.
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+      try {
+        for (const { key, gitKey } of fields) {
+          await execFileAsync(gitBin, ['config', '--local', gitKey, valid[key]], {
+            cwd: repoPath,
+            env,
+          });
+        }
+      } catch (err) {
+        return {
+          status: 'error',
+          message: gitErrorMessage(err, 'Could not save repository settings.'),
+        };
+      }
+      return { status: 'ok', config: valid };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.repoLfsStatus,
+    async (_event, repoPath: unknown): Promise<LfsStatus> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return { patterns: [] };
+      return readLfsStatus(repoPath);
+    },
+  );
+
+  // Track/untrack mutate LFS state, then re-read and return the fresh status so
+  // the renderer re-renders from authoritative state. Each `lfs` step's git
+  // errors are distilled to one actionable line.
+  const runLfs = async (
+    repoPath: unknown,
+    steps: string[][],
+    fallback: string,
+  ): Promise<LfsResult> => {
+    if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+      return { status: 'error', message: 'Not a git repository.' };
+    }
+    const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+    try {
+      for (const args of steps) {
+        await execFileAsync(gitBin, ['lfs', ...args], { cwd: repoPath, env });
+      }
+    } catch (err) {
+      return { status: 'error', message: gitErrorMessage(err, fallback) };
+    }
+    return { status: 'ok', lfs: await readLfsStatus(repoPath) };
+  };
+
+  ipcMain.handle(
+    RepoChannels.repoLfsTrack,
+    (_event, repoPath: unknown, pattern: unknown): Promise<LfsResult> => {
+      if (!isLfsPattern(pattern)) {
+        return Promise.resolve({ status: 'error', message: 'Enter a valid pattern (e.g. *.psd).' });
+      }
+      // `install --local` first (idempotent) so LFS filters/hooks are wired up
+      // for this repo — there's no separate "enable" step in the UI.
+      return runLfs(
+        repoPath,
+        [['install', '--local'], ['track', pattern]],
+        'Could not track the pattern with Git LFS.',
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.repoLfsUntrack,
+    (_event, repoPath: unknown, pattern: unknown): Promise<LfsResult> => {
+      if (!isLfsPattern(pattern)) {
+        return Promise.resolve({ status: 'error', message: 'Invalid pattern.' });
+      }
+      return runLfs(repoPath, [['untrack', pattern]], 'Could not untrack the pattern with Git LFS.');
     },
   );
 

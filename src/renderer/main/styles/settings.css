@@ -97,6 +97,14 @@
   overflow-y: auto;
 }
 
+/* Header at the top of a content pane; defaults to the active tab's name. */
+.settings-content-title {
+  margin: 0 0 16px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
 /* ---- Settings sections & rows -------------------------------------------- */
 
 .settings-section + .settings-section {

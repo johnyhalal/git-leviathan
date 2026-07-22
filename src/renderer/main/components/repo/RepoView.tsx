@@ -7,6 +7,7 @@ import type {
   MergeState,
   PullMode,
   RefsMutationResult,
+  RepoConfig,
   RepoInfo,
   RepoRefs,
   UndoRedoState,
@@ -14,6 +15,7 @@ import type {
 } from '../../../../types/ipc';
 import { WORKING_TREE_HASH } from '../../../../types/ipc';
 import { RepoToolbar } from './RepoToolbar';
+import { RepoSettingsDialog, type RepoSettingsTabId } from './RepoSettingsDialog';
 import { RepoColumns } from './RepoColumns';
 import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
@@ -514,6 +516,29 @@ export function RepoView({
     [repoPath],
   );
 
+  // Per-repository settings dialog (commit identity + remotes + gitflow + LFS).
+  // The identity is fetched fresh each time the dialog opens; `null` while it
+  // loads. `repoSettingsTab` picks the tab to open on (e.g. deep-linked from the
+  // gitflow start dialog's settings gear).
+  const [repoSettingsOpen, setRepoSettingsOpen] = useState(false);
+  const [repoSettingsTab, setRepoSettingsTab] = useState<RepoSettingsTabId>('general');
+  const [repoConfig, setRepoConfig] = useState<RepoConfig | null>(null);
+  const openRepoSettings = useCallback((tab: RepoSettingsTabId = 'general') => {
+    setRepoSettingsTab(tab);
+    setRepoSettingsOpen(true);
+  }, []);
+  useEffect(() => {
+    if (!repoSettingsOpen) return;
+    let live = true;
+    setRepoConfig(null);
+    void window.api.repo.repoConfig(repoPath).then((config) => {
+      if (live) setRepoConfig(config);
+    });
+    return () => {
+      live = false;
+    };
+  }, [repoSettingsOpen, repoPath]);
+
   const gitflowStart = useCallback(
     (kind: GitflowKind, name: string, source: string) =>
       runMutation('Gitflow start failed', () =>
@@ -706,6 +731,7 @@ export function RepoView({
           onRedo={() => void redo()}
           undoLabel={undoRedo.undo}
           redoLabel={undoRedo.redo}
+          onOpenRepoSettings={() => openRepoSettings()}
         />
         {mergeState && (
           <MergeBanner
@@ -753,11 +779,11 @@ export function RepoView({
           onOpenWorktreeHere={openWorktreeHere}
           onOpenWorktreeInNewTab={openWorktreeInNewTab}
           gitflowConfig={gitflowConfig}
-          onGitflowSaveConfig={gitflowSaveConfig}
           onGitflowStart={(kind, name, source) => void gitflowStart(kind, name, source)}
           onGitflowFinish={() => void gitflowFinish()}
           onError={onError}
           onOpenSettings={onOpenSettings}
+          onOpenRepoSettings={openRepoSettings}
         />
         {resolverOpen && mergeState && (
           <ConflictResolver
@@ -766,6 +792,18 @@ export function RepoView({
             initialFile={resolverFile}
             onResolved={(next) => applyMergeRef.current(next)}
             onClose={() => setResolverOpen(false)}
+          />
+        )}
+        {repoSettingsOpen && (
+          <RepoSettingsDialog
+            repoPath={repoPath}
+            config={repoConfig}
+            remotes={refs?.remotes ?? []}
+            onSave={(config) => window.api.repo.repoSaveConfig(repoPath, config)}
+            gitflowConfig={gitflowConfig}
+            onGitflowSaveConfig={gitflowSaveConfig}
+            initialTab={repoSettingsTab}
+            onClose={() => setRepoSettingsOpen(false)}
           />
         )}
       </ConfirmProvider>

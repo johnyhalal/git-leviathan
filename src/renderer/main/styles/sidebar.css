@@ -803,6 +803,87 @@ body.is-col-resizing {
   gap: 14px;
 }
 
+/* Read-only remotes list in the repo-settings dialog. */
+.repo-settings-remotes {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.repo-settings-remote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.repo-settings-remote-name {
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.repo-settings-remote-url {
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ---- Git LFS tab --------------------------------------------------------- */
+
+.lfs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.lfs-track-row {
+  display: flex;
+  gap: 8px;
+}
+
+.lfs-track-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.lfs-patterns {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lfs-pattern {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.lfs-pattern-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lfs-pattern-remove {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+}
+
 /* Swap the plus button and the count on hover: the header action button stays
    hidden until the header is hovered, and the count fades out to make room for
    it. Scoped to sections that carry a header action (pull requests, gitflow). */

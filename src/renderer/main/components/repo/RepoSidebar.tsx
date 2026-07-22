@@ -39,7 +39,6 @@ import {
 } from './WorktreeContextMenu';
 import type {
   GitflowConfig,
-  GitflowConfigResult,
   GitflowKind,
   IntegrationProvider,
   LocalBranchInfo,
@@ -56,7 +55,7 @@ import { CollapsibleSection } from './CollapsibleSection';
 import { PullRequestDialog } from './PullRequestDialog';
 import { NewPullRequestDialog } from './NewPullRequestDialog';
 import { GitflowStartDialog } from './GitflowStartDialog';
-import { GitflowSettingsDialog } from './GitflowSettingsDialog';
+import type { RepoSettingsTabId } from './RepoSettingsDialog';
 import { WorktreeDialog, type WorktreeBranchOption } from './WorktreeDialog';
 
 const cx = (...parts: (string | false | undefined)[]) =>
@@ -714,14 +713,14 @@ interface RepoSidebarProps {
   onOpenWorktreeInNewTab: (path: string) => void;
   /** The repo's gitflow config, or null when it hasn't been configured yet. */
   gitflowConfig: GitflowConfig | null;
-  /** Persist the repo's gitflow config; resolves with the saved config or error. */
-  onGitflowSaveConfig: (config: GitflowConfig) => Promise<GitflowConfigResult>;
   /** Start a gitflow topic branch of `kind` named `name`, based off `source`. */
   onGitflowStart: (kind: GitflowKind, name: string, source: string) => void;
   /** Finish the current gitflow topic branch. */
   onGitflowFinish: () => void;
   /** Open the settings modal, optionally to a section (e.g. Integrations). */
   onOpenSettings?: (section?: string) => void;
+  /** Open the per-repository settings dialog, optionally to a specific tab. */
+  onOpenRepoSettings?: (tab?: RepoSettingsTabId) => void;
 }
 
 /**
@@ -755,16 +754,15 @@ export function RepoSidebar({
   onOpenWorktreeHere,
   onOpenWorktreeInNewTab,
   gitflowConfig,
-  onGitflowSaveConfig,
   onGitflowStart,
   onGitflowFinish,
   onOpenSettings,
+  onOpenRepoSettings,
 }: RepoSidebarProps) {
   const [active, setActive] = useState<string | null>(null);
   // Whether the "start a gitflow branch" dialog is open.
   const [gitflowStartOpen, setGitflowStartOpen] = useState(false);
   // Whether the gitflow settings dialog is open.
-  const [gitflowSettingsOpen, setGitflowSettingsOpen] = useState(false);
   // The branch delete menu opened by right-clicking a branch row, anchored at the
   // click point; null when closed.
   const [contextMenu, setContextMenu] = useState<{
@@ -1125,10 +1123,10 @@ export function RepoSidebar({
             aria-label={gitflowConfig ? 'Gitflow actions' : 'Set up gitflow'}
             data-tooltip={gitflowConfig ? 'Gitflow actions' : 'Set up gitflow'}
             onClick={() => {
-              // Unconfigured repos go straight to the settings dialog; configured
-              // ones open the "start a branch" dialog.
+              // Configured repos open the "start a branch" dialog; unconfigured
+              // ones go to the repo settings dialog's Gitflow tab to set it up.
               if (gitflowConfig) setGitflowStartOpen(true);
-              else setGitflowSettingsOpen(true);
+              else onOpenRepoSettings?.('gitflow');
             }}
           >
             <PlusIcon size={12} />
@@ -1412,18 +1410,13 @@ export function RepoSidebar({
           branchOptions={prBranchOptions}
           onStart={onGitflowStart}
           onFinish={onGitflowFinish}
-          // Layer the settings dialog on top rather than replacing this one, so
-          // closing settings returns here with the in-progress form intact.
-          onOpenSettings={() => setGitflowSettingsOpen(true)}
+          // The gear opens the repo settings dialog on its Gitflow tab (the same
+          // gitflow config form). Close this dialog so the two don't stack.
+          onOpenSettings={() => {
+            setGitflowStartOpen(false);
+            onOpenRepoSettings?.('gitflow');
+          }}
           onClose={() => setGitflowStartOpen(false)}
-          suspended={gitflowSettingsOpen}
-        />
-      )}
-      {gitflowSettingsOpen && (
-        <GitflowSettingsDialog
-          config={gitflowConfig}
-          onSave={onGitflowSaveConfig}
-          onClose={() => setGitflowSettingsOpen(false)}
         />
       )}
       {contextMenu && (

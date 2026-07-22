@@ -14,6 +14,10 @@ import {
   type GitflowKind,
   type GitflowConfig,
   type GitflowConfigResult,
+  type RepoConfig,
+  type RepoConfigResult,
+  type LfsStatus,
+  type LfsResult,
   type WorktreeAddOptions,
   type CloneProgress,
   type RepoActivityEvent,
@@ -227,6 +231,16 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.isWorktree, path) as Promise<boolean>,
     pathInsideWorktree: (path: string) =>
       ipcRenderer.invoke(RepoChannels.pathInsideWorktree, path) as Promise<boolean>,
+    repoConfig: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.repoConfig, path) as Promise<RepoConfig>,
+    repoSaveConfig: (path: string, config: RepoConfig) =>
+      ipcRenderer.invoke(RepoChannels.repoSaveConfig, path, config) as Promise<RepoConfigResult>,
+    repoLfsStatus: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.repoLfsStatus, path) as Promise<LfsStatus>,
+    repoLfsTrack: (path: string, pattern: string) =>
+      ipcRenderer.invoke(RepoChannels.repoLfsTrack, path, pattern) as Promise<LfsResult>,
+    repoLfsUntrack: (path: string, pattern: string) =>
+      ipcRenderer.invoke(RepoChannels.repoLfsUntrack, path, pattern) as Promise<LfsResult>,
     gitflowConfig: (path: string) =>
       ipcRenderer.invoke(RepoChannels.gitflowConfig, path) as Promise<GitflowConfig | null>,
     gitflowSaveConfig: (path: string, config: GitflowConfig) =>
