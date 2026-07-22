@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BranchIcon, CloseIcon, FolderIcon, PlusIcon } from '../../../../assets/icons';
+import { BranchIcon, CloseIcon, PlusIcon, WorktreeIcon } from '../../../../assets/icons';
 
 export interface Tab {
   id: string;
@@ -7,6 +7,11 @@ export interface Tab {
   title: string;
   /** Absolute path of the open repository, or undefined for an empty tab. */
   repoPath?: string;
+  /**
+   * True when the open repository is a linked worktree (added via
+   * `git worktree add`) rather than a main working tree — shown with a tree icon.
+   */
+  isWorktree?: boolean;
 }
 
 interface TabBarProps {
@@ -25,10 +30,6 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd, onReorder }: 
   // can show an insertion cue without mutating the list mid-drag.
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
-  // Hovered tab's path + anchor rect for the custom tooltip. Electron's native
-  // `title` tooltip is unreliable in the frameless titlebar region, so we draw
-  // our own.
-  const [hover, setHover] = useState<{ path: string; left: number; top: number } | null>(null);
   // Whether the strip is scrolled away from each edge, so we can show a fade
   // cue (and enable it) only on the side that has hidden tabs.
   const [overflow, setOverflow] = useState({ start: false, end: false });
@@ -102,15 +103,11 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd, onReorder }: 
               .join(' ')
           }
           draggable
+          // The repo path shows via the global design tooltip (portaled to body,
+          // so it isn't clipped by the frameless titlebar); empty tabs get none.
+          data-tooltip={tab.repoPath}
           onClick={() => onSelect(tab.id)}
-          onMouseEnter={(event) => {
-            if (!tab.repoPath) return;
-            const rect = event.currentTarget.getBoundingClientRect();
-            setHover({ path: tab.repoPath, left: rect.left, top: rect.bottom + 4 });
-          }}
-          onMouseLeave={() => setHover(null)}
           onDragStart={(event) => {
-            setHover(null);
             setDragId(tab.id);
             event.dataTransfer.effectAllowed = 'move';
           }}
@@ -131,8 +128,12 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd, onReorder }: 
           onDragEnd={endDrag}
         >
           {tab.repoPath && (
-            <span className="tab-icon" aria-hidden="true">
-              <BranchIcon size={14} />
+            <span
+              className="tab-icon"
+              aria-hidden="true"
+              data-tooltip={tab.isWorktree ? 'Worktree' : undefined}
+            >
+              {tab.isWorktree ? <WorktreeIcon size={14} /> : <BranchIcon size={14} />}
             </span>
           )}
           <span className="tab-title">{tab.title}</span>
@@ -164,12 +165,6 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onAdd, onReorder }: 
           <PlusIcon />
         </button>
       </div>
-      {hover && (
-        <div className="tab-tooltip" style={{ left: hover.left, top: hover.top }}>
-          <FolderIcon size={13} />
-          <span>{hover.path}</span>
-        </div>
-      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import type {
   MergeState,
   PullMode,
   RefsMutationResult,
+  RepoInfo,
   RepoRefs,
   UndoRedoState,
   WorkingStatus,
@@ -17,6 +18,7 @@ import { RepoColumns } from './RepoColumns';
 import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
 import { ConfirmProvider } from '../ConfirmBar';
+import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 
 interface RepoViewProps {
   title: string;
@@ -29,6 +31,16 @@ interface RepoViewProps {
   onSuccess?: (title: string, message: string) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
+  /** Open a repository (e.g. a worktree's folder) in the current tab. */
+  onOpenRepo?: (repo: RepoInfo) => void;
+  /** Open a repository (e.g. a worktree's folder) in a new tab. */
+  onOpenRepoInNewTab?: (repo: RepoInfo) => void;
+  /**
+   * A worktree at `path` was removed: close any tabs open on that folder. When a
+   * closed tab was the active one, prefer switching to `originalRepoPath` (the
+   * worktree's parent repo) if a tab for it is open.
+   */
+  onWorktreeRemoved?: (path: string, originalRepoPath?: string) => void;
 }
 
 /**
@@ -46,6 +58,9 @@ export function RepoView({
   onNotice,
   onSuccess,
   onOpenSettings,
+  onOpenRepo,
+  onOpenRepoInNewTab,
+  onWorktreeRemoved,
 }: RepoViewProps) {
   void title;
 
@@ -376,6 +391,7 @@ export function RepoView({
         // carries a note so the user isn't left wondering what happened.
         if (result.notice) onNotice?.('Nothing to do', result.notice);
       } else await surfaceConflictsOrError(failureTitle, result.message);
+      return result;
     },
     [onNotice, reload, surfaceConflictsOrError],
   );
@@ -420,6 +436,58 @@ export function RepoView({
         window.api.repo.stashDrop(repoPath, index),
       ),
     [repoPath, runMutation],
+  );
+
+  const worktreeRemove = useCallback(
+    async (
+      path: string,
+      force: boolean,
+      deleteBranch: boolean,
+    ): Promise<WorktreeRemoveOutcome> => {
+      const result = await window.api.repo.worktreeRemove(repoPath, path, {
+        force,
+        deleteBranch,
+      });
+      if (result.status === 'ok') {
+        // The worktree's parent repo — its main worktree, listed from any worktree
+        // — so a closed tab can fall back to the original repo's tab if it's open.
+        const originalRepo = refs?.worktrees.find((tree) => tree.isMain)?.path;
+        reload();
+        // Close any tabs still open on the now-removed worktree folder.
+        onWorktreeRemoved?.(path, originalRepo);
+        return 'ok';
+      }
+      // git refuses to delete a worktree with uncommitted/untracked changes (or a
+      // locked one) unless --force is given — its message says "use --force". Let
+      // the caller offer to force rather than surfacing that as a dead-end error.
+      if (!force && /--force/.test(result.message)) return 'needs-force';
+      onError?.('Remove worktree failed', result.message);
+      return 'error';
+    },
+    [repoPath, refs, reload, onWorktreeRemoved, onError],
+  );
+
+  const worktreeLock = useCallback(
+    (path: string, lock: boolean, reason?: string) =>
+      runMutation(lock ? 'Lock worktree failed' : 'Unlock worktree failed', () =>
+        window.api.repo.worktreeLock(repoPath, path, lock, reason),
+      ),
+    [repoPath, runMutation],
+  );
+
+  // A worktree's folder opened as a repository — in this tab or a new one. The
+  // folder name is the tab title, matching how repos open elsewhere.
+  const worktreeRepo = (path: string): RepoInfo => ({
+    name: path.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || path,
+    path,
+  });
+  const openWorktreeHere = useCallback(
+    (path: string) => onOpenRepo?.(worktreeRepo(path)),
+    [onOpenRepo],
+  );
+  const openWorktreeInNewTab = useCallback(
+    (path: string) => onOpenRepoInNewTab?.(worktreeRepo(path)),
+    [onOpenRepoInNewTab],
   );
 
   // The repo's gitflow config (branch names + prefixes), or null when it hasn't
@@ -648,6 +716,11 @@ export function RepoView({
           onStashApply={(index) => void stashApply(index)}
           onStashPop={(index) => void stashPop(index)}
           onStashDrop={(index) => void stashDrop(index)}
+          onWorktreeAdded={reload}
+          onWorktreeRemove={worktreeRemove}
+          onWorktreeLock={(path, lock, reason) => void worktreeLock(path, lock, reason)}
+          onOpenWorktreeHere={openWorktreeHere}
+          onOpenWorktreeInNewTab={openWorktreeInNewTab}
           gitflowConfig={gitflowConfig}
           onGitflowSaveConfig={gitflowSaveConfig}
           onGitflowStart={(kind, name, source) => void gitflowStart(kind, name, source)}

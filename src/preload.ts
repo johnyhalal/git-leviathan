@@ -14,6 +14,7 @@ import {
   type GitflowKind,
   type GitflowConfig,
   type GitflowConfigResult,
+  type WorktreeAddOptions,
   type CloneProgress,
   type RepoActivityEvent,
   type CloneRequest,
@@ -191,6 +192,31 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.stashPop, path, index) as Promise<RefsMutationResult>,
     stashDrop: (path: string, index: number) =>
       ipcRenderer.invoke(RepoChannels.stashDrop, path, index) as Promise<RefsMutationResult>,
+    worktreeAdd: (path: string, options: WorktreeAddOptions) =>
+      ipcRenderer.invoke(RepoChannels.worktreeAdd, path, options) as Promise<RefsMutationResult>,
+    worktreeRemove: (
+      path: string,
+      worktreePath: string,
+      options?: { force?: boolean; deleteBranch?: boolean },
+    ) =>
+      ipcRenderer.invoke(
+        RepoChannels.worktreeRemove,
+        path,
+        worktreePath,
+        options,
+      ) as Promise<RefsMutationResult>,
+    worktreeLock: (path: string, worktreePath: string, lock: boolean, reason?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.worktreeLock,
+        path,
+        worktreePath,
+        lock,
+        reason,
+      ) as Promise<RefsMutationResult>,
+    isWorktree: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.isWorktree, path) as Promise<boolean>,
+    pathInsideWorktree: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.pathInsideWorktree, path) as Promise<boolean>,
     gitflowConfig: (path: string) =>
       ipcRenderer.invoke(RepoChannels.gitflowConfig, path) as Promise<GitflowConfig | null>,
     gitflowSaveConfig: (path: string, config: GitflowConfig) =>

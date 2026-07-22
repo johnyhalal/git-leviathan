@@ -204,6 +204,44 @@ export interface StashInfo {
   branch?: string;
 }
 
+/** A linked working tree from `git worktree list`. */
+export interface WorktreeInfo {
+  /** Absolute path of the worktree's working directory. */
+  path: string;
+  /** Short branch name checked out there, or undefined when detached/bare. */
+  branch?: string;
+  /** Short HEAD hash (empty for a bare worktree). */
+  head: string;
+  /** True for the repository's primary (main) worktree, which can't be removed. */
+  isMain: boolean;
+  /** True when this is the worktree currently open in this tab. */
+  isCurrent: boolean;
+  /** True for a bare worktree (no checked-out working copy). */
+  bare: boolean;
+  /** True when git reports the worktree as locked. */
+  locked: boolean;
+  /** The lock reason, when one was given (`git worktree lock --reason`). */
+  lockReason?: string;
+}
+
+/** Options for adding a worktree (`git worktree add`). */
+export interface WorktreeAddOptions {
+  /** Absolute path of the new worktree's directory (must not already exist). */
+  path: string;
+  /**
+   * The local branch checked out in the new worktree. When a branch of this name
+   * already exists it is checked out as-is; otherwise a new branch is created off
+   * `startPoint`.
+   */
+  branch: string;
+  /**
+   * The ref the branch is based on when it has to be created — a local branch
+   * (`dev`) or a remote-tracking branch (`origin/dev`). Ignored when `branch`
+   * already exists locally.
+   */
+  startPoint: string;
+}
+
 /** The refs of an open repository, for the sidebar. */
 export interface RepoRefs {
   localBranches: LocalBranchInfo[];
@@ -212,6 +250,8 @@ export interface RepoRefs {
   remotes: RemoteInfo[];
   tags: TagInfo[];
   stashes: StashInfo[];
+  /** Linked working trees (`git worktree list`), including the main one. */
+  worktrees: WorktreeInfo[];
 }
 
 /**
@@ -593,6 +633,16 @@ export const RepoChannels = {
   stashPop: 'repo:stash-pop',
   /** Renderer -> main (invoke): discard a stash (`git stash drop`). */
   stashDrop: 'repo:stash-drop',
+  /** Renderer -> main (invoke): add a linked worktree (`git worktree add`). */
+  worktreeAdd: 'repo:worktree-add',
+  /** Renderer -> main (invoke): remove a linked worktree (`git worktree remove`). */
+  worktreeRemove: 'repo:worktree-remove',
+  /** Renderer -> main (invoke): lock/unlock a linked worktree (`git worktree lock`). */
+  worktreeLock: 'repo:worktree-lock',
+  /** Renderer -> main (invoke): whether a path is itself a linked worktree. */
+  isWorktree: 'repo:is-worktree',
+  /** Renderer -> main (invoke): whether a would-be path sits inside a git work tree. */
+  pathInsideWorktree: 'repo:path-inside-worktree',
   /** Renderer -> main (invoke): read the repo's gitflow config, or null when unset. */
   gitflowConfig: 'repo:gitflow-config',
   /** Renderer -> main (invoke): save the repo's gitflow config to its git config. */
@@ -1212,6 +1262,48 @@ export interface RepoApi {
   stashPop(path: string, index: number): Promise<RefsMutationResult>;
   /** Discard the stash at `index` (`git stash drop`). Returns fresh refs. */
   stashDrop(path: string, index: number): Promise<RefsMutationResult>;
+  /**
+   * Add a linked worktree (`git worktree add`). Either checks out an existing
+   * branch or creates a new one, at `options.path`. Resolves with fresh refs, or
+   * an error (e.g. the path exists, or the branch is already checked out
+   * elsewhere).
+   */
+  worktreeAdd(path: string, options: WorktreeAddOptions): Promise<RefsMutationResult>;
+  /**
+   * Remove the linked worktree at `worktreePath` (`git worktree remove`).
+   * `force` removes one with modified or untracked files; `deleteBranch` also
+   * deletes the branch that was checked out there (`git branch -D`). Returns
+   * fresh refs.
+   */
+  worktreeRemove(
+    path: string,
+    worktreePath: string,
+    options?: { force?: boolean; deleteBranch?: boolean },
+  ): Promise<RefsMutationResult>;
+  /**
+   * Lock (`lock: true`) or unlock the linked worktree at `worktreePath`
+   * (`git worktree lock` / `unlock`). A locked worktree can't be pruned or removed
+   * without `--force`. When locking, `reason` is recorded as the lock reason
+   * (`--reason`); ignored when unlocking. Returns fresh refs.
+   */
+  worktreeLock(
+    path: string,
+    worktreePath: string,
+    lock: boolean,
+    reason?: string,
+  ): Promise<RefsMutationResult>;
+  /**
+   * Whether `path` is itself a *linked* worktree (i.e. one added via
+   * `git worktree add`) rather than the repository's main worktree. False for a
+   * main worktree or a non-repository path.
+   */
+  isWorktree(path: string): Promise<boolean>;
+  /**
+   * Whether `path` — which need not exist yet — would live inside an existing git
+   * working tree (its nearest existing ancestor is inside one). Used to warn about
+   * nesting a new worktree within another repository's working directory.
+   */
+  pathInsideWorktree(path: string): Promise<boolean>;
   /**
    * Read the repo's gitflow config (branch names + topic prefixes) from its git
    * config, or `null` when the repo hasn't been configured yet.
