@@ -48,6 +48,8 @@ import {
   type GitflowConfig,
   type GitflowConfigResult,
   type StashInfo,
+  type WorktreeInfo,
+  type WorktreeAddOptions,
   type CommitLogEntry,
   type CommitRefDecoration,
   type CommitDetailData,
@@ -476,6 +478,17 @@ function isGitRepo(dir: string): boolean {
   }
 }
 
+/**
+ * Normalize a filesystem path for equality checks: resolve `.`/`..` and drop a
+ * trailing separator, and lowercase on the case-insensitive default platforms
+ * (macOS/Windows) so two spellings of the same worktree compare equal.
+ */
+function normalizePath(p: string): string {
+  if (!p) return '';
+  const resolved = path.resolve(p);
+  return process.platform === 'linux' ? resolved : resolved.toLowerCase();
+}
+
 /** Folder name a clone would land in, derived from the repo URL. */
 function repoNameFromUrl(url: string): string {
   const cleaned = url.trim().replace(/\/+$/, '').replace(/\.git$/i, '');
@@ -737,6 +750,13 @@ async function localBranchExists(cwd: string, branch: string): Promise<boolean> 
   return out.trim().length > 0;
 }
 
+/** Whether `ref` resolves to a commit in the repo at `cwd` (a local branch, a
+ * remote-tracking branch, a tag, a hash, …). */
+async function commitishExists(cwd: string, ref: string): Promise<boolean> {
+  const out = await runGit(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  return out.trim().length > 0;
+}
+
 /** The checked-out branch's short name, or '' when detached / on error. */
 async function currentBranchName(cwd: string): Promise<string> {
   const out = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
@@ -882,15 +902,87 @@ async function readStashes(cwd: string): Promise<StashInfo[]> {
   });
 }
 
+/**
+ * List the repository's linked working trees (`git worktree list --porcelain`).
+ * The porcelain output is one blank-line-delimited block per worktree — the main
+ * one first — each with `worktree <path>`, `HEAD <sha>`, and either
+ * `branch refs/heads/<name>`, `detached`, or `bare`, plus an optional `locked`.
+ * The block whose path is the current tab's top-level is flagged `isCurrent`.
+ */
+async function readWorktrees(cwd: string): Promise<WorktreeInfo[]> {
+  // `core.quotePath=false` keeps non-ASCII bytes in paths and the lock reason raw
+  // (UTF-8) instead of C-quoting them (e.g. "á" → \303\241), which would show up
+  // mangled in the UI.
+  const out = await runGit(cwd, [
+    '-c',
+    'core.quotePath=false',
+    'worktree',
+    'list',
+    '--porcelain',
+  ]);
+  if (!out.trim()) return [];
+  const current = normalizePath((await runGit(cwd, ['rev-parse', '--show-toplevel'])).trim());
+  const trees: WorktreeInfo[] = [];
+  for (const block of out.split(/\n{2,}/)) {
+    let treePath = '';
+    let head = '';
+    let branch: string | undefined;
+    let bare = false;
+    let locked = false;
+    let lockReason: string | undefined;
+    for (const line of nonEmptyLines(block)) {
+      if (line.startsWith('worktree ')) treePath = line.slice('worktree '.length);
+      else if (line.startsWith('HEAD ')) head = line.slice('HEAD '.length).slice(0, 7);
+      else if (line.startsWith('branch '))
+        branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+      else if (line === 'bare') bare = true;
+      else if (line === 'locked' || line.startsWith('locked ')) {
+        locked = true;
+        // A reason, when given, follows on the same line: "locked <reason>".
+        const reason = line.slice('locked'.length).trim();
+        if (reason) lockReason = reason;
+      }
+    }
+    if (!treePath) continue;
+    trees.push({
+      path: treePath,
+      head,
+      branch,
+      bare,
+      locked,
+      lockReason,
+      // Porcelain lists the primary worktree first.
+      isMain: trees.length === 0,
+      isCurrent: normalizePath(treePath) === current,
+    });
+  }
+  return trees;
+}
+
+/**
+ * Whether `cwd` is a *linked* worktree rather than the repository's main one.
+ * A linked worktree's per-worktree git dir (`.git/worktrees/<name>`) differs from
+ * the shared common dir (`.git`); for the main worktree the two are the same.
+ * (A submodule's two dirs also coincide, so this doesn't false-positive on one.)
+ */
+async function isLinkedWorktree(cwd: string): Promise<boolean> {
+  const gitDir = (await runGit(cwd, ['rev-parse', '--git-dir'])).trim();
+  const commonDir = (await runGit(cwd, ['rev-parse', '--git-common-dir'])).trim();
+  if (!gitDir || !commonDir) return false;
+  // Both can come back relative to cwd; resolve before comparing.
+  return normalizePath(path.resolve(cwd, gitDir)) !== normalizePath(path.resolve(cwd, commonDir));
+}
+
 async function readRefs(cwd: string): Promise<RepoRefs> {
-  const [localBranches, remoteBranches, remotes, tags, stashes] = await Promise.all([
+  const [localBranches, remoteBranches, remotes, tags, stashes, worktrees] = await Promise.all([
     readLocalBranches(cwd),
     readRemoteBranches(cwd),
     readRemotes(cwd),
     readTags(cwd),
     readStashes(cwd),
+    readWorktrees(cwd),
   ]);
-  return { localBranches, remoteBranches, remotes, tags, stashes };
+  return { localBranches, remoteBranches, remotes, tags, stashes, worktrees };
 }
 
 /**
@@ -2741,7 +2833,14 @@ function registerRepoIpc(): void {
     RepoChannels.listRefs,
     async (_event, repoPath: unknown): Promise<RepoRefs> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
-        return { localBranches: [], remoteBranches: [], remotes: [], tags: [], stashes: [] };
+        return {
+          localBranches: [],
+          remoteBranches: [],
+          remotes: [],
+          tags: [],
+          stashes: [],
+          worktrees: [],
+        };
       }
       return readRefs(repoPath);
     },
@@ -3524,6 +3623,172 @@ function registerRepoIpc(): void {
         [['stash', 'drop', `stash@{${index}}`]],
         'Could not drop the stash.',
       );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.worktreeAdd,
+    async (
+      _event,
+      repoPath: unknown,
+      options: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const opts = (options ?? {}) as Partial<WorktreeAddOptions>;
+      const treePath = typeof opts.path === 'string' ? opts.path.trim() : '';
+      // The path is used as a positional arg; reject a leading dash so it can't be
+      // read as a flag, and require it not already exist (git refuses anyway, but
+      // this gives a clearer message).
+      if (!treePath || treePath.startsWith('-')) {
+        return { status: 'error', message: 'Choose a location for the worktree.' };
+      }
+      if (fs.existsSync(treePath)) {
+        return {
+          status: 'error',
+          message: 'That location already exists — pick a new folder name.',
+        };
+      }
+      // Keep the branch name ref-legal so it can't inject a flag, matching the
+      // create-branch handler.
+      const branch = typeof opts.branch === 'string' ? opts.branch.trim() : '';
+      if (!branch || !/^[A-Za-z0-9._/-]+$/.test(branch) || branch.startsWith('-')) {
+        return { status: 'error', message: 'Enter a valid branch name.' };
+      }
+      // A branch that already exists locally is simply checked out in the new
+      // worktree; git refuses one already open in another worktree, surfaced as an
+      // error.
+      if (await localBranchExists(repoPath, branch)) {
+        return mutateRepo(
+          repoPath,
+          [['worktree', 'add', treePath, branch]],
+          `Could not add a worktree for “${branch}”.`,
+        );
+      }
+      // Otherwise create the branch off the chosen start-point — a local branch
+      // (`dev`) or a remote-tracking one (`origin/dev`), from which git sets up
+      // tracking automatically. The start-point comes from the repo's own ref
+      // list; validate it resolves to a commit before use.
+      const startPoint = typeof opts.startPoint === 'string' ? opts.startPoint.trim() : '';
+      if (
+        !startPoint ||
+        !/^[A-Za-z0-9._/-]+$/.test(startPoint) ||
+        startPoint.startsWith('-')
+      ) {
+        return { status: 'error', message: 'Choose a branch to base the worktree on.' };
+      }
+      if (!(await commitishExists(repoPath, startPoint))) {
+        return { status: 'error', message: `“${startPoint}” doesn’t exist.` };
+      }
+      return mutateRepo(
+        repoPath,
+        [['worktree', 'add', '-b', branch, treePath, startPoint]],
+        `Could not create the worktree for “${branch}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.worktreeRemove,
+    async (
+      _event,
+      repoPath: unknown,
+      worktreePath: unknown,
+      options: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const treePath = typeof worktreePath === 'string' ? worktreePath.trim() : '';
+      if (!treePath || treePath.startsWith('-')) {
+        return { status: 'error', message: 'No worktree was specified.' };
+      }
+      const opts = (options ?? {}) as { force?: boolean; deleteBranch?: boolean };
+      const removeArgs = ['worktree', 'remove'];
+      if (opts.force === true) removeArgs.push('--force');
+      removeArgs.push(treePath);
+      const steps: string[][] = [removeArgs];
+
+      // When removing the worktree we're running from, its directory (our cwd) is
+      // deleted by the remove step — so a follow-up `git branch -D`, and the final
+      // refs read, would fail with "cannot change to '…': No such file or
+      // directory". Run the steps from the main worktree instead, which survives.
+      const removingSelf = normalizePath(repoPath) === normalizePath(treePath);
+      let cwd = repoPath;
+      if (opts.deleteBranch === true || removingSelf) {
+        const trees = await readWorktrees(repoPath);
+        if (removingSelf) cwd = trees.find((tree) => tree.isMain)?.path ?? repoPath;
+        // Optionally delete the branch the worktree had checked out — resolved from
+        // the repo's own worktree list, deleted *after* the worktree is gone (so
+        // it's no longer checked out). A detached worktree has no branch to drop.
+        if (opts.deleteBranch === true) {
+          const branch = trees.find(
+            (tree) => normalizePath(tree.path) === normalizePath(treePath),
+          )?.branch;
+          if (branch) steps.push(['branch', '-D', branch]);
+        }
+      }
+      return mutateRepo(cwd, steps, 'Could not remove the worktree.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.worktreeLock,
+    async (
+      _event,
+      repoPath: unknown,
+      worktreePath: unknown,
+      lock: unknown,
+      reason: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const treePath = typeof worktreePath === 'string' ? worktreePath.trim() : '';
+      if (!treePath || treePath.startsWith('-')) {
+        return { status: 'error', message: 'No worktree was specified.' };
+      }
+      if (lock !== true) {
+        return mutateRepo(
+          repoPath,
+          [['worktree', 'unlock', treePath]],
+          'Could not unlock the worktree.',
+        );
+      }
+      const args = ['worktree', 'lock'];
+      // An optional reason recorded with the lock. `--reason` takes it as its own
+      // value (array args, no shell), so it's safe as free text; cap the length.
+      const why = typeof reason === 'string' ? reason.trim() : '';
+      if (why) args.push('--reason', why.slice(0, 500));
+      args.push(treePath);
+      return mutateRepo(repoPath, [args], 'Could not lock the worktree.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.isWorktree,
+    async (_event, repoPath: unknown): Promise<boolean> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return false;
+      return isLinkedWorktree(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.pathInsideWorktree,
+    async (_event, target: unknown): Promise<boolean> => {
+      if (typeof target !== 'string' || target.length === 0) return false;
+      // Walk up to the nearest ancestor that exists on disk (the target itself
+      // usually doesn't yet), then ask git whether that directory is inside a work
+      // tree. `--is-inside-work-tree` prints "true" only within a checkout.
+      let dir = path.resolve(target);
+      while (!fs.existsSync(dir)) {
+        const parent = path.dirname(dir);
+        if (parent === dir) return false;
+        dir = parent;
+      }
+      const out = await runGit(dir, ['rev-parse', '--is-inside-work-tree']);
+      return out.trim() === 'true';
     },
   );
 

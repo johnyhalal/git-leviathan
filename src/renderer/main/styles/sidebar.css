@@ -562,14 +562,209 @@ body.is-col-resizing {
 }
 
 .repo-pr-new,
-.repo-gitflow-new {
+.repo-gitflow-new,
+.repo-worktree-new {
   padding: 2px 2px;
+}
+
+/* Lock badge in the gutter, left of the icon, on a locked worktree row. Mirrors
+   the branch-check placement so the worktree icon stays column-aligned. */
+.repo-worktree-lock {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 4px;
+  display: inline-flex;
+  color: var(--fg-muted);
 }
 
 /* Per-field helper text under a gitflow settings input. */
 .gitflow-form-hint {
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+/* Add-worktree dialog: same width as the new-PR dialog; height hugs content. */
+.worktree-dialog {
+  width: min(560px, 100%);
+  height: auto;
+  max-height: calc(100vh - 48px);
+}
+
+/* Primary-tinted focus for this dialog's fields (the shared PR form is green). */
+.worktree-dialog .pr-form-field input:focus,
+.worktree-dialog .pr-form-field textarea:focus {
+  border-color: var(--primary);
+}
+
+/* This dialog's field hint is informational, so grey rather than the shared
+   PR form's amber (which flags a validation warning). */
+.worktree-dialog .pr-form-hint {
+  color: var(--fg-muted);
+}
+
+/* …a real validation failure (branch already in a worktree) turns it red, … */
+.worktree-dialog .pr-form-hint.worktree-hint-error {
+  color: var(--danger);
+}
+
+/* …and a soft advisory (worktree nested in the working dir) turns it amber. */
+.worktree-dialog .pr-form-hint.worktree-hint-warn {
+  color: #d29922;
+}
+
+/* Custom "Check out" dropdown: a form-control trigger over a popup list whose
+   rows carry a local/remote icon. Modeled on the toolbar branch picker. */
+.wt-select {
+  position: relative;
+}
+
+.wt-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wt-select-trigger:focus-visible,
+.wt-select.is-open .wt-select-trigger {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* The leading (local/remote) glyph and the trailing chevron. */
+.wt-select-trigger > svg {
+  color: var(--fg-muted);
+  flex: 0 0 auto;
+}
+
+.wt-select-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wt-select-placeholder {
+  flex: 1 1 auto;
+  color: var(--fg-muted);
+}
+
+.wt-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+  padding: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.wt-select-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.wt-select-search input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.wt-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* Cap a long branch list and scroll inside it, so the popup never runs off. */
+  max-height: 150px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.wt-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wt-select-option > svg {
+  color: var(--fg-muted);
+  flex: 0 0 auto;
+}
+
+.wt-select-option:hover {
+  background: var(--control-bg);
+}
+
+.wt-select-option.is-selected {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.wt-select-option.is-selected > svg {
+  color: var(--primary);
+}
+
+.wt-select-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* Location field: a path input with a Browse button beside it. */
+.worktree-location-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.worktree-location-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.worktree-browse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 /* Gitflow settings: two columns — base branches on the left, prefixes on the
@@ -598,14 +793,16 @@ body.is-col-resizing {
    hidden until the header is hovered, and the count fades out to make room for
    it. Scoped to sections that carry a header action (pull requests, gitflow). */
 .repo-section-header-row:has(.repo-section-header-action) .repo-pr-new,
-.repo-section-header-row:has(.repo-section-header-action) .repo-gitflow-new {
+.repo-section-header-row:has(.repo-section-header-action) .repo-gitflow-new,
+.repo-section-header-row:has(.repo-section-header-action) .repo-worktree-new {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
 }
 
 .repo-section-header-row:has(.repo-section-header-action):hover .repo-pr-new,
-.repo-section-header-row:has(.repo-section-header-action):hover .repo-gitflow-new {
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-gitflow-new,
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-worktree-new {
   opacity: 1;
   pointer-events: auto;
 }

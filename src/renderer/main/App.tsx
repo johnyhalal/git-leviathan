@@ -109,6 +109,22 @@ export function App() {
   // Gate tab persistence until the initial restore has run, so the default
   // empty tab can't overwrite the saved list before it's loaded.
   const tabsHydrated = useRef(false);
+  // Cache of "is this path a linked worktree?", keyed by repo path, so each open
+  // tab can show a worktree (tree) icon. Filled lazily from the main process.
+  const [worktreeByPath, setWorktreeByPath] = useState<Record<string, boolean>>({});
+
+  // Look up any open repo path we haven't classified yet. The `in` guard keeps
+  // each path to a single query even as this re-runs when the cache updates.
+  useEffect(() => {
+    for (const path of new Set(
+      tabs.map((tab) => tab.repoPath).filter((p): p is string => !!p),
+    )) {
+      if (path in worktreeByPath) continue;
+      void window.api.repo.isWorktree(path).then((is) =>
+        setWorktreeByPath((prev) => (path in prev ? prev : { ...prev, [path]: is })),
+      );
+    }
+  }, [tabs, worktreeByPath]);
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
 
@@ -273,6 +289,31 @@ export function App() {
     }
   };
 
+  /**
+   * Close every tab whose repo is at `path` — used when a worktree is removed, so
+   * its (now-deleted) folder isn't left open. Keeps at least one tab, replacing an
+   * emptied-out list with a fresh blank tab. When the active tab was one of those
+   * closed, switch to the worktree's original repo tab (`preferPath`) if it's
+   * open, else the last remaining tab.
+   */
+  const closeTabsForPath = (path: string, preferPath?: string) => {
+    const remaining = tabs.filter((tab) => tab.repoPath !== path);
+    if (remaining.length === tabs.length) return; // nothing matched
+    if (remaining.length === 0) {
+      const fresh: Tab = { id: `tab-${nextTabId++}`, title: 'New Tab' };
+      setTabs([fresh]);
+      setActiveId(fresh.id);
+      return;
+    }
+    setTabs(remaining);
+    if (!remaining.some((tab) => tab.id === activeId)) {
+      const original = preferPath
+        ? remaining.find((tab) => tab.repoPath === preferPath)
+        : undefined;
+      setActiveId((original ?? remaining[remaining.length - 1]).id);
+    }
+  };
+
   /** Move the tab with `id` so it occupies `toIndex` in the new order. */
   const reorderTab = (id: string, toIndex: number) => {
     setTabs((prev) => {
@@ -287,8 +328,19 @@ export function App() {
     });
   };
 
-  /** Bind a repository to the active tab, turning it into an open-repo tab. */
+  /**
+   * Bind a repository to the active tab, turning it into an open-repo tab. If the
+   * repo is already open in another tab, switch to that one instead of opening a
+   * duplicate.
+   */
   const openRepo = (repo: RepoInfo) => {
+    const existing = tabs.find(
+      (tab) => tab.repoPath === repo.path && tab.id !== activeId,
+    );
+    if (existing) {
+      setActiveId(existing.id);
+      return;
+    }
     setTabs((prev) =>
       prev.map((tab) =>
         tab.id === activeId
@@ -298,6 +350,22 @@ export function App() {
     );
     // Let the main process record recency (stamp the time, de-dupe, persist)
     // and drive the list off the authoritative result it returns.
+    void window.api.repo.recordOpened(repo).then(setRecentRepos);
+  };
+
+  /**
+   * Open a repository in a brand-new tab (e.g. a worktree's folder). If a tab for
+   * that path is already open, just switch to it rather than opening a duplicate.
+   */
+  const openRepoInNewTab = (repo: RepoInfo) => {
+    const existing = tabs.find((tab) => tab.repoPath === repo.path);
+    if (existing) {
+      setActiveId(existing.id);
+      return;
+    }
+    const id = `tab-${nextTabId++}`;
+    setTabs((prev) => [...prev, { id, title: repo.name, repoPath: repo.path }]);
+    setActiveId(id);
     void window.api.repo.recordOpened(repo).then(setRecentRepos);
   };
 
@@ -346,7 +414,9 @@ export function App() {
     <div className={isMac ? 'app is-mac' : 'app'}>
       <header className="topbar">
         <TabBar
-          tabs={tabs}
+          tabs={tabs.map((tab) =>
+            tab.repoPath ? { ...tab, isWorktree: worktreeByPath[tab.repoPath] } : tab,
+          )}
           activeId={activeId}
           onSelect={setActiveId}
           onClose={closeTab}
@@ -395,6 +465,9 @@ export function App() {
               setSettingsSection(section);
               setSettingsOpen(true);
             }}
+            onOpenRepo={openRepo}
+            onOpenRepoInNewTab={openRepoInNewTab}
+            onWorktreeRemoved={closeTabsForPath}
           />
         ) : (
           <RepoStart
