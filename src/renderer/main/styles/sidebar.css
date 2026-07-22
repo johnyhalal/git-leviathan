@@ -157,6 +157,20 @@ body.is-col-resizing {
   background: color-mix(in srgb, var(--selection) 18%, transparent);
 }
 
+/* While a branch is being dragged, every row it could be dropped onto is tinted
+   with a dashed outline so the valid targets are visible at a glance. */
+.repo-list-item.is-drop-eligible {
+  outline: 1px dashed color-mix(in srgb, var(--selection) 55%, transparent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--selection) 8%, transparent);
+}
+
+/* The eligible row the cursor is currently over gets a stronger, solid highlight. */
+.repo-list-item.is-drop-eligible.is-drop-target {
+  outline: 2px solid var(--selection);
+  background: color-mix(in srgb, var(--selection) 24%, transparent);
+}
+
 /* The checked-out branch keeps a green highlight at all times — and stays green
    even when it's also the selected row (green wins over the blue selection). */
 .repo-list-item.is-current,

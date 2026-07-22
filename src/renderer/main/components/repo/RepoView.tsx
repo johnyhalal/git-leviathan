@@ -549,6 +549,35 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
+  // Fast-forward the local branch `target` to `source` (dragging a branch onto
+  // another in the sidebar). Same mutation shape as merge/rebase.
+  const fastForward = useCallback(
+    (source: string, target: string) =>
+      runMutation('Fast-forward failed', () =>
+        window.api.repo.fastForward(repoPath, source, target),
+      ),
+    [repoPath, runMutation],
+  );
+
+  // Push a local branch to a specific remote branch (dragging a local branch onto
+  // a remote one). Reloads the ahead/behind counts on success and resolves whether
+  // it succeeded, so a follow-up "start a pull request" only opens once the branch
+  // reached the remote.
+  const pushBranch = useCallback(
+    async (remote: string, localBranch: string, remoteBranch: string): Promise<boolean> => {
+      const result = await window.api.repo.pushBranch(repoPath, remote, localBranch, remoteBranch);
+      if (result.status === 'ok') {
+        closeDiff();
+        reload();
+        onSuccess?.('Pushed successfully', `“${localBranch}” pushed to “${remote}/${remoteBranch}”.`);
+        return true;
+      }
+      onError?.('Push failed', result.message);
+      return false;
+    },
+    [repoPath, reload, closeDiff, onError, onSuccess],
+  );
+
   const renameBranch = useCallback(
     (oldName: string, newName: string) =>
       runMutation('Rename failed', () =>
@@ -710,6 +739,8 @@ export function RepoView({
           onCancelCreateBranch={() => setCreatingBranch(false)}
           onMergeBranch={(source, target) => void mergeBranch(source, target)}
           onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
+          onFastForward={(source, target) => void fastForward(source, target)}
+          onPushBranch={pushBranch}
           onRenameBranch={(oldName, newName) => void renameBranch(oldName, newName)}
           onDeleteBranch={(branch) => void deleteBranch(branch)}
           onDeleteRemoteBranch={(remote, branch) => void deleteRemoteBranch(remote, branch)}

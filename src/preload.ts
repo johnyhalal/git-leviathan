@@ -184,6 +184,16 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.merge, path, source, target) as Promise<RefsMutationResult>,
     rebase: (path: string, source: string, target: string) =>
       ipcRenderer.invoke(RepoChannels.rebase, path, source, target) as Promise<RefsMutationResult>,
+    fastForward: (path: string, source: string, target: string) =>
+      ipcRenderer.invoke(RepoChannels.fastForward, path, source, target) as Promise<RefsMutationResult>,
+    pushBranch: (path: string, remote: string, localBranch: string, remoteBranch: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.pushBranch,
+        path,
+        remote,
+        localBranch,
+        remoteBranch,
+      ) as Promise<CommitResult>,
     stashPush: (path: string) =>
       ipcRenderer.invoke(RepoChannels.stashPush, path) as Promise<RefsMutationResult>,
     stashApply: (path: string, index: number) =>

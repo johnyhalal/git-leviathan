@@ -25,6 +25,8 @@
   font-size: 14px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
   animation: toast-in 0.18s ease;
+  min-width: 320px;
+  max-width: 480px;
 }
 
 .toast-green {

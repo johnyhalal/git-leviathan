@@ -765,12 +765,13 @@ async function currentBranchName(cwd: string): Promise<string> {
 }
 
 /**
- * Validate an untrusted (repo, source, target) branch-pair from IPC for a merge
- * or rebase: the path must be a repo, both branches must be strings naming
- * distinct, existing local branches. Returns an error message, or null when the
- * pair is safe to act on.
+ * Validate an untrusted (repo, source, target) pair for an integrate operation
+ * (merge / rebase / fast-forward). `target` must name a distinct, existing local
+ * branch; `source` may be a local branch or a remote-tracking ref (`origin/main`)
+ * — validated to exist and to match a configured remote so no arbitrary string
+ * reaches the git invocation. Returns an error message, or null when safe.
  */
-async function validateBranchPair(
+async function validateIntegratePair(
   repoPath: unknown,
   source: unknown,
   target: unknown,
@@ -782,12 +783,25 @@ async function validateBranchPair(
       typeof target !== 'string' || target.length === 0) {
     return 'No branch was specified.';
   }
-  if (source === target) return 'Choose two different branches.';
-  if (!(await localBranchExists(repoPath, source))) {
-    return `Branch “${source}” doesn’t exist.`;
+  // Neither may start with a dash (would be read as an option), and they must differ.
+  if (source.startsWith('-') || target.startsWith('-')) {
+    return 'No branch was specified.';
   }
+  if (source === target) return 'Choose two different branches.';
   if (!(await localBranchExists(repoPath, target))) {
     return `Branch “${target}” doesn’t exist.`;
+  }
+  // The source is a local branch, or a remote-tracking ref whose first segment
+  // names a configured remote and which resolves to a real commit.
+  if (!(await localBranchExists(repoPath, source))) {
+    const slash = source.indexOf('/');
+    const remote = slash === -1 ? '' : source.slice(0, slash);
+    const remotes = new Set(
+      (await runGit(repoPath, ['remote'])).split('\n').map((name) => name.trim()).filter(Boolean),
+    );
+    if (!remote || !remotes.has(remote) || !(await commitishExists(repoPath, source))) {
+      return `Branch “${source}” doesn’t exist.`;
+    }
   }
   return null;
 }
@@ -1458,14 +1472,17 @@ async function integrateBranch(
   cwd: string,
   target: string,
   source: string,
-  op: 'merge' | 'rebase',
+  op: 'merge' | 'rebase' | 'ff-only',
   fallback: string,
 ): Promise<RefsMutationResult> {
   const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+  // A fast-forward is a merge that refuses to create a merge commit.
+  const args = op === 'ff-only' ? ['merge', '--ff-only', source] : [op, source];
+  const label = op === 'ff-only' ? 'merge' : op;
   let output = '';
   try {
     await spawnGit(cwd, ['checkout', target], 'checkout', env);
-    const result = await spawnGit(cwd, [op, source], op, env);
+    const result = await spawnGit(cwd, args, label, env);
     output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   } catch (err) {
     return { status: 'error', message: gitErrorMessage(err, fallback) };
@@ -2380,6 +2397,26 @@ function pullErrorMessage(err: unknown): string {
     return 'Pull stopped on conflicts. Resolve them in your working tree, then continue.';
   }
   return gitErrorMessage(err, 'Pull failed.');
+}
+
+/**
+ * Distil a failed `git checkout`/`switch` into one actionable line. A dirty
+ * working tree makes git abort before switching (nothing is lost), but its
+ * final stderr line is a bare "Aborting" — name the real blocker instead.
+ */
+function checkoutErrorMessage(err: unknown, branch: string): string {
+  let output = '';
+  if (err && typeof err === 'object') {
+    const e = err as { stdout?: unknown; stderr?: unknown };
+    output = `${String(e.stdout ?? '')}\n${String(e.stderr ?? '')}`;
+  }
+  if (/local changes to the following files would be overwritten/i.test(output)) {
+    return `You have uncommitted changes that switching to “${branch}” would overwrite. Commit or stash them, then switch.`;
+  }
+  if (/untracked working tree files would be overwritten/i.test(output)) {
+    return `Untracked files in your working tree clash with “${branch}”. Move or remove them, then switch.`;
+  }
+  return gitErrorMessage(err, `Could not check out “${branch}”.`);
 }
 
 /**
@@ -3374,7 +3411,7 @@ function registerRepoIpc(): void {
       } catch (err) {
         return {
           status: 'error',
-          message: gitErrorMessage(err, `Could not check out “${branch}”.`),
+          message: checkoutErrorMessage(err, branch),
         };
       }
       return { status: 'ok', refs: await readRefs(repoPath) };
@@ -3524,7 +3561,7 @@ function registerRepoIpc(): void {
       source: unknown,
       target: unknown,
     ): Promise<RefsMutationResult> => {
-      const invalid = await validateBranchPair(repoPath, source, target);
+      const invalid = await validateIntegratePair(repoPath, source, target);
       if (invalid) return { status: 'error', message: invalid };
       // Land the merge on `target`: switch to it, then merge `source` in. A
       // conflicting merge aborts and surfaces git's message.
@@ -3546,7 +3583,7 @@ function registerRepoIpc(): void {
       source: unknown,
       target: unknown,
     ): Promise<RefsMutationResult> => {
-      const invalid = await validateBranchPair(repoPath, source, target);
+      const invalid = await validateIntegratePair(repoPath, source, target);
       if (invalid) return { status: 'error', message: invalid };
       // Switch to `target`, then replay its commits on top of `source`. A
       // conflicting rebase aborts and surfaces git's message.
@@ -3557,6 +3594,64 @@ function registerRepoIpc(): void {
         'rebase',
         `Could not rebase “${source as string}” into “${target as string}”.`,
       );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.fastForward,
+    async (
+      _event,
+      repoPath: unknown,
+      source: unknown,
+      target: unknown,
+    ): Promise<RefsMutationResult> => {
+      const invalid = await validateIntegratePair(repoPath, source, target);
+      if (invalid) return { status: 'error', message: invalid };
+      // Switch to `target`, then fast-forward it to `source`. `--ff-only` refuses
+      // (rather than creating a merge commit) when the branches have diverged.
+      return integrateBranch(
+        repoPath as string,
+        target as string,
+        source as string,
+        'ff-only',
+        `Could not fast-forward “${target as string}” to “${source as string}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.pushBranch,
+    async (
+      _event,
+      repoPath: unknown,
+      remote: unknown,
+      localBranch: unknown,
+      remoteBranch: unknown,
+    ): Promise<CommitResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof remote !== 'string' || typeof localBranch !== 'string') {
+        return { status: 'error', message: 'Invalid push target.' };
+      }
+      const targetBranch =
+        typeof remoteBranch === 'string' && remoteBranch.trim() ? remoteBranch.trim() : localBranch;
+      if (!(await isValidBranchName(repoPath, targetBranch))) {
+        return { status: 'error', message: `“${targetBranch}” is not a valid branch name.` };
+      }
+      // Re-validate the untrusted args against the repo's own state: the remote
+      // must be configured and the local branch must actually exist.
+      const remotes = (await runGit(repoPath, ['remote']))
+        .split('\n')
+        .map((name) => name.trim())
+        .filter(Boolean);
+      if (!remotes.includes(remote)) {
+        return { status: 'error', message: `Unknown remote “${remote}”.` };
+      }
+      if (!(await localBranchExists(repoPath, localBranch))) {
+        return { status: 'error', message: `Branch “${localBranch}” doesn’t exist.` };
+      }
+      return pushSetUpstream(repoPath, remote, localBranch, targetBranch);
     },
   );
 

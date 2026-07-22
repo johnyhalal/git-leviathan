@@ -275,7 +275,7 @@ export function generateCommitMessage(
     // token usage and cost, which we log; we still resolve with the plain text.
     const child = spawnClaude(
       bin,
-      ['-p', COMMIT_INSTRUCTION, '--output-format', 'json'],
+      ['-p', COMMIT_INSTRUCTION, '--model', 'sonnet', '--output-format', 'json'],
       cwd,
     );
     let out = '';

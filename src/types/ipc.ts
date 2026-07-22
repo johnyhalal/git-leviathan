@@ -625,6 +625,10 @@ export const RepoChannels = {
   merge: 'repo:merge',
   /** Renderer -> main (invoke): rebase one branch onto another; returns fresh refs. */
   rebase: 'repo:rebase',
+  /** Renderer -> main (invoke): fast-forward one branch to another; returns fresh refs. */
+  fastForward: 'repo:fast-forward',
+  /** Renderer -> main (invoke): push a local branch to a remote branch. */
+  pushBranch: 'repo:push-branch',
   /** Renderer -> main (invoke): stash uncommitted changes (`git stash push`). */
   stashPush: 'repo:stash-push',
   /** Renderer -> main (invoke): apply a stash, keeping it (`git stash apply`). */
@@ -1231,17 +1235,39 @@ export interface RepoApi {
   deleteRemoteBranch(path: string, remote: string, branch: string): Promise<RefsMutationResult>;
   /**
    * Merge `source` into `target`: check out `target`, then `git merge source`.
-   * Both must be existing local branches. Resolves with fresh refs on success,
+   * `target` must be an existing local branch; `source` may be a local branch or
+   * a remote-tracking ref (`origin/main`). Resolves with fresh refs on success,
    * or an error message (e.g. merge conflicts, which abort the merge).
    */
   merge(path: string, source: string, target: string): Promise<RefsMutationResult>;
   /**
    * Rebase `source` into `target`: check out `target`, then `git rebase source`,
-   * replaying `target`'s commits on top of `source` for a linear history. Both
-   * must be existing local branches. Resolves with fresh refs, or an error
+   * replaying `target`'s commits on top of `source` for a linear history.
+   * `target` must be an existing local branch; `source` may be a local branch or
+   * a remote-tracking ref (`origin/main`). Resolves with fresh refs, or an error
    * message (e.g. conflicts, which abort the rebase).
    */
   rebase(path: string, source: string, target: string): Promise<RefsMutationResult>;
+  /**
+   * Fast-forward `target` to `source`: check out `target`, then
+   * `git merge --ff-only source`. `target` must be an existing local branch;
+   * `source` may be a local branch or a remote-tracking ref (`origin/main`).
+   * Resolves with fresh refs on success, or an error message (e.g. when the
+   * branches have diverged so no fast-forward is possible).
+   */
+  fastForward(path: string, source: string, target: string): Promise<RefsMutationResult>;
+  /**
+   * Push the local branch `localBranch` to `remoteBranch` on `remote`
+   * (`git push --set-upstream <remote> <localBranch>:<remoteBranch>`), setting it
+   * as the local branch's upstream. Unlike `push`, the branch need not be checked
+   * out. Resolves ok on success, or an error message (unknown remote, auth…).
+   */
+  pushBranch(
+    path: string,
+    remote: string,
+    localBranch: string,
+    remoteBranch: string,
+  ): Promise<CommitResult>;
   /**
    * Stash the working tree's uncommitted changes (`git stash push`, including
    * untracked files). Resolves with fresh refs, or an error (e.g. when there is

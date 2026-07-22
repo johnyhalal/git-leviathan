@@ -63,6 +63,10 @@ interface RepoColumnsProps {
   onMergeBranch: (source: string, target: string) => void;
   /** Rebase one local branch onto another (dragging a branch badge onto another). */
   onRebaseBranch: (source: string, target: string) => void;
+  /** Fast-forward the local branch `target` to `source` (sidebar branch drag). */
+  onFastForward: (source: string, target: string) => void;
+  /** Push a local branch to a remote branch (sidebar branch drag); resolves success. */
+  onPushBranch: (remote: string, localBranch: string, remoteBranch: string) => Promise<boolean>;
   /** Rename a local branch (`git branch -m`), from a branch's context menu. */
   onRenameBranch: (oldName: string, newName: string) => void;
   /** Delete a local branch (`git branch -D`), from a branch's context menu. */
@@ -131,6 +135,8 @@ export function RepoColumns({
   onCancelCreateBranch,
   onMergeBranch,
   onRebaseBranch,
+  onFastForward,
+  onPushBranch,
   onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
@@ -252,6 +258,8 @@ export function RepoColumns({
           onCheckout={onCheckout}
           onMergeBranch={onMergeBranch}
           onRebaseBranch={onRebaseBranch}
+          onFastForward={onFastForward}
+          onPushBranch={onPushBranch}
           onRenameBranch={onRenameBranch}
           onDeleteBranch={onDeleteBranch}
           onDeleteRemoteBranch={onDeleteRemoteBranch}
