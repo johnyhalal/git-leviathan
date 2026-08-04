@@ -99,7 +99,7 @@ import {
   type UpdateInfo,
   type UpdateStatus,
 } from './types/ipc';
-import type { DeviceAuthorization } from './oauth/deviceFlow';
+import type { DeviceAuthorization, TokenSet } from './oauth/deviceFlow';
 import * as github from './oauth/github';
 import * as gitlab from './oauth/gitlab';
 import { generateSshKeyPair } from './ssh/keygen';
@@ -143,6 +143,7 @@ interface ProviderClient {
   scope: string;
   requestDeviceAuthorization: typeof github.requestDeviceAuthorization;
   pollForAccessToken: typeof github.pollForAccessToken;
+  refreshAccessToken: typeof github.refreshAccessToken;
   fetchAccount: typeof github.fetchAccount;
   fetchUserRepos: typeof github.fetchUserRepos;
   fetchPullRequests: typeof github.fetchPullRequests;
@@ -158,6 +159,7 @@ const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
     scope: 'repo workflow read:user write:public_key',
     requestDeviceAuthorization: github.requestDeviceAuthorization,
     pollForAccessToken: github.pollForAccessToken,
+    refreshAccessToken: github.refreshAccessToken,
     fetchAccount: github.fetchAccount,
     fetchUserRepos: github.fetchUserRepos,
     fetchPullRequests: github.fetchPullRequests,
@@ -171,6 +173,7 @@ const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
     scope: 'api',
     requestDeviceAuthorization: gitlab.requestDeviceAuthorization,
     pollForAccessToken: gitlab.pollForAccessToken,
+    refreshAccessToken: gitlab.refreshAccessToken,
     fetchAccount: gitlab.fetchAccount,
     fetchUserRepos: gitlab.fetchUserRepos,
     fetchPullRequests: gitlab.fetchPullRequests,
@@ -231,8 +234,10 @@ const MAX_RECENT_REPOS = 20;
 const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
 
 // In-memory cache, loaded once at startup and persisted whole so independent
-// writers (theme, window bounds) never clobber each other's fields.
-const settings: Settings = { themeSource: 'system' };
+// writers (theme, window bounds) never clobber each other's fields. The theme
+// defaults to dark on first launch (no settings.json yet); once the user picks a
+// theme it's persisted and this initial value no longer applies.
+const settings: Settings = { themeSource: 'dark' };
 
 function isWindowBounds(value: unknown): value is WindowBounds {
   if (!value || typeof value !== 'object') return false;
@@ -301,7 +306,8 @@ function isIntegrationConnection(
       c.status === 'connected') &&
     (c.account === undefined || typeof c.account === 'string') &&
     (c.name === undefined || typeof c.name === 'string') &&
-    (c.avatarUrl === undefined || typeof c.avatarUrl === 'string')
+    (c.avatarUrl === undefined || typeof c.avatarUrl === 'string') &&
+    (c.method === undefined || c.method === 'oauth' || c.method === 'token')
   );
 }
 
@@ -554,16 +560,16 @@ const CLONE_AUTH_USERNAME: Record<IntegrationProvider, string> = {
  * plus the token used, if any, so the caller can redact it from output. Other
  * hosts/URLs are returned unchanged with a null token.
  */
-function authenticatedCloneUrl(url: string): {
+async function authenticatedCloneUrl(url: string): Promise<{
   url: string;
   token: string | null;
-} {
+}> {
   try {
     const parsed = new URL(url);
     const provider =
       parsed.protocol === 'https:' ? providerForHost(parsed.hostname) : null;
     if (provider) {
-      const token = getToken(provider);
+      const token = await getToken(provider);
       if (token) {
         parsed.username = CLONE_AUTH_USERNAME[provider];
         parsed.password = token;
@@ -592,13 +598,13 @@ function redactSecrets(text: string, token: string | null): string {
  * its own credential lookup. Unlike embedding the token in the URL, the header
  * approach leaves the command's refspecs untouched.
  */
-function remoteAuthConfigArgs(remoteUrl: string): string[] {
+async function remoteAuthConfigArgs(remoteUrl: string): Promise<string[]> {
   try {
     const parsed = new URL(remoteUrl);
     if (parsed.protocol !== 'https:') return [];
     const provider = providerForHost(parsed.hostname);
     if (!provider) return [];
-    const token = getToken(provider);
+    const token = await getToken(provider);
     if (!token) return [];
     const basic = Buffer.from(
       `${CLONE_AUTH_USERNAME[provider]}:${token}`,
@@ -625,7 +631,7 @@ async function authArgsForRemotes(
   for (const remote of remotes) {
     const url = (await runGit(cwd, ['remote', 'get-url', remote])).trim();
     if (!url) continue;
-    const configArg = remoteAuthConfigArgs(url)[1];
+    const configArg = (await remoteAuthConfigArgs(url))[1];
     if (configArg && !seen.has(configArg)) {
       seen.add(configArg);
       args.push('-c', configArg);
@@ -713,6 +719,10 @@ async function sshEnvForRemotes(
 }
 
 interface RunningClone {
+  /**
+   * The active child: the `git clone`, then reassigned to the follow-up `git lfs
+   * pull` — so a cancel always targets whichever step is currently running.
+   */
   child: ChildProcess;
   /** Folder git is cloning into, removed if the clone is canceled. */
   target: string;
@@ -750,6 +760,17 @@ async function localBranchExists(cwd: string, branch: string): Promise<boolean> 
     '--verify',
     '--quiet',
     `refs/heads/${branch}`,
+  ]);
+  return out.trim().length > 0;
+}
+
+/** Whether a tag named `name` already exists in the repo at `cwd`. */
+async function tagExists(cwd: string, name: string): Promise<boolean> {
+  const out = await runGit(cwd, [
+    'rev-parse',
+    '--verify',
+    '--quiet',
+    `refs/tags/${name}`,
   ]);
   return out.trim().length > 0;
 }
@@ -886,12 +907,16 @@ async function readTags(cwd: string): Promise<TagInfo[]> {
   const out = await runGit(cwd, [
     'for-each-ref',
     '--sort=-creatordate',
-    '--format=%(refname:short)\t%(objectname:short)',
+    '--format=%(refname:short)\t%(objectname:short)\t%(objecttype)\t%(contents:subject)',
     'refs/tags',
   ]);
   return nonEmptyLines(out).map((line) => {
-    const [name, hash = ''] = line.split('\t');
-    return { name, hash };
+    const [name, hash = '', objectType = '', ...rest] = line.split('\t');
+    // Only annotated tags (which have their own tag object) carry a message. For
+    // a lightweight tag `contents` would be the pointed-to commit's subject —
+    // not an annotation — so it's ignored.
+    const subject = objectType === 'tag' ? rest.join('\t').trim() : '';
+    return subject ? { name, hash, message: subject } : { name, hash };
   });
 }
 
@@ -1710,7 +1735,7 @@ async function enrichGithubAvatars(
   }
   if (wanted.size === 0) return;
 
-  const token = getToken('github');
+  const token = await getToken('github');
   if (!token) return;
 
   const host = (await readRemotes(repoPath))
@@ -3492,6 +3517,214 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.createTag,
+    async (
+      _event,
+      repoPath: unknown,
+      name: unknown,
+      ref: unknown,
+      message: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Keep the name to a safe, ref-legal slug so it can't inject flags/paths.
+      const tag = typeof name === 'string' ? name.trim() : '';
+      if (!tag || !/^[A-Za-z0-9._/-]+$/.test(tag) || tag.startsWith('-')) {
+        return { status: 'error', message: 'Enter a valid tag name.' };
+      }
+      // The target is a commit hash or branch name from the graph — same slug
+      // guard, plus a check that it actually resolves to a commit, so no
+      // arbitrary string reaches git.
+      const target = typeof ref === 'string' ? ref.trim() : '';
+      if (!target || !/^[A-Za-z0-9._/-]+$/.test(target) || target.startsWith('-')) {
+        return { status: 'error', message: 'Invalid tag target.' };
+      }
+      if (!(await commitishExists(repoPath, target))) {
+        return { status: 'error', message: 'The tag target no longer exists.' };
+      }
+      if (await tagExists(repoPath, tag)) {
+        return { status: 'error', message: `Tag “${tag}” already exists.` };
+      }
+      // A null message means a lightweight tag; otherwise it's annotated and the
+      // message is required.
+      const annotation = typeof message === 'string' ? message.trim() : '';
+      if (message !== null && !annotation) {
+        return { status: 'error', message: 'Enter a tag message.' };
+      }
+      const step =
+        message === null
+          ? ['tag', tag, target]
+          : ['tag', '-a', '-m', annotation, tag, target];
+      return mutateRepo(repoPath, [step], `Could not create tag “${tag}”.`);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.annotateTag,
+    async (
+      _event,
+      repoPath: unknown,
+      name: unknown,
+      message: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const tag = typeof name === 'string' ? name.trim() : '';
+      if (!tag || !/^[A-Za-z0-9._/-]+$/.test(tag) || tag.startsWith('-')) {
+        return { status: 'error', message: 'Enter a valid tag name.' };
+      }
+      if (!(await tagExists(repoPath, tag))) {
+        return { status: 'error', message: `Tag “${tag}” no longer exists.` };
+      }
+      const annotation = typeof message === 'string' ? message.trim() : '';
+      if (!annotation) {
+        return { status: 'error', message: 'Enter a tag message.' };
+      }
+      // Force-recreate the tag in place as annotated, keeping the same commit
+      // (`^{commit}` peels a lightweight or annotated tag down to its commit).
+      return mutateRepo(
+        repoPath,
+        [['tag', '-a', '-f', '-m', annotation, tag, `${tag}^{commit}`]],
+        `Could not annotate tag “${tag}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.deleteTag,
+    async (_event, repoPath: unknown, name: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const tag = typeof name === 'string' ? name.trim() : '';
+      if (!tag || !/^[A-Za-z0-9._/-]+$/.test(tag) || tag.startsWith('-')) {
+        return { status: 'error', message: 'Enter a valid tag name.' };
+      }
+      if (!(await tagExists(repoPath, tag))) {
+        return { status: 'error', message: `Tag “${tag}” no longer exists.` };
+      }
+      // Local-only deletion (`git tag -d`); any copy on a remote is left alone.
+      return mutateRepo(repoPath, [['tag', '-d', tag]], `Could not delete tag “${tag}”.`);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.pushTag,
+    async (
+      _event,
+      repoPath: unknown,
+      name: unknown,
+      remote: unknown,
+    ): Promise<CommitResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const tag = typeof name === 'string' ? name.trim() : '';
+      if (!tag || !/^[A-Za-z0-9._/-]+$/.test(tag) || tag.startsWith('-')) {
+        return { status: 'error', message: 'Enter a valid tag name.' };
+      }
+      if (!(await tagExists(repoPath, tag))) {
+        return { status: 'error', message: `Tag “${tag}” no longer exists.` };
+      }
+      // The remote must be one the repo actually has configured.
+      const remotes = new Set(nonEmptyLines(await runGit(repoPath, ['remote'])));
+      const target = typeof remote === 'string' ? remote.trim() : '';
+      if (!remotes.has(target)) {
+        return { status: 'error', message: `Unknown remote “${target}”.` };
+      }
+      // Push just this tag (`refs/tags/<tag>` is explicit so no branch of the same
+      // name is ambiguous). It hits the network, so route through the push error
+      // mapper and keep GIT_TERMINAL_PROMPT=0 so an auth prompt can't hang the app.
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+      const authArgs = await authArgsForRemotes(repoPath, [target]);
+      const sshEnv = await sshEnvForRemotes(repoPath, [target]);
+      try {
+        await spawnGit(
+          repoPath,
+          [...authArgs, 'push', target, '--', `refs/tags/${tag}`],
+          'push',
+          { ...env, ...sshEnv },
+        );
+        return { status: 'ok' };
+      } catch (err) {
+        return { status: 'error', message: pushErrorMessage(err) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.remoteTags,
+    async (_event, repoPath: unknown, remote: unknown): Promise<string[] | null> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return null;
+      const remotes = new Set(nonEmptyLines(await runGit(repoPath, ['remote'])));
+      const target = typeof remote === 'string' ? remote.trim() : '';
+      if (!remotes.has(target)) return null;
+      // Network call: GIT_TERMINAL_PROMPT=0 so an auth-required remote errors
+      // (→ null, the "couldn't determine" signal) instead of hanging the app.
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+      const authArgs = await authArgsForRemotes(repoPath, [target]);
+      const sshEnv = await sshEnvForRemotes(repoPath, [target]);
+      try {
+        const { stdout } = await execFileAsync(
+          gitBin,
+          [...authArgs, 'ls-remote', '--tags', '--', target],
+          { cwd: repoPath, env: { ...env, ...sshEnv } },
+        );
+        const names = new Set<string>();
+        for (const line of nonEmptyLines(stdout)) {
+          // Each line is "<hash>\trefs/tags/<name>"; annotated tags also emit a
+          // peeled "refs/tags/<name>^{}" line — strip the `^{}` and dedupe.
+          const match = /\trefs\/tags\/(.+)$/.exec(line);
+          if (match) names.add(match[1].replace(/\^\{\}$/, ''));
+        }
+        return [...names];
+      } catch {
+        return null;
+      }
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.deleteRemoteTag,
+    async (
+      _event,
+      repoPath: unknown,
+      name: unknown,
+      remote: unknown,
+    ): Promise<CommitResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const tag = typeof name === 'string' ? name.trim() : '';
+      if (!tag || !/^[A-Za-z0-9._/-]+$/.test(tag) || tag.startsWith('-')) {
+        return { status: 'error', message: 'Enter a valid tag name.' };
+      }
+      const remotes = new Set(nonEmptyLines(await runGit(repoPath, ['remote'])));
+      const target = typeof remote === 'string' ? remote.trim() : '';
+      if (!remotes.has(target)) {
+        return { status: 'error', message: `Unknown remote “${target}”.` };
+      }
+      // Delete the tag on the remote; the local tag stays. Network call, so same
+      // push error mapper + GIT_TERMINAL_PROMPT=0 as every other remote mutation.
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+      const authArgs = await authArgsForRemotes(repoPath, [target]);
+      const sshEnv = await sshEnvForRemotes(repoPath, [target]);
+      try {
+        await execFileAsync(
+          gitBin,
+          [...authArgs, 'push', target, '--delete', '--', `refs/tags/${tag}`],
+          { cwd: repoPath, env: { ...env, ...sshEnv } },
+        );
+        return { status: 'ok' };
+      } catch (err) {
+        return { status: 'error', message: pushErrorMessage(err) };
+      }
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.renameBranch,
     async (
       _event,
@@ -3661,6 +3894,28 @@ function registerRepoIpc(): void {
         'ff-only',
         `Could not fast-forward “${target as string}” to “${source as string}”.`,
       );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.cherryPick,
+    async (_event, repoPath: unknown, hash: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted hash: a non-empty string that isn't an option
+      // and resolves to a real commit in this repo, so no arbitrary argument
+      // reaches git. `-x` records the source commit in the new message.
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+        return { status: 'error', message: 'No commit was specified.' };
+      }
+      if (!(await commitishExists(repoPath, hash))) {
+        return { status: 'error', message: `Commit “${hash}” doesn’t exist.` };
+      }
+      // A conflicting cherry-pick exits non-zero and leaves CHERRY_PICK_HEAD in
+      // place; the error surfaces the conflict resolver, and the merge banner
+      // reads the in-progress state, letting the user continue or abort.
+      return mutateRepo(repoPath, [['cherry-pick', '-x', hash]], 'Could not cherry-pick the commit.');
     },
   );
 
@@ -4001,8 +4256,9 @@ function registerRepoIpc(): void {
   );
 
   // Track/untrack mutate LFS state, then re-read and return the fresh status so
-  // the renderer re-renders from authoritative state. Each `lfs` step's git
-  // errors are distilled to one actionable line.
+  // the renderer re-renders from authoritative state. Steps run via `spawnGit` so
+  // each `git lfs …` shows up in the activity log; git errors are distilled to
+  // one actionable line.
   const runLfs = async (
     repoPath: unknown,
     steps: string[][],
@@ -4014,7 +4270,7 @@ function registerRepoIpc(): void {
     const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
     try {
       for (const args of steps) {
-        await execFileAsync(gitBin, ['lfs', ...args], { cwd: repoPath, env });
+        await spawnGit(repoPath, ['lfs', ...args], `lfs ${args[0]}`, env);
       }
     } catch (err) {
       return { status: 'error', message: gitErrorMessage(err, fallback) };
@@ -4022,14 +4278,17 @@ function registerRepoIpc(): void {
     return { status: 'ok', lfs: await readLfsStatus(repoPath) };
   };
 
+  // LFS is enabled/disabled implicitly by the pattern list: adding the first
+  // pattern installs it, removing the last one uninstalls it — so LFS is present
+  // exactly when the repo tracks something, and nothing orphaned is left behind.
   ipcMain.handle(
     RepoChannels.repoLfsTrack,
     (_event, repoPath: unknown, pattern: unknown): Promise<LfsResult> => {
       if (!isLfsPattern(pattern)) {
         return Promise.resolve({ status: 'error', message: 'Enter a valid pattern (e.g. *.psd).' });
       }
-      // `install --local` first (idempotent) so LFS filters/hooks are wired up
-      // for this repo — there's no separate "enable" step in the UI.
+      // `install --local` first (idempotent) so the first tracked pattern also
+      // wires up this repo's LFS filters/hooks — there's no separate enable step.
       return runLfs(
         repoPath,
         [['install', '--local'], ['track', pattern]],
@@ -4040,11 +4299,29 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.repoLfsUntrack,
-    (_event, repoPath: unknown, pattern: unknown): Promise<LfsResult> => {
+    async (_event, repoPath: unknown, pattern: unknown): Promise<LfsResult> => {
       if (!isLfsPattern(pattern)) {
-        return Promise.resolve({ status: 'error', message: 'Invalid pattern.' });
+        return { status: 'error', message: 'Invalid pattern.' };
       }
-      return runLfs(repoPath, [['untrack', pattern]], 'Could not untrack the pattern with Git LFS.');
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+      try {
+        await spawnGit(repoPath, ['lfs', 'untrack', pattern], 'lfs untrack', env);
+        // Untracking the last pattern disables LFS for the repo entirely: remove
+        // the local filters/hooks (repo-scoped; a global `git lfs install` stays).
+        const { patterns } = await readLfsStatus(repoPath);
+        if (patterns.length === 0) {
+          await spawnGit(repoPath, ['lfs', 'uninstall', '--local'], 'lfs uninstall', env);
+        }
+      } catch (err) {
+        return {
+          status: 'error',
+          message: gitErrorMessage(err, 'Could not untrack the pattern with Git LFS.'),
+        };
+      }
+      return { status: 'ok', lfs: await readLfsStatus(repoPath) };
     },
   );
 
@@ -4484,7 +4761,7 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.clone,
-    (event, request: CloneRequest): Promise<CloneResult> => {
+    async (event, request: CloneRequest): Promise<CloneResult> => {
       const url = typeof request?.url === 'string' ? request.url.trim() : '';
       const destination =
         typeof request?.destination === 'string' ? request.destination : '';
@@ -4517,7 +4794,7 @@ function registerRepoIpc(): void {
       }
 
       // Embed the matching provider's token into the URL; keep it for redaction.
-      const { url: cloneUrl, token } = authenticatedCloneUrl(url);
+      const { url: cloneUrl, token } = await authenticatedCloneUrl(url);
       // For an SSH clone URL, authenticate with our own generated key instead of
       // the ssh agent's (mirrors push/pull); null for HTTPS/unmanaged hosts.
       const sshCommand = sshCommandForUrl(url);
@@ -4563,6 +4840,46 @@ function registerRepoIpc(): void {
         child.stderr.on('data', consume);
         child.stdout.on('data', consume);
 
+        // Terminal resolves, shared by the clone and the follow-up LFS pull.
+        const finishCanceled = () => {
+          runningClones.delete(sender.id);
+          // Remove the half-written clone, then report cancellation.
+          fs.rm(target, { recursive: true, force: true }, () =>
+            resolve({ status: 'canceled' }),
+          );
+        };
+        const finishCloned = () => {
+          runningClones.delete(sender.id);
+          resolve({ status: 'cloned', repo: { name, path: target } });
+        };
+
+        // After a successful clone, materialize LFS content: a plain clone only
+        // writes LFS *pointer* files when git-lfs isn't globally installed, so we
+        // always `git lfs pull` when the repo actually tracks LFS files. Reuses
+        // the clone's progress stream and stays cancellable — `running.child` is
+        // repointed at the pull. Because the clone itself already succeeded, a
+        // cancel here just stops the download and keeps the repo (with whatever
+        // mix of real/pointer files was fetched) rather than deleting it.
+        const pullLfsThenFinish = async () => {
+          const listed = await runGit(target, ['lfs', 'ls-files']);
+          if (running.canceled || listed.trim().length === 0) return finishCloned();
+
+          const lfs = spawn(gitBin, ['lfs', 'pull'], {
+            cwd: target,
+            env: gitEnv({
+              GIT_TERMINAL_PROMPT: '0',
+              ...(sshCommand ? { GIT_SSH_COMMAND: sshCommand } : {}),
+            }),
+          });
+          running.child = lfs; // cancel targets the pull from here on
+          lfs.stderr.on('data', consume);
+          lfs.stdout.on('data', consume);
+          // Whether the pull finishes, fails, or is canceled, the clone is valid —
+          // report it as cloned (pointer files can be pulled later).
+          lfs.on('error', finishCloned);
+          lfs.on('close', finishCloned);
+        };
+
         child.on('error', (err) => {
           runningClones.delete(sender.id);
           resolve({
@@ -4571,15 +4888,12 @@ function registerRepoIpc(): void {
           });
         });
         child.on('close', (code) => {
-          runningClones.delete(sender.id);
           if (running.canceled) {
-            // Remove the half-written clone, then report cancellation.
-            fs.rm(target, { recursive: true, force: true }, () =>
-              resolve({ status: 'canceled' }),
-            );
+            finishCanceled();
           } else if (code === 0) {
-            resolve({ status: 'cloned', repo: { name, path: target } });
+            void pullLfsThenFinish();
           } else {
+            runningClones.delete(sender.id);
             resolve({
               status: 'error',
               message: redactSecrets(
@@ -4617,12 +4931,41 @@ const pendingConnects = new Map<IntegrationProvider, AbortController>();
 const tokensPath = () =>
   path.join(app.getPath('userData'), 'integration-tokens.json');
 
-/** Read the on-disk map of provider -> base64(safeStorage-encrypted token). */
-function loadTokenStore(): Record<string, string> {
+/**
+ * A provider's persisted credentials. The access token (and, for renewable
+ * grants like GitLab's, the refresh token) are each base64(safeStorage-
+ * encrypted); `expiresAt` is epoch-ms and absent for non-expiring tokens.
+ */
+interface StoredToken {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+}
+
+/**
+ * Read the on-disk map of provider -> {@link StoredToken}. Legacy entries wrote
+ * the access token as a bare base64 string (no refresh/expiry); normalize those
+ * to the object shape so existing GitHub connections keep working untouched.
+ */
+function loadTokenStore(): Record<string, StoredToken> {
   try {
     const parsed = JSON.parse(fs.readFileSync(tokensPath(), 'utf-8')) as unknown;
     if (parsed && typeof parsed === 'object') {
-      return parsed as Record<string, string>;
+      const out: Record<string, StoredToken> = {};
+      for (const [provider, value] of Object.entries(
+        parsed as Record<string, unknown>,
+      )) {
+        if (typeof value === 'string') {
+          out[provider] = { accessToken: value };
+        } else if (
+          value &&
+          typeof value === 'object' &&
+          typeof (value as StoredToken).accessToken === 'string'
+        ) {
+          out[provider] = value as StoredToken;
+        }
+      }
+      return out;
     }
   } catch {
     // No tokens yet, or the file is unreadable — treat as empty.
@@ -4630,7 +4973,7 @@ function loadTokenStore(): Record<string, string> {
   return {};
 }
 
-function saveTokenStore(store: Record<string, string>): void {
+function saveTokenStore(store: Record<string, StoredToken>): void {
   try {
     fs.writeFileSync(tokensPath(), JSON.stringify(store), 'utf-8');
     // Best effort: keep the token file readable only by its owner.
@@ -4644,13 +4987,25 @@ function saveTokenStore(store: Record<string, string>): void {
   }
 }
 
-/** Seal a token with the OS keychain and persist it. Throws if unavailable. */
-function storeToken(provider: IntegrationProvider, token: string): void {
+/**
+ * Seal a token set with the OS keychain and persist it. Throws if secure
+ * storage is unavailable. An `expiresIn` (seconds) is baked into an absolute
+ * `expiresAt`; a missing refresh token / lifetime persists a plain,
+ * non-expiring credential (a PAT or a default GitHub token).
+ */
+function storeToken(provider: IntegrationProvider, set: TokenSet): void {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('Secure storage is unavailable, so the token was not saved.');
   }
+  const seal = (value: string) =>
+    safeStorage.encryptString(value).toString('base64');
+  const entry: StoredToken = { accessToken: seal(set.accessToken) };
+  if (set.refreshToken) entry.refreshToken = seal(set.refreshToken);
+  if (typeof set.expiresIn === 'number') {
+    entry.expiresAt = Date.now() + set.expiresIn * 1000;
+  }
   const store = loadTokenStore();
-  store[provider] = safeStorage.encryptString(token).toString('base64');
+  store[provider] = entry;
   saveTokenStore(store);
 }
 
@@ -4666,14 +5021,92 @@ function hasToken(provider: IntegrationProvider): boolean {
   return provider in loadTokenStore();
 }
 
-/** Decrypt and return a stored token, or null if absent/unreadable. */
-function getToken(provider: IntegrationProvider): string | null {
-  const encrypted = loadTokenStore()[provider];
-  if (!encrypted || !safeStorage.isEncryptionAvailable()) return null;
+/** Decrypt a stored base64 field, or null if absent/undecryptable. */
+function decryptField(value: string | undefined): string | null {
+  if (!value || !safeStorage.isEncryptionAvailable()) return null;
   try {
-    return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+    return safeStorage.decryptString(Buffer.from(value, 'base64'));
   } catch {
     // Corrupt entry or a different keychain (e.g. after an OS user change).
+    return null;
+  }
+}
+
+/**
+ * Refresh the access token this many ms before it actually expires, so an
+ * in-flight git op or API call never races the expiry boundary.
+ */
+const TOKEN_REFRESH_MARGIN_MS = 60_000;
+
+/**
+ * In-flight refreshes keyed by provider, so concurrent {@link getToken} callers
+ * (e.g. a push and a PR fetch firing together) share one exchange. This is
+ * load-bearing for GitLab, which rotates the refresh token on every use: two
+ * parallel exchanges would each invalidate the other's new refresh token.
+ */
+const tokenRefreshes = new Map<IntegrationProvider, Promise<string | null>>();
+
+/**
+ * Return a usable access token for a provider, refreshing it first when it's at
+ * or near expiry and a refresh token is stored — so callers (git auth headers,
+ * REST calls) always get a live credential. Null when the provider isn't
+ * connected, secure storage is unavailable, or the token has expired and can't
+ * be renewed (the caller then surfaces a "reconnect" message).
+ */
+async function getToken(provider: IntegrationProvider): Promise<string | null> {
+  const entry = loadTokenStore()[provider];
+  if (!entry) return null;
+  const accessToken = decryptField(entry.accessToken);
+  if (!accessToken) return null;
+
+  const { expiresAt } = entry;
+  const stale =
+    typeof expiresAt === 'number' &&
+    Date.now() >= expiresAt - TOKEN_REFRESH_MARGIN_MS;
+  if (!stale) return accessToken;
+
+  // At/near expiry. Renew if we can; otherwise hand back the current token only
+  // while it's still technically valid, else report the connection as dead.
+  if (!entry.refreshToken) return accessToken;
+  const refreshed = await refreshToken(provider);
+  if (refreshed) return refreshed;
+  return typeof expiresAt === 'number' && Date.now() < expiresAt
+    ? accessToken
+    : null;
+}
+
+/**
+ * Exchange a provider's stored refresh token for a fresh access token, persist
+ * the rotated set, and return the new access token — or null on failure (a
+ * revoked/rotated refresh token, or the provider unreachable). Deduped per
+ * provider via {@link tokenRefreshes}.
+ */
+function refreshToken(provider: IntegrationProvider): Promise<string | null> {
+  const existing = tokenRefreshes.get(provider);
+  if (existing) return existing;
+  const run = doRefreshToken(provider).finally(() => {
+    if (tokenRefreshes.get(provider) === run) tokenRefreshes.delete(provider);
+  });
+  tokenRefreshes.set(provider, run);
+  return run;
+}
+
+async function doRefreshToken(
+  provider: IntegrationProvider,
+): Promise<string | null> {
+  const client = PROVIDER_CLIENTS[provider];
+  const entry = loadTokenStore()[provider];
+  const refresh = decryptField(entry?.refreshToken);
+  if (!refresh || !client.clientId) return null;
+  try {
+    const set = await client.refreshAccessToken(client.clientId, refresh);
+    // GitLab rotates the refresh token on each use and returns the new one; if a
+    // provider ever omits it, keep the current one so we can still refresh next
+    // time rather than stranding the connection.
+    storeToken(provider, { ...set, refreshToken: set.refreshToken ?? refresh });
+    return set.accessToken;
+  } catch (err) {
+    console.error(`Failed to refresh ${provider} access token:`, err);
     return null;
   }
 }
@@ -4691,6 +5124,7 @@ function connectionOf(provider: IntegrationProvider): IntegrationConnection {
       account: persisted.account,
       name: persisted.name,
       avatarUrl: persisted.avatarUrl,
+      method: persisted.method ?? 'oauth',
     };
   }
   const error = connectErrors.get(provider);
@@ -4809,13 +5243,16 @@ async function completeConnect(
 ): Promise<void> {
   const client = PROVIDER_CLIENTS[provider];
   try {
-    const token = await client.pollForAccessToken(
+    const tokenSet = await client.pollForAccessToken(
       client.clientId,
       auth,
       controller.signal,
     );
-    const account = await client.fetchAccount(token, controller.signal);
-    storeToken(provider, token);
+    const account = await client.fetchAccount(
+      tokenSet.accessToken,
+      controller.signal,
+    );
+    storeToken(provider, tokenSet);
     settings.integrations = {
       ...settings.integrations,
       [provider]: {
@@ -4824,6 +5261,7 @@ async function completeConnect(
         account: account.username,
         name: account.name,
         avatarUrl: account.avatarUrl,
+        method: 'oauth',
       },
     };
     saveSettings();
@@ -4843,6 +5281,60 @@ async function completeConnect(
     }
     broadcastIntegrations();
   }
+}
+
+/**
+ * Connect a provider with a user-supplied personal access token instead of the
+ * device flow — the escape hatch for organizations that restrict OAuth apps
+ * (a PAT acts as the user, so it isn't subject to OAuth-app approval). The token
+ * is validated by reading the account, then stored encrypted exactly like a
+ * device-flow token so every downstream call (`getToken`) is oblivious to how it
+ * was obtained. Cancels any in-flight device flow for the same provider first.
+ */
+async function connectWithToken(
+  provider: IntegrationProvider,
+  token: string,
+): Promise<void> {
+  const label = PROVIDER_LABELS[provider];
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure token storage is unavailable on this system.');
+  }
+
+  // A device flow may be mid-poll; abandon it so the two paths can't race to
+  // write the connection.
+  pendingConnects.get(provider)?.abort();
+  pendingConnects.delete(provider);
+  connectingProviders.delete(provider);
+  connectErrors.delete(provider);
+
+  let account;
+  try {
+    account = await PROVIDER_CLIENTS[provider].fetchAccount(token);
+  } catch {
+    // fetchAccount's own message leaks the HTTP status; give token-specific,
+    // actionable guidance instead.
+    throw new Error(
+      `${label} rejected this token. Check that it's valid, unexpired, and has ` +
+        'the repository scopes.',
+    );
+  }
+
+  // A PAT is a standalone, non-expiring credential — no refresh token or
+  // lifetime to persist alongside it.
+  storeToken(provider, { accessToken: token });
+  settings.integrations = {
+    ...settings.integrations,
+    [provider]: {
+      provider,
+      status: 'connected',
+      account: account.username,
+      name: account.name,
+      avatarUrl: account.avatarUrl,
+      method: 'token',
+    },
+  };
+  saveSettings();
+  broadcastIntegrations();
 }
 
 /**
@@ -4887,7 +5379,7 @@ function writeSshKeyToDisk(
  * persist the private half locally (so a failed upload leaves nothing behind).
  */
 async function addSshKey(provider: IntegrationProvider): Promise<SshKeyInfo> {
-  const token = getToken(provider);
+  const token = await getToken(provider);
   if (!token) {
     throw new Error(`${PROVIDER_LABELS[provider]} is not connected.`);
   }
@@ -4938,7 +5430,7 @@ async function removeSshKey(
   provider: IntegrationProvider,
 ): Promise<SshKeyInfo[]> {
   const keys = settings.sshKeys?.[provider] ?? [];
-  const token = getToken(provider);
+  const token = await getToken(provider);
 
   for (const key of keys) {
     // Delete on the provider first; a failure here (other than "already gone",
@@ -4981,6 +5473,24 @@ function registerIntegrationsIpc(): void {
   );
 
   ipcMain.handle(
+    IntegrationChannels.connectToken,
+    async (
+      _event,
+      provider: IntegrationProvider,
+      token: unknown,
+    ): Promise<IntegrationsState> => {
+      if (!isIntegrationProvider(provider)) {
+        throw new Error(`Unknown integration provider: ${String(provider)}`);
+      }
+      if (typeof token !== 'string' || !token.trim()) {
+        throw new Error('Enter a personal access token.');
+      }
+      await connectWithToken(provider, token.trim());
+      return integrationsState();
+    },
+  );
+
+  ipcMain.handle(
     IntegrationChannels.disconnect,
     (_event, provider: IntegrationProvider): IntegrationsState => {
       if (!isIntegrationProvider(provider)) {
@@ -5005,11 +5515,11 @@ function registerIntegrationsIpc(): void {
 
   ipcMain.handle(
     IntegrationChannels.repositories,
-    (_event, provider: IntegrationProvider): Promise<RemoteRepo[]> => {
+    async (_event, provider: IntegrationProvider): Promise<RemoteRepo[]> => {
       if (!isIntegrationProvider(provider)) {
         throw new Error(`Unknown integration provider: ${String(provider)}`);
       }
-      const token = getToken(provider);
+      const token = await getToken(provider);
       if (!token) {
         throw new Error(`${PROVIDER_LABELS[provider]} is not connected.`);
       }
@@ -5025,7 +5535,7 @@ function registerIntegrationsIpc(): void {
       }
       const host = parseRepoHost(remoteUrl);
       if (!host) return { status: 'unsupported' };
-      const token = getToken(host.provider);
+      const token = await getToken(host.provider);
       if (!token) return { status: 'disconnected', provider: host.provider };
       try {
         const pulls = await PROVIDER_CLIENTS[host.provider].fetchPullRequests(
@@ -5060,7 +5570,7 @@ function registerIntegrationsIpc(): void {
           message: 'This remote is not a supported host (github.com / gitlab.com).',
         };
       }
-      const token = getToken(host.provider);
+      const token = await getToken(host.provider);
       if (!token) {
         return {
           status: 'error',
@@ -5090,7 +5600,7 @@ function registerIntegrationsIpc(): void {
       if (!isNewFeedback(input)) {
         return { status: 'error', message: 'Invalid feedback details.' };
       }
-      const token = getToken('github');
+      const token = await getToken('github');
       if (!token) {
         return {
           status: 'error',

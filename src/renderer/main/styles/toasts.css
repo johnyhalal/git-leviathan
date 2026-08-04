@@ -46,6 +46,10 @@
   gap: 3px;
   flex: 1 1 auto;
   min-width: 0;
+  /* Selectable so the message can be copied when debugging. */
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 
 .toast-title {

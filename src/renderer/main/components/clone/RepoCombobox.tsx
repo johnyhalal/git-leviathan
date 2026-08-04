@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDownIcon,
   CloseIcon,
+  RefreshIcon,
   SearchIcon,
 } from '../../../../../assets/icons';
 import type { RemoteRepo } from '../../../../types/ipc';
@@ -19,6 +20,11 @@ interface RepoComboboxProps {
   error: string | null;
   /** Shown in the menu when the account has no repositories at all. */
   emptyMessage?: string;
+  /**
+   * Re-fetch the repository list from the provider. A provider grants access to
+   * new repos out-of-band, so the field offers a manual reload.
+   */
+  onRefresh?: () => void;
 }
 
 /**
@@ -35,6 +41,7 @@ export function RepoCombobox({
   loading,
   error,
   emptyMessage,
+  onRefresh,
 }: RepoComboboxProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -131,6 +138,18 @@ export function RepoCombobox({
             onClick={clear}
           >
             <CloseIcon size={14} />
+          </button>
+        )}
+        {onRefresh && (
+          <button
+            type="button"
+            className="repo-combobox-refresh"
+            aria-label="Refresh repositories"
+            data-tooltip="Refresh repositories"
+            disabled={loading}
+            onClick={() => onRefresh()}
+          >
+            <RefreshIcon size={15} />
           </button>
         )}
         <button

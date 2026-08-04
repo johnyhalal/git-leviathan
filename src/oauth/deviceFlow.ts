@@ -93,13 +93,38 @@ export async function requestDeviceAuthorization(
 
 interface AccessTokenResponse {
   access_token?: string;
+  refresh_token?: string;
+  /** Seconds until `access_token` expires. Absent for non-expiring tokens. */
+  expires_in?: number;
   error?: string;
   error_description?: string;
   interval?: number;
 }
 
 /**
- * Poll until the user authorizes, then resolve with the access token. Honors
+ * A minted token plus what's needed to renew it. GitHub's default device-flow
+ * token never expires (no `refreshToken`/`expiresIn`); GitLab's expires in ~2h
+ * and ships a `refreshToken` that must be exchanged before then.
+ */
+export interface TokenSet {
+  accessToken: string;
+  /** Present when the provider issues renewable, expiring tokens. */
+  refreshToken?: string;
+  /** Seconds until `accessToken` expires, when the provider sets a lifetime. */
+  expiresIn?: number;
+}
+
+/** Pull a {@link TokenSet} out of a token-endpoint success body. */
+function toTokenSet(data: AccessTokenResponse): TokenSet {
+  return {
+    accessToken: data.access_token as string,
+    refreshToken: data.refresh_token,
+    expiresIn: typeof data.expires_in === 'number' ? data.expires_in : undefined,
+  };
+}
+
+/**
+ * Poll until the user authorizes, then resolve with the token set. Honors
  * the `slow_down` back-off, the code's expiry, and the abort signal (aborting
  * rejects with an `AbortError`).
  */
@@ -108,7 +133,7 @@ export async function pollForAccessToken(
   clientId: string,
   auth: DeviceAuthorization,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<TokenSet> {
   let intervalMs = auth.interval * 1000;
   const deadline = Date.now() + auth.expiresIn * 1000;
 
@@ -133,7 +158,7 @@ export async function pollForAccessToken(
     const data = (await res.json()) as AccessTokenResponse;
 
     if (data.access_token) {
-      return data.access_token;
+      return toTokenSet(data);
     }
     switch (data.error) {
       case 'authorization_pending':
@@ -150,6 +175,41 @@ export async function pollForAccessToken(
         throw new Error(oauthErrorMessage(data.error, data.error_description));
     }
   }
+}
+
+/**
+ * Exchange a refresh token for a fresh access token (OAuth `refresh_token`
+ * grant). GitLab rotates the refresh token on every exchange, so the returned
+ * set carries a new `refreshToken` the caller must persist in place of the old
+ * one. Throws on any error body (e.g. `invalid_grant` when the refresh token
+ * was itself revoked or already rotated), so the caller can fall back to asking
+ * the user to reconnect.
+ */
+export async function refreshAccessToken(
+  endpoints: DeviceEndpoints,
+  clientId: string,
+  refreshToken: string,
+  signal?: AbortSignal,
+): Promise<TokenSet> {
+  const res = await fetch(endpoints.tokenUrl, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      client_id: clientId,
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    }),
+    signal,
+  });
+  const data = (await res.json().catch(() => null)) as AccessTokenResponse | null;
+  if (!data || data.error || !data.access_token) {
+    throw new Error(
+      data?.error
+        ? oauthErrorMessage(data.error, data.error_description)
+        : `Token refresh failed (HTTP ${res.status}).`,
+    );
+  }
+  return toTokenSet(data);
 }
 
 /** Extract the `rel="next"` URL from an RFC 5988 `Link` header (GitHub & GitLab). */

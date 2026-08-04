@@ -67,6 +67,18 @@
   color: var(--danger, #e5534b);
 }
 
+/* Let the card's text be selected/copied — handy for pasting an error or the
+   generated key/code somewhere else while debugging. */
+.integration-identity .settings-row-text,
+.integration-error,
+.integration-code,
+.integration-verification,
+.integration-sshkey-result {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
 /* Device-flow "enter this code" state. */
 .integration-connecting {
   display: flex;
@@ -145,3 +157,78 @@
   word-break: break-all;
 }
 
+
+/* "Connect with a personal access token" escape hatch (under a disconnected
+   account). Collapsed to a link until opted into, then a paste field + button.
+   Rides on .settings-row for the group's padding + top divider. */
+.integration-token {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.integration-token-toggle {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.integration-token-toggle:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.integration-token-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.integration-token-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.integration-token-link:hover {
+  text-decoration: underline;
+}
+
+.integration-token-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.integration-token-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.integration-token-input:focus {
+  border-color: var(--primary);
+}
+
+.integration-token-input::placeholder {
+  color: var(--fg-muted);
+}

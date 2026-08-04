@@ -222,7 +222,8 @@ body.is-col-resizing .commit-th {
 /* When the cell expands on hover to reveal every ref, the leader line would
    just add clutter — drop it. */
 .commit-refs-inner:has(> .commit-ref-badge:hover) .commit-ref-connector,
-.commit-refs-inner.has-overflow:hover .commit-ref-connector {
+.commit-refs-inner.has-overflow:hover .commit-ref-connector,
+.commit-refs-inner.has-overflow.is-pinned .commit-ref-connector {
   display: none;
 }
 
@@ -303,11 +304,13 @@ body.is-col-resizing .commit-th {
    badge on its own line(s), the `+N` counter dropped. Absolute so it paints over
    neighbouring rows without changing the fixed row height; the cell turns into
    its positioning context. */
-.commit-table td.commit-refs:has(.commit-refs-inner.has-overflow):hover {
+.commit-table td.commit-refs:has(.commit-refs-inner.has-overflow):hover,
+.commit-table td.commit-refs:has(.commit-refs-inner.has-overflow.is-pinned) {
   position: relative;
 }
 
-.commit-refs-inner.has-overflow:hover {
+.commit-refs-inner.has-overflow:hover,
+.commit-refs-inner.has-overflow.is-pinned {
   position: absolute;
   top: -2px;
   left: 5px;
@@ -323,7 +326,8 @@ body.is-col-resizing .commit-th {
   overflow: visible;
 }
 
-.commit-refs-inner.has-overflow:hover > .commit-ref-badge {
+.commit-refs-inner.has-overflow:hover > .commit-ref-badge,
+.commit-refs-inner.has-overflow.is-pinned > .commit-ref-badge {
   display: inline-flex;
   /* In the floating overlay each badge paints over neighbouring rows, so the
      translucent lane tint must sit on an opaque surface — otherwise the rows
@@ -338,7 +342,8 @@ body.is-col-resizing .commit-th {
               linear-gradient(var(--ref-bg), var(--ref-bg)), var(--bg-elev);
 }
 
-.commit-refs-inner.has-overflow:hover > .commit-ref-more {
+.commit-refs-inner.has-overflow:hover > .commit-ref-more,
+.commit-refs-inner.has-overflow.is-pinned > .commit-ref-more {
   display: none;
 }
 

@@ -168,6 +168,34 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.checkout, path, branch, remote) as Promise<CheckoutResult>,
     createBranch: (path: string, name: string) =>
       ipcRenderer.invoke(RepoChannels.createBranch, path, name) as Promise<RefsMutationResult>,
+    createTag: (path: string, name: string, ref: string, message: string | null) =>
+      ipcRenderer.invoke(
+        RepoChannels.createTag,
+        path,
+        name,
+        ref,
+        message,
+      ) as Promise<RefsMutationResult>,
+    annotateTag: (path: string, name: string, message: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.annotateTag,
+        path,
+        name,
+        message,
+      ) as Promise<RefsMutationResult>,
+    deleteTag: (path: string, name: string) =>
+      ipcRenderer.invoke(RepoChannels.deleteTag, path, name) as Promise<RefsMutationResult>,
+    pushTag: (path: string, name: string, remote: string) =>
+      ipcRenderer.invoke(RepoChannels.pushTag, path, name, remote) as Promise<CommitResult>,
+    deleteRemoteTag: (path: string, name: string, remote: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.deleteRemoteTag,
+        path,
+        name,
+        remote,
+      ) as Promise<CommitResult>,
+    remoteTags: (path: string, remote: string) =>
+      ipcRenderer.invoke(RepoChannels.remoteTags, path, remote) as Promise<string[] | null>,
     renameBranch: (path: string, oldName: string, newName: string) =>
       ipcRenderer.invoke(
         RepoChannels.renameBranch,
@@ -190,6 +218,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.rebase, path, source, target) as Promise<RefsMutationResult>,
     fastForward: (path: string, source: string, target: string) =>
       ipcRenderer.invoke(RepoChannels.fastForward, path, source, target) as Promise<RefsMutationResult>,
+    cherryPick: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.cherryPick, path, hash) as Promise<RefsMutationResult>,
     pushBranch: (path: string, remote: string, localBranch: string, remoteBranch: string) =>
       ipcRenderer.invoke(
         RepoChannels.pushBranch,
@@ -331,6 +361,12 @@ const api: ExposedApi = {
         IntegrationChannels.connect,
         provider,
       ) as Promise<DeviceCodePrompt>,
+    connectWithToken: (provider: IntegrationProvider, token: string) =>
+      ipcRenderer.invoke(
+        IntegrationChannels.connectToken,
+        provider,
+        token,
+      ) as Promise<IntegrationsState>,
     disconnect: (provider: IntegrationProvider) =>
       ipcRenderer.invoke(
         IntegrationChannels.disconnect,

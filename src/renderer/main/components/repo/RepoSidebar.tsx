@@ -32,6 +32,7 @@ import {
   type DragMenuHandlers,
 } from './BranchDragMenu';
 import { StashContextMenu, type StashMenuTarget } from './StashContextMenu';
+import { TagContextMenu, type TagMenuTarget } from './TagContextMenu';
 import {
   WorktreeContextMenu,
   type WorktreeMenuTarget,
@@ -474,19 +475,52 @@ function PullRequestRow({
   );
 }
 
-function TagRow({ tag, id, active, onSelect }: RowProps & { tag: TagInfo }) {
+function TagRow({
+  tag,
+  id,
+  active,
+  onSelect,
+  onOpenMenu,
+}: RowProps & {
+  tag: TagInfo;
+  /** Open the tag context menu (annotate) at the right-click point. */
+  onOpenMenu: (target: TagMenuTarget, x: number, y: number) => void;
+}) {
   return (
-    <button
-      type="button"
+    <div
       className={cx('repo-list-item', active === id && 'is-active')}
       style={{ paddingLeft: indent(0) }}
-      onClick={() => onSelect(id)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onOpenMenu({ name: tag.name }, event.clientX, event.clientY);
+      }}
     >
-      <TagIcon size={14} />
-      <span className="repo-list-label tooltip-host" data-tooltip={tag.name}>
-        {tag.name}
-      </span>
-    </button>
+      <button
+        type="button"
+        className="repo-row-main tooltip-host"
+        onClick={() => onSelect(id)}
+        // Annotated tags surface their message on hover; lightweight tags fall
+        // back to the name (there's no annotation to show).
+        data-tooltip={tag.message ?? tag.name}
+      >
+        <TagIcon size={14} />
+        <span className="repo-list-label">{tag.name}</span>
+      </button>
+      <button
+        type="button"
+        className="repo-row-action tooltip-host"
+        // A plain left-click on the ⋯ opens the same menu the right-click does,
+        // anchored to the button (matching the branch/stash rows).
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          onOpenMenu({ name: tag.name }, rect.right, rect.bottom);
+        }}
+        data-tooltip="Tag actions"
+        aria-label="Tag actions"
+      >
+        <MoreIcon size={16} />
+      </button>
+    </div>
   );
 }
 
@@ -679,6 +713,8 @@ interface RepoSidebarProps {
   onRebaseBranch: (source: string, target: string) => void;
   /** Fast-forward the local branch `target` to `source` (`merge --ff-only`). */
   onFastForward: (source: string, target: string) => void;
+  /** Cherry-pick a branch's tip commit onto HEAD, from a branch row's context menu. */
+  onCherryPick: (committish: string) => void;
   /**
    * Push the local branch `localBranch` to `remoteBranch` on `remote`, resolving
    * whether the push succeeded (so a follow-up "start a pull request" only opens
@@ -691,6 +727,23 @@ interface RepoSidebarProps {
   onDeleteBranch: (branch: string) => void;
   /** Delete a branch on its remote (`git push <remote> --delete`). */
   onDeleteRemoteBranch: (remote: string, branch: string) => void;
+  /**
+   * Begin creating a tag at the tip of branch `branch` (from its context menu):
+   * the inline name field appears at that branch's tip commit in the graph.
+   */
+  onStartTagAtBranch: (branch: string, annotated: boolean) => void;
+  /** Re-create the tag `name` as annotated with `message` (tags section menu). */
+  onAnnotateTag: (name: string, message: string) => void;
+  /** The remote the tag menu's push/delete actions target, or undefined when none. */
+  tagRemote?: string;
+  /** Tag names already on `tagRemote`, or null when it couldn't be determined. */
+  pushedTags: Set<string> | null;
+  /** Push the tag `name` to `remote` (`git push <remote> refs/tags/<name>`). */
+  onPushTag: (name: string, remote: string) => void;
+  /** Delete the tag `name` on `remote` (local tag kept). */
+  onDeleteRemoteTag: (name: string, remote: string) => void;
+  /** Delete the local tag `name` (`git tag -d`). */
+  onDeleteTag: (name: string) => void;
   /** Apply a stash by index, keeping it (`git stash apply`). */
   onStashApply: (index: number) => void;
   /** Apply & drop a stash by index (`git stash pop`). */
@@ -741,10 +794,18 @@ export function RepoSidebar({
   onMergeBranch,
   onRebaseBranch,
   onFastForward,
+  onCherryPick,
   onPushBranch,
   onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
+  onStartTagAtBranch,
+  onAnnotateTag,
+  tagRemote,
+  pushedTags,
+  onPushTag,
+  onDeleteRemoteTag,
+  onDeleteTag,
   onStashApply,
   onStashPop,
   onStashDrop,
@@ -793,6 +854,16 @@ export function RepoSidebar({
   } | null>(null);
   const openStashMenu = useCallback(
     (target: StashMenuTarget, x: number, y: number) => setStashMenu({ target, x, y }),
+    [],
+  );
+  // The annotate menu opened by right-clicking a tag row; null when closed.
+  const [tagMenu, setTagMenu] = useState<{
+    target: TagMenuTarget;
+    x: number;
+    y: number;
+  } | null>(null);
+  const openTagMenu = useCallback(
+    (target: TagMenuTarget, x: number, y: number) => setTagMenu({ target, x, y }),
     [],
   );
   // Whether the "add a worktree" dialog is open.
@@ -1400,6 +1471,7 @@ export function RepoSidebar({
                   setActive(id);
                   onSelectRef?.(tag.name);
                 }}
+                onOpenMenu={openTagMenu}
               />
             ))}
       </CollapsibleSection>
@@ -1429,9 +1501,41 @@ export function RepoSidebar({
           onCheckout={onCheckout}
           onMerge={onMergeBranch}
           onRebase={onRebaseBranch}
+          onCherryPick={
+            // Cherry-pick this branch's tip onto HEAD — offered for every branch
+            // except the checked-out one. That excludes both the local current
+            // branch and its remote-tracking counterpart (`origin/dev` while on
+            // `dev`), which share the current branch's name, since picking the
+            // current branch onto itself is a no-op. A remote-only branch is
+            // addressed by its `remote/name` committish.
+            contextMenu.target.isCurrent || contextMenu.target.name === currentBranch
+              ? undefined
+              : () =>
+                  onCherryPick(
+                    contextMenu.target.local
+                      ? contextMenu.target.name
+                      : `${contextMenu.target.remoteName}/${contextMenu.target.name}`,
+                  )
+          }
           onRenameBranch={onRenameBranch}
           onDeleteBranch={onDeleteBranch}
           onDeleteRemoteBranch={onDeleteRemoteBranch}
+          onCreateTagHere={() => onStartTagAtBranch(contextMenu.target.name, false)}
+          onCreateAnnotatedTagHere={() => onStartTagAtBranch(contextMenu.target.name, true)}
+        />
+      )}
+      {tagMenu && (
+        <TagContextMenu
+          target={tagMenu.target}
+          x={tagMenu.x}
+          y={tagMenu.y}
+          remote={tagRemote}
+          pushed={pushedTags ? pushedTags.has(tagMenu.target.name) : null}
+          onClose={() => setTagMenu(null)}
+          onAnnotate={onAnnotateTag}
+          onPush={onPushTag}
+          onDeleteRemote={onDeleteRemoteTag}
+          onDeleteLocal={onDeleteTag}
         />
       )}
       {stashMenu && (

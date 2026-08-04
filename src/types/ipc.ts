@@ -192,6 +192,8 @@ export interface RemoteInfo {
 export interface TagInfo {
   name: string;
   hash: string;
+  /** The annotated tag's message subject; absent for a lightweight tag. */
+  message?: string;
 }
 
 /** A stash entry from `git stash list`. */
@@ -331,8 +333,10 @@ export type RepoConfigResult =
 /**
  * Git LFS state for a repository, driving the repo settings' Git LFS tab. The
  * app bundles git-lfs (via dugite), so availability/version aren't surfaced —
- * only what the repo tracks. Tracking a pattern lazily runs `git lfs install
- * --local`, so there's no separate "enable" step.
+ * only what the repo tracks. LFS is enabled/disabled implicitly by the pattern
+ * list: tracking the first pattern runs `git lfs install --local`, and
+ * untracking the last one runs `git lfs uninstall --local` — no separate
+ * enable/disable step.
  */
 export interface LfsStatus {
   /** Patterns tracked by LFS, read from the repo's `.gitattributes`. */
@@ -647,6 +651,18 @@ export const RepoChannels = {
   checkout: 'repo:checkout',
   /** Renderer -> main (invoke): create a branch at HEAD; returns fresh refs. */
   createBranch: 'repo:create-branch',
+  /** Renderer -> main (invoke): create a tag at a commit; returns fresh refs. */
+  createTag: 'repo:create-tag',
+  /** Renderer -> main (invoke): re-create a tag as annotated (force); returns fresh refs. */
+  annotateTag: 'repo:annotate-tag',
+  /** Renderer -> main (invoke): delete a local tag; returns fresh refs. */
+  deleteTag: 'repo:delete-tag',
+  /** Renderer -> main (invoke): push a single tag to a remote. */
+  pushTag: 'repo:push-tag',
+  /** Renderer -> main (invoke): delete a tag on a remote. */
+  deleteRemoteTag: 'repo:delete-remote-tag',
+  /** Renderer -> main (invoke): list the tag names that exist on a remote. */
+  remoteTags: 'repo:remote-tags',
   /** Renderer -> main (invoke): rename a local branch; returns fresh refs. */
   renameBranch: 'repo:rename-branch',
   /** Renderer -> main (invoke): delete a local branch; returns fresh refs. */
@@ -659,6 +675,8 @@ export const RepoChannels = {
   rebase: 'repo:rebase',
   /** Renderer -> main (invoke): fast-forward one branch to another; returns fresh refs. */
   fastForward: 'repo:fast-forward',
+  /** Renderer -> main (invoke): cherry-pick a commit onto HEAD; returns fresh refs. */
+  cherryPick: 'repo:cherry-pick',
   /** Renderer -> main (invoke): push a local branch to a remote branch. */
   pushBranch: 'repo:push-branch',
   /** Renderer -> main (invoke): stash uncommitted changes (`git stash push`). */
@@ -792,6 +810,12 @@ export type IntegrationProvider = 'github' | 'gitlab';
  */
 export type IntegrationStatus = 'disconnected' | 'connecting' | 'connected';
 
+/**
+ * How a connection was authenticated: the OAuth device flow, or a user-supplied
+ * personal access token (a workaround for orgs that restrict OAuth apps).
+ */
+export type IntegrationAuthMethod = 'oauth' | 'token';
+
 /** The authenticated user's profile, as read from a provider's `/user`. */
 export interface IntegrationAccount {
   /** The account handle / username (e.g. GitHub login). */
@@ -812,6 +836,8 @@ export interface IntegrationConnection {
   name?: string;
   /** The connected account's avatar image URL, when available. */
   avatarUrl?: string;
+  /** How the account was authenticated, once connected. Defaults to `oauth`. */
+  method?: IntegrationAuthMethod;
   /** Transient message from the most recent failed connect attempt. */
   error?: string;
 }
@@ -971,6 +997,11 @@ export const IntegrationChannels = {
   list: 'integrations:list',
   /** Renderer -> main (invoke): begin a device flow; returns the user prompt. */
   connect: 'integrations:connect',
+  /**
+   * Renderer -> main (invoke): connect with a user-supplied personal access
+   * token instead of the device flow; validates it and returns state.
+   */
+  connectToken: 'integrations:connect-token',
   /** Renderer -> main (invoke): disconnect (or cancel) a provider; returns state. */
   disconnect: 'integrations:disconnect',
   /** Renderer -> main (invoke): list the connected account's repositories. */
@@ -1258,6 +1289,42 @@ export interface RepoApi {
    */
   createBranch(path: string, name: string): Promise<RefsMutationResult>;
   /**
+   * Create a tag named `name` at `ref` (a commit hash or branch name). A non-null
+   * `message` makes it an annotated tag (`git tag -a -m`); `null` makes a
+   * lightweight tag. Resolves with the repo's fresh refs on success, or an error
+   * message (invalid name, a tag of that name already exists, unknown ref…).
+   */
+  createTag(path: string, name: string, ref: string, message: string | null): Promise<RefsMutationResult>;
+  /**
+   * Re-create the existing tag `name` as an annotated tag carrying `message`,
+   * pointing at the same commit (`git tag -a -f -m`). Used to annotate a
+   * lightweight tag. Resolves with the repo's fresh refs on success, or an error.
+   */
+  annotateTag(path: string, name: string, message: string): Promise<RefsMutationResult>;
+  /**
+   * Delete the local tag `name` (`git tag -d`). Leaves any copy on a remote
+   * untouched. Resolves with the repo's fresh refs on success, or an error.
+   */
+  deleteTag(path: string, name: string): Promise<RefsMutationResult>;
+  /**
+   * Push the single tag `name` to `remote` (`git push <remote> refs/tags/<name>`) —
+   * a normal `git push` never carries tags. Resolves ok, or an error message
+   * (unknown remote, auth failure, the tag is gone…).
+   */
+  pushTag(path: string, name: string, remote: string): Promise<CommitResult>;
+  /**
+   * Delete the tag `name` on `remote` (`git push <remote> --delete refs/tags/<name>`).
+   * The local tag is left untouched. Resolves ok, or an error message.
+   */
+  deleteRemoteTag(path: string, name: string, remote: string): Promise<CommitResult>;
+  /**
+   * List the tag names present on `remote` (`git ls-remote --tags`), so the UI
+   * can tell which local tags are already pushed. Resolves the array of names, or
+   * `null` when the remote couldn't be reached (unknown remote, network/auth
+   * failure) so callers can fall back rather than assume "no tags there".
+   */
+  remoteTags(path: string, remote: string): Promise<string[] | null>;
+  /**
    * Rename the local branch `oldName` to `newName` (`git branch -m`). Resolves
    * with the repo's fresh refs on success, or an error message (invalid name, a
    * branch of the new name already exists, the old branch is gone…).
@@ -1298,6 +1365,14 @@ export interface RepoApi {
    * branches have diverged so no fast-forward is possible).
    */
   fastForward(path: string, source: string, target: string): Promise<RefsMutationResult>;
+  /**
+   * Cherry-pick the commit `hash` onto the current HEAD (`git cherry-pick hash`),
+   * applying that commit's change as a new commit on the checked-out branch.
+   * Resolves with fresh refs on success, or an error message — conflicts leave the
+   * cherry-pick in progress (surfaced through {@link mergeState}) so the user can
+   * resolve and `mergeContinue`, or `mergeAbort`.
+   */
+  cherryPick(path: string, hash: string): Promise<RefsMutationResult>;
   /**
    * Push the local branch `localBranch` to `remoteBranch` on `remote`
    * (`git push --set-upstream <remote> <localBranch>:<remoteBranch>`), setting it
@@ -1542,6 +1617,17 @@ export interface IntegrationsApi {
    * via `onChange`.
    */
   connect(provider: IntegrationProvider): Promise<DeviceCodePrompt>;
+  /**
+   * Connect a provider with a user-supplied personal access token instead of the
+   * device flow — a workaround for organizations that restrict OAuth apps. The
+   * token is validated against the provider's `/user` endpoint and stored
+   * encrypted like a device-flow token. Resolves with the fresh state; rejects
+   * with an actionable message if the token is empty or invalid.
+   */
+  connectWithToken(
+    provider: IntegrationProvider,
+    token: string,
+  ): Promise<IntegrationsState>;
   /** Disconnect a provider, or cancel an in-progress flow. Resolves with state. */
   disconnect(provider: IntegrationProvider): Promise<IntegrationsState>;
   /**

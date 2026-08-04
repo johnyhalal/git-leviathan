@@ -12,9 +12,11 @@ import type {
 import {
   nextPageUrl,
   pollForAccessToken as pollDeviceToken,
+  refreshAccessToken as refreshDeviceToken,
   requestDeviceAuthorization as requestDeviceAuth,
   type DeviceAuthorization,
   type DeviceEndpoints,
+  type TokenSet,
 } from './deviceFlow';
 
 const ENDPOINTS: DeviceEndpoints = {
@@ -37,8 +39,21 @@ export function pollForAccessToken(
   clientId: string,
   auth: DeviceAuthorization,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<TokenSet> {
   return pollDeviceToken(ENDPOINTS, clientId, auth, signal);
+}
+
+/**
+ * Exchange a refresh token for a fresh access token. Only relevant when the
+ * GitHub OAuth app opts into expiring user tokens; the default non-expiring
+ * token never reaches this path.
+ */
+export function refreshAccessToken(
+  clientId: string,
+  refreshToken: string,
+  signal?: AbortSignal,
+): Promise<TokenSet> {
+  return refreshDeviceToken(ENDPOINTS, clientId, refreshToken, signal);
 }
 
 /** Headers for authenticated GitHub REST API requests. */

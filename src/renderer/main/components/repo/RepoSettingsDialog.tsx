@@ -46,8 +46,8 @@ interface SettingsTab {
 
 /** The dialog's category tabs. General holds the commit identity + remotes. */
 const TABS: SettingsTab[] = [
-  { id: 'general', label: 'General' },
-  { id: 'gitflow', label: 'Gitflow' },
+  { id: 'general', label: 'General', heading: 'General Settings' },
+  { id: 'gitflow', label: 'Gitflow', heading: 'Gitflow Settings' },
   { id: 'lfs', label: 'LFS', heading: 'Git Large File Storage' },
 ];
 

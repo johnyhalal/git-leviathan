@@ -39,3 +39,4 @@ export { RedoIcon } from './RedoIcon';
 export { SparkleIcon } from './SparkleIcon';
 export { StarIcon } from './StarIcon';
 export { FeedbackIcon } from './FeedbackIcon';
+export { RefreshIcon } from './RefreshIcon';
