@@ -14,6 +14,10 @@ import {
   type GitflowKind,
   type GitflowConfig,
   type GitflowConfigResult,
+  type RepoConfig,
+  type RepoConfigResult,
+  type LfsStatus,
+  type LfsResult,
   type WorktreeAddOptions,
   type CloneProgress,
   type RepoActivityEvent,
@@ -164,6 +168,34 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.checkout, path, branch, remote) as Promise<CheckoutResult>,
     createBranch: (path: string, name: string) =>
       ipcRenderer.invoke(RepoChannels.createBranch, path, name) as Promise<RefsMutationResult>,
+    createTag: (path: string, name: string, ref: string, message: string | null) =>
+      ipcRenderer.invoke(
+        RepoChannels.createTag,
+        path,
+        name,
+        ref,
+        message,
+      ) as Promise<RefsMutationResult>,
+    annotateTag: (path: string, name: string, message: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.annotateTag,
+        path,
+        name,
+        message,
+      ) as Promise<RefsMutationResult>,
+    deleteTag: (path: string, name: string) =>
+      ipcRenderer.invoke(RepoChannels.deleteTag, path, name) as Promise<RefsMutationResult>,
+    pushTag: (path: string, name: string, remote: string) =>
+      ipcRenderer.invoke(RepoChannels.pushTag, path, name, remote) as Promise<CommitResult>,
+    deleteRemoteTag: (path: string, name: string, remote: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.deleteRemoteTag,
+        path,
+        name,
+        remote,
+      ) as Promise<CommitResult>,
+    remoteTags: (path: string, remote: string) =>
+      ipcRenderer.invoke(RepoChannels.remoteTags, path, remote) as Promise<string[] | null>,
     renameBranch: (path: string, oldName: string, newName: string) =>
       ipcRenderer.invoke(
         RepoChannels.renameBranch,
@@ -184,6 +216,18 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.merge, path, source, target) as Promise<RefsMutationResult>,
     rebase: (path: string, source: string, target: string) =>
       ipcRenderer.invoke(RepoChannels.rebase, path, source, target) as Promise<RefsMutationResult>,
+    fastForward: (path: string, source: string, target: string) =>
+      ipcRenderer.invoke(RepoChannels.fastForward, path, source, target) as Promise<RefsMutationResult>,
+    cherryPick: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.cherryPick, path, hash) as Promise<RefsMutationResult>,
+    pushBranch: (path: string, remote: string, localBranch: string, remoteBranch: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.pushBranch,
+        path,
+        remote,
+        localBranch,
+        remoteBranch,
+      ) as Promise<CommitResult>,
     stashPush: (path: string) =>
       ipcRenderer.invoke(RepoChannels.stashPush, path) as Promise<RefsMutationResult>,
     stashApply: (path: string, index: number) =>
@@ -217,6 +261,16 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.isWorktree, path) as Promise<boolean>,
     pathInsideWorktree: (path: string) =>
       ipcRenderer.invoke(RepoChannels.pathInsideWorktree, path) as Promise<boolean>,
+    repoConfig: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.repoConfig, path) as Promise<RepoConfig>,
+    repoSaveConfig: (path: string, config: RepoConfig) =>
+      ipcRenderer.invoke(RepoChannels.repoSaveConfig, path, config) as Promise<RepoConfigResult>,
+    repoLfsStatus: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.repoLfsStatus, path) as Promise<LfsStatus>,
+    repoLfsTrack: (path: string, pattern: string) =>
+      ipcRenderer.invoke(RepoChannels.repoLfsTrack, path, pattern) as Promise<LfsResult>,
+    repoLfsUntrack: (path: string, pattern: string) =>
+      ipcRenderer.invoke(RepoChannels.repoLfsUntrack, path, pattern) as Promise<LfsResult>,
     gitflowConfig: (path: string) =>
       ipcRenderer.invoke(RepoChannels.gitflowConfig, path) as Promise<GitflowConfig | null>,
     gitflowSaveConfig: (path: string, config: GitflowConfig) =>
@@ -307,6 +361,12 @@ const api: ExposedApi = {
         IntegrationChannels.connect,
         provider,
       ) as Promise<DeviceCodePrompt>,
+    connectWithToken: (provider: IntegrationProvider, token: string) =>
+      ipcRenderer.invoke(
+        IntegrationChannels.connectToken,
+        provider,
+        token,
+      ) as Promise<IntegrationsState>,
     disconnect: (provider: IntegrationProvider) =>
       ipcRenderer.invoke(
         IntegrationChannels.disconnect,

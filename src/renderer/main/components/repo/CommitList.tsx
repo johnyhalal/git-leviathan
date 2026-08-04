@@ -15,8 +15,10 @@ import type {
   WorkingStatus,
 } from '../../../../types/ipc';
 import { CheckIcon, LocalIcon, MinusIcon, PencilIcon, PlusIcon, TagIcon } from '../../../../../assets/icons';
+import { useConfirm } from '../ConfirmBar';
 import { RemoteAvatar } from './RemoteAvatar';
 import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
+import { TagContextMenu } from './TagContextMenu';
 import { CommitGraph, graphCellWidth } from './CommitGraph';
 import { computeGraph, GRAPH_COLORS, type GraphNode } from './graph';
 import {
@@ -294,12 +296,15 @@ function RefBadge({
   color,
   remoteUrl,
   onCheckout,
+  onTagMenu,
   dnd,
   ghost = false,
 }: {
   group: RefGroup;
   color: string;
   remoteUrl?: string;
+  /** Open the tag context menu (tag badges only), anchored at the click point. */
+  onTagMenu?: (name: string, x: number, y: number) => void;
   onCheckout?: (branch: string, remote?: string) => void;
   /** Branch drag-and-drop plumbing; absent disables merge/rebase dragging. */
   dnd?: BranchDnd;
@@ -351,6 +356,17 @@ function RefBadge({
       style={{ '--ref-bg': badgeAlpha(color, group.isHead) } as CSSProperties}
       data-tooltip={
         checkoutable ? `Double-click to check out ${group.name}` : `${group.name} — ${refWhere(group)}`
+      }
+      // A tag badge opens the tag context menu on its own, stopping the event so
+      // the row's branch menu doesn't also fire (branches keep the row menu).
+      onContextMenu={
+        group.kind === 'tag' && !ghost && onTagMenu
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onTagMenu(group.name, event.clientX, event.clientY);
+            }
+          : undefined
       }
       draggable={draggable}
       onDragStart={
@@ -417,7 +433,10 @@ function RefBadge({
 interface CommitListProps {
   /** Commits newest-first, or null while loading. */
   commits: CommitLogEntry[] | null;
+  /** The focused commit — drives the detail panel and auto-scroll; always also in {@link selectedHashes}. */
   selectedHash: string | null;
+  /** Every highlighted commit hash (multi-select). A single selection is a one-element set. */
+  selectedHashes: ReadonlySet<string>;
   /** The checked-out branch name, for the branch context menu's merge/rebase actions. */
   currentBranch?: string;
   /** Configured remotes, for badging remote refs with their host avatar. */
@@ -430,7 +449,12 @@ interface CommitListProps {
   onCommitMessageChange?: (message: string) => void;
   /** Whether another page of history is being fetched (shows a footer note). */
   loadingMore?: boolean;
-  onSelect: (hash: string) => void;
+  /**
+   * Select a commit row. `modifiers` reflect the mouse click: `shift` extends a
+   * range from the focused row, `meta` (⌘/Ctrl) toggles the row in/out of the
+   * selection; neither set means a plain single select.
+   */
+  onSelect: (hash: string, modifiers: { shift: boolean; meta: boolean }) => void;
   /** Check out a branch by double-clicking its ref badge. */
   onCheckout?: (branch: string, remote?: string) => void;
   /** Whether to show the inline "new branch" input in the HEAD commit's refs cell. */
@@ -439,10 +463,34 @@ interface CommitListProps {
   onCreateBranch?: (name: string) => void;
   /** Dismiss the inline "new branch" input without creating (Escape / blur). */
   onCancelCreateBranch?: () => void;
+  /** The commit a tag is being created at (its inline name input), or null. */
+  taggingAt?: { hash: string; annotated: boolean } | null;
+  /** Begin creating a tag at `hash` (from a commit row's context menu). */
+  onStartTag?: (hash: string, annotated: boolean) => void;
+  /** Create a lightweight tag `name` at `hash` (Enter in the inline input). */
+  onCreateTag?: (hash: string, name: string) => void;
+  /** Create an annotated tag `name` at `hash` with `message` (after the confirm). */
+  onCreateAnnotatedTag?: (hash: string, name: string, message: string) => void;
+  /** Dismiss the inline tag input without creating (Escape / blur). */
+  onCancelTag?: () => void;
+  /** The remote the tag badge menu's push/delete actions target, or undefined. */
+  tagRemote?: string;
+  /** Tag names already on `tagRemote`, or null when it couldn't be determined. */
+  pushedTags?: Set<string> | null;
+  /** Re-create the tag `name` as annotated with `message` (from a tag badge menu). */
+  onAnnotateTag?: (name: string, message: string) => void;
+  /** Push the tag `name` to `remote` (from a tag badge menu). */
+  onPushTag?: (name: string, remote: string) => void;
+  /** Delete the tag `name` on `remote` (from a tag badge menu). */
+  onDeleteRemoteTag?: (name: string, remote: string) => void;
+  /** Delete the local tag `name` (from a tag badge menu). */
+  onDeleteTag?: (name: string) => void;
   /** Merge the dragged branch into the one it was dropped on. */
   onMergeBranch?: (source: string, target: string) => void;
   /** Rebase the dragged branch into the one it was dropped on. */
   onRebaseBranch?: (source: string, target: string) => void;
+  /** Cherry-pick the commit onto HEAD (from a commit row's context menu). */
+  onCherryPick?: (hash: string) => void;
   /** Rename a local branch (`git branch -m`), from a badge's context menu. */
   onRenameBranch?: (oldName: string, newName: string) => void;
   /** Delete a local branch (`git branch -D`), from a badge's context menu. */
@@ -547,8 +595,16 @@ interface CellContext {
   /** The branch this commit's lane belongs to (propagated from the tip), shown as
    *  a hover-revealed ghost badge when the commit carries no branch of its own. */
   laneBranch?: string;
+  /**
+   * Keep this row's multi-ref cell expanded (as if hovered) even without the
+   * pointer over it — set while its context menu is open, so the extra branch
+   * names the menu acts on stay visible under the menu instead of collapsing.
+   */
+  refsPinned?: boolean;
   /** Check out a branch by double-clicking its ref badge. */
   onCheckout?: (branch: string, remote?: string) => void;
+  /** Open the tag context menu from a tag badge (anchored at the click point). */
+  onTagMenu?: (name: string, x: number, y: number) => void;
   /** Branch drag-and-drop plumbing for the ref badges (merge/rebase). */
   branchDnd?: BranchDnd;
   /**
@@ -556,6 +612,14 @@ interface CellContext {
    * on the HEAD row while branch creation is active; absent on every other row.
    */
   newBranch?: {
+    onCreate: (name: string) => void;
+    onCancel: () => void;
+  };
+  /**
+   * The inline "new tag" input for the commit a tag is being created at; present
+   * only on that row while tagging is active, absent on every other row.
+   */
+  newTag?: {
     onCreate: (name: string) => void;
     onCancel: () => void;
   };
@@ -656,11 +720,61 @@ function NewBranchInput({
   );
 }
 
+/**
+ * The inline tag-name field shown in a commit's refs cell while a tag is being
+ * created there. Autofocuses on mount; Enter creates the tag (a lightweight tag
+ * outright, or the annotated flow's message step), Escape or blur dismisses.
+ */
+function NewTagInput({
+  onCreate,
+  onCancel,
+}: {
+  onCreate: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState('');
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
+  return (
+    <input
+      ref={ref}
+      type="text"
+      className="commit-new-branch-input"
+      placeholder="enter tag name"
+      value={name}
+      onChange={(event) => setName(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          const trimmed = name.trim();
+          if (trimmed) onCreate(trimmed);
+        } else if (event.key === 'Escape') {
+          onCancel();
+        }
+      }}
+      onBlur={onCancel}
+    />
+  );
+}
+
 /** Renders the `<td>` for a given column key. */
 function renderCell(key: CommitColumnKey, ctx: CellContext) {
   const { commit } = ctx;
   switch (key) {
     case 'refs': {
+      // While creating a tag here, the input takes over this row's refs cell in
+      // place of its badges (same treatment as the new-branch input below).
+      if (ctx.newTag) {
+        return (
+          <td key={key} className="commit-refs">
+            <div className="commit-refs-inner">
+              <NewTagInput onCreate={ctx.newTag.onCreate} onCancel={ctx.newTag.onCancel} />
+            </div>
+          </td>
+        );
+      }
       // While creating a branch, the input takes over the HEAD row's refs cell
       // in place of its badges — no room for both, and it reads as "name this".
       if (ctx.newBranch) {
@@ -694,9 +808,14 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
       // hovering the cell reveals every ref wrapped over multiple lines (see the
       // `.has-overflow` rules in app.css).
       const overflow = groups.length - 1;
+      const pinned = overflow > 0 && ctx.refsPinned;
       return (
         <td key={key} className="commit-refs">
-          <div className={`commit-refs-inner${overflow > 0 ? ' has-overflow' : ''}`}>
+          <div
+            className={`commit-refs-inner${overflow > 0 ? ' has-overflow' : ''}${
+              pinned ? ' is-pinned' : ''
+            }`}
+          >
             {groups.map((group) => (
               <RefBadge
                 key={group.key}
@@ -704,6 +823,7 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
                 color={laneColor}
                 remoteUrl={group.remoteName ? ctx.urlByRemote.get(group.remoteName) : undefined}
                 onCheckout={ctx.onCheckout}
+                onTagMenu={ctx.onTagMenu}
                 dnd={ctx.branchDnd}
               />
             ))}
@@ -779,6 +899,7 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
 export function CommitList({
   commits,
   selectedHash,
+  selectedHashes,
   currentBranch,
   remotes,
   workingStatus,
@@ -790,12 +911,25 @@ export function CommitList({
   creatingBranch = false,
   onCreateBranch,
   onCancelCreateBranch,
+  taggingAt = null,
+  onStartTag,
+  onCreateTag,
+  onCreateAnnotatedTag,
+  onCancelTag,
+  tagRemote,
+  pushedTags,
+  onAnnotateTag,
+  onPushTag,
+  onDeleteRemoteTag,
+  onDeleteTag,
   onMergeBranch,
   onRebaseBranch,
+  onCherryPick,
   onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
 }: CommitListProps) {
+  const requestConfirm = useConfirm();
   const graph = useMemo(() => computeGraph(commits ?? []), [commits]);
   const maxLane = useMemo(() => maxLaneOf(graph), [graph]);
   const laneBranches = useMemo(() => laneBranchByHash(commits ?? []), [commits]);
@@ -823,6 +957,16 @@ export function CommitList({
   // menu lists each one's delete actions together.
   const [contextMenu, setContextMenu] = useState<{
     targets: BranchMenuTarget[];
+    /** The commit the menu was opened on, for the "Create tag here" actions. */
+    hash: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  // The tag menu opened by right-clicking a tag badge in the graph; `hash` is the
+  // commit it sits on, so that row's refs stay pinned open while the menu is up.
+  const [tagMenu, setTagMenu] = useState<{
+    name: string;
+    hash: string;
     x: number;
     y: number;
   } | null>(null);
@@ -856,9 +1000,12 @@ export function CommitList({
     }
   }, [selectedHash]);
 
-  const handleSelect = (hash: string) => {
+  const handleSelect = (
+    hash: string,
+    modifiers: { shift: boolean; meta: boolean } = { shift: false, meta: false },
+  ) => {
     skipScrollRef.current = true;
-    onSelect(hash);
+    onSelect(hash, modifiers);
   };
 
   if (commits === null) {
@@ -969,7 +1116,9 @@ export function CommitList({
         {commits.map((commit, index) => {
           const isStash = commit.stashIndex !== undefined;
           const classes = ['commit-row'];
-          if (commit.hash === selectedHash) classes.push('is-selected');
+          // Every selected row (single or multi) carries `is-selected`, so they all
+          // highlight identically; `selectedHash` only marks the focused one.
+          if (selectedHashes.has(commit.hash)) classes.push('is-selected');
           if (isStash) classes.push('is-stash');
           // The inline "new branch" input rides on the checked-out (HEAD) commit's
           // refs cell while branch creation is active.
@@ -978,15 +1127,56 @@ export function CommitList({
             creatingBranch && isHead && onCreateBranch && onCancelCreateBranch
               ? { onCreate: onCreateBranch, onCancel: onCancelCreateBranch }
               : undefined;
+          // The inline tag input rides on the commit a tag is being created at.
+          // Entering a name creates a lightweight tag outright; for an annotated
+          // tag it hands off to the confirm bar to collect the message first.
+          const newTag =
+            taggingAt && taggingAt.hash === commit.hash && onCreateTag
+              ? {
+                  onCreate: (name: string) => {
+                    if (taggingAt.annotated) {
+                      // Clear the inline field (the name is captured) and collect
+                      // the message in the shared confirm bar over the toolbar.
+                      onCancelTag?.();
+                      requestConfirm({
+                        message: `Annotated tag “${name}” message:`,
+                        cancelLabel: 'Cancel',
+                        input: { ariaLabel: 'Tag message', placeholder: 'tag message' },
+                        actions: [
+                          {
+                            label: 'Create tag',
+                            tone: 'primary',
+                            busyLabel: 'Creating…',
+                            onClick: (value) => {
+                              const message = value.trim();
+                              if (!message) throw new Error('A tag message is required.');
+                              onCreateAnnotatedTag?.(commit.hash, name, message);
+                            },
+                          },
+                        ],
+                      });
+                    } else {
+                      onCreateTag(commit.hash, name);
+                    }
+                  },
+                  onCancel: () => onCancelTag?.(),
+                }
+              : undefined;
           const ctx: CellContext = {
             commit,
             graph: graph[index],
             maxLane,
             urlByRemote,
             laneBranch: laneBranches.get(commit.hash),
+            refsPinned:
+              contextMenu?.hash === commit.hash || tagMenu?.hash === commit.hash,
             onCheckout,
+            onTagMenu: onAnnotateTag
+              ? (name, x, y) => setTagMenu({ name, hash: commit.hash, x, y })
+              : undefined,
             branchDnd,
             newBranch,
+            newTag,
             working: {
               message: commitMessage,
               onMessageChange: onCommitMessageChange ?? noop,
@@ -1001,16 +1191,27 @@ export function CommitList({
               ref={commit.hash === selectedHash ? selectedRowRef : undefined}
               className={classes.join(' ')}
               style={{ height: ROW_HEIGHT }}
-              aria-selected={commit.hash === selectedHash}
-              onClick={() => handleSelect(commit.hash)}
-              // Right-click anywhere on the row opens the branch delete menu for
-              // every branch on that commit — the whole line is the target, not
-              // just the badge. Rows with no deletable branch keep the native menu.
+              aria-selected={selectedHashes.has(commit.hash)}
+              // A Shift-click would otherwise sweep-select the rows' text; suppress
+              // that so range selection reads as row selection, not text.
+              onMouseDown={(event) => {
+                if (event.shiftKey) event.preventDefault();
+              }}
+              onClick={(event) =>
+                handleSelect(commit.hash, {
+                  shift: event.shiftKey,
+                  meta: event.metaKey || event.ctrlKey,
+                })
+              }
+              // Right-click anywhere on the row opens its context menu: every
+              // branch on that commit (checkout/merge/rename/delete) plus the
+              // "Create tag here" actions. The synthetic working-tree row and
+              // stash rows aren't taggable, so they keep the native menu.
               onContextMenu={(event) => {
+                if (commit.working || isStash) return;
                 const targets = branchTargets(commit.refs).filter(isDeletable);
-                if (targets.length === 0) return;
                 event.preventDefault();
-                setContextMenu({ targets, x: event.clientX, y: event.clientY });
+                setContextMenu({ targets, hash: commit.hash, x: event.clientX, y: event.clientY });
               }}
             >
               {order.map((key) => renderCell(key, ctx))}
@@ -1042,9 +1243,32 @@ export function CommitList({
         onCheckout={(name, remote) => onCheckout?.(name, remote)}
         onMerge={(source, target) => onMergeBranch?.(source, target)}
         onRebase={(source, target) => onRebaseBranch?.(source, target)}
+        onCherryPick={
+          onCherryPick ? () => onCherryPick(contextMenu.hash) : undefined
+        }
         onRenameBranch={(oldName, newName) => onRenameBranch?.(oldName, newName)}
         onDeleteBranch={(name) => onDeleteBranch?.(name)}
         onDeleteRemoteBranch={(remote, name) => onDeleteRemoteBranch?.(remote, name)}
+        onCreateTagHere={
+          onStartTag ? () => onStartTag(contextMenu.hash, false) : undefined
+        }
+        onCreateAnnotatedTagHere={
+          onStartTag ? () => onStartTag(contextMenu.hash, true) : undefined
+        }
+      />
+    )}
+    {tagMenu && (
+      <TagContextMenu
+        target={{ name: tagMenu.name }}
+        x={tagMenu.x}
+        y={tagMenu.y}
+        remote={tagRemote}
+        pushed={pushedTags ? pushedTags.has(tagMenu.name) : null}
+        onClose={() => setTagMenu(null)}
+        onAnnotate={(name, message) => onAnnotateTag?.(name, message)}
+        onPush={(name, remote) => onPushTag?.(name, remote)}
+        onDeleteRemote={(name, remote) => onDeleteRemoteTag?.(name, remote)}
+        onDeleteLocal={(name) => onDeleteTag?.(name)}
       />
     )}
     </>

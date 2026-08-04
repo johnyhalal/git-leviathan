@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   DeviceCodePrompt,
   IntegrationConnection,
@@ -81,34 +81,42 @@ export function RepoSource({
     setPrompt(undefined);
   };
 
-  // (Re)load repositories whenever the account becomes connected.
-  useEffect(() => {
-    if (status !== 'connected') {
-      setRepos(null);
-      return;
-    }
-    let active = true;
+  // Monotonic request id so a stale in-flight fetch can't clobber a newer one
+  // (e.g. a manual refresh landing after a provider switch or disconnect).
+  const reqIdRef = useRef(0);
+
+  const loadRepos = useCallback(() => {
+    const reqId = ++reqIdRef.current;
     setLoading(true);
     setError(null);
     window.api.integrations
       .repositories(provider)
       .then((list) => {
-        if (active) setRepos(list);
+        if (reqIdRef.current === reqId) setRepos(list);
       })
       .catch((err: unknown) => {
-        if (active) {
+        if (reqIdRef.current === reqId) {
           setError(
             err instanceof Error ? err.message : 'Failed to load repositories.',
           );
         }
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (reqIdRef.current === reqId) setLoading(false);
       });
-    return () => {
-      active = false;
-    };
-  }, [status, provider]);
+  }, [provider]);
+
+  // (Re)load repositories whenever the account becomes connected. A provider
+  // grants access to new repos out-of-band (on its website), so the combobox
+  // also exposes a manual refresh that re-invokes `loadRepos`.
+  useEffect(() => {
+    if (status !== 'connected') {
+      reqIdRef.current++; // drop any in-flight fetch
+      setRepos(null);
+      return;
+    }
+    loadRepos();
+  }, [status, provider, loadRepos]);
 
   if (status === null) {
     return (
@@ -179,6 +187,7 @@ export function RepoSource({
         loading={loading}
         error={error}
         emptyMessage={`No repositories found for this ${label} account.`}
+        onRefresh={loadRepos}
       />
     </div>
   );

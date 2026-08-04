@@ -129,6 +129,7 @@
 }
 
 .repo-combobox-clear,
+.repo-combobox-refresh,
 .repo-combobox-toggle {
   display: inline-flex;
   align-items: center;
@@ -147,9 +148,26 @@
 }
 
 .repo-combobox-clear:hover,
+.repo-combobox-refresh:hover:not(:disabled),
 .repo-combobox-toggle:hover {
   color: var(--fg);
   background: var(--control-bg);
+}
+
+.repo-combobox-refresh:disabled {
+  cursor: default;
+  color: var(--fg-muted);
+}
+
+/* Spin the glyph while a fetch is in flight (button is disabled then). */
+.repo-combobox-refresh:disabled svg {
+  animation: repo-combobox-spin 0.8s linear infinite;
+}
+
+@keyframes repo-combobox-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .repo-combobox-menu {

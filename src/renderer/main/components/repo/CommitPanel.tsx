@@ -754,6 +754,158 @@ function CommitDetail({
   );
 }
 
+interface CommitGroupProps {
+  repoPath: string;
+  commit: CommitLogEntry;
+  /** Open one of the commit's files in the center diff viewer. */
+  onOpenDiff: (target: DiffTarget) => void;
+  /** The diff target currently shown, so the matching file row can be highlighted. */
+  activeDiff: DiffTarget | null;
+}
+
+/**
+ * One commit in the multi-select view: a compact box (hash, subject, author,
+ * change counts) with that commit's changed files listed underneath. Clicking a
+ * file opens its diff against the commit's first parent — the same diff source
+ * the single-commit detail uses, so the center viewer behaves identically.
+ */
+function CommitGroup({ repoPath, commit, onOpenDiff, activeDiff }: CommitGroupProps) {
+  const [files, setFiles] = useState<FileChange[] | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setFiles(null);
+    void window.api.repo.commitFiles(repoPath, commit.hash).then((result) => {
+      if (live) setFiles(result);
+    });
+    return () => {
+      live = false;
+    };
+  }, [repoPath, commit.hash]);
+
+  const source: DiffSource = { kind: 'commit', hash: commit.hash };
+  const activePath =
+    activeDiff && sameSource(activeDiff.source, source) ? activeDiff.path : null;
+  const counts = useMemo(() => fileCounts(files ?? []), [files]);
+  const sorted = useMemo(
+    () => (files ? [...files].sort((a, b) => a.path.localeCompare(b.path)) : null),
+    [files],
+  );
+
+  return (
+    <section className="commit-group">
+      <div className="commit-group-box">
+        <div className="commit-group-box-top">
+          <span className="commit-group-hash">{commit.shortHash}</span>
+          <span className="commit-group-counts" aria-hidden="true">
+            {counts.modified > 0 && (
+              <span className="commit-files-count commit-files-modified">
+                <PencilIcon size={12} />
+                {counts.modified}
+              </span>
+            )}
+            {counts.added > 0 && (
+              <span className="commit-files-count commit-files-added">
+                <PlusIcon size={12} />
+                {counts.added}
+              </span>
+            )}
+            {counts.deleted > 0 && (
+              <span className="commit-files-count commit-files-deleted">
+                <MinusIcon size={12} />
+                {counts.deleted}
+              </span>
+            )}
+          </span>
+        </div>
+        <div className="commit-group-subject">{commit.subject}</div>
+        <div className="commit-group-meta">
+          <img
+            className="commit-group-avatar"
+            src={commit.authorAvatarUrl}
+            alt=""
+            width={18}
+            height={18}
+          />
+          <span className="commit-group-author">{commit.author}</span>
+          <span className="commit-group-date">{formatDate(commit.date)}</span>
+        </div>
+      </div>
+      <div className="commit-group-files">
+        {sorted === null ? (
+          <p className="commit-files-empty">Loading…</p>
+        ) : sorted.length === 0 ? (
+          <p className="commit-files-empty">No file changes</p>
+        ) : (
+          sorted.map((file) => (
+            <FileRow
+              key={file.path}
+              file={file}
+              onOpen={() => onOpenDiff({ source, path: file.path, status: file.status })}
+              selected={file.path === activePath}
+            />
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+interface MultiCommitDetailProps {
+  commits: CommitLogEntry[];
+  repoPath: string;
+  /** Shared working-tree status, to warn about uncommitted changes. */
+  workingStatus: WorkingStatus | null;
+  /** Return to the working-tree view (clears the selection). */
+  onViewWorking: () => void;
+  /** Open one of the commits' files in the center diff viewer. */
+  onOpenDiff: (target: DiffTarget) => void;
+  /** The diff target currently shown, so the matching file row can be highlighted. */
+  activeDiff: DiffTarget | null;
+}
+
+/**
+ * The right column when several commits are selected: each commit renders as a
+ * box with its changed files grouped underneath. Diffs open exactly as in the
+ * single-commit detail view.
+ */
+function MultiCommitDetail({
+  commits,
+  repoPath,
+  workingStatus,
+  onViewWorking,
+  onOpenDiff,
+  activeDiff,
+}: MultiCommitDetailProps) {
+  const workingCount = workingStatus ? countWorkingFiles(workingStatus) : 0;
+  return (
+    <aside className="commit-panel" aria-label="Selected commits">
+      <header className="commit-panel-header">{commits.length} commits selected</header>
+      {workingCount > 0 && (
+        <div className="commit-working-alert" role="status">
+          <span className="commit-working-alert-text">
+            {workingCount} {workingCount === 1 ? 'file' : 'files'} changed in the working directory
+          </span>
+          <button type="button" className="commit-working-alert-view" onClick={onViewWorking}>
+            View
+          </button>
+        </div>
+      )}
+      <div className="commit-panel-body commit-multi-body">
+        {commits.map((commit) => (
+          <CommitGroup
+            key={commit.hash}
+            repoPath={repoPath}
+            commit={commit}
+            onOpenDiff={onOpenDiff}
+            activeDiff={activeDiff}
+          />
+        ))}
+      </div>
+    </aside>
+  );
+}
+
 interface WorkingFileListProps {
   files: FileChange[];
   /** Flat list or folder tree; shared across both working sections. */
@@ -1473,8 +1625,13 @@ function WorkingChanges({
 }
 
 interface CommitPanelProps {
-  /** The selected historical commit, or null for the working-tree view. */
+  /** The focused historical commit, or null for the working-tree view. */
   commit: CommitLogEntry | null;
+  /**
+   * Every selected real commit (multi-select). With 2+, the panel shows the
+   * multi-commit boxes view instead of `commit`'s single detail.
+   */
+  selectedCommits: CommitLogEntry[];
   repoPath: string;
   /** The checked-out branch name, shown in the working-tree changes header. */
   branch?: string;
@@ -1514,6 +1671,7 @@ interface CommitPanelProps {
  */
 export function CommitPanel({
   commit,
+  selectedCommits,
   repoPath,
   branch,
   workingStatus,
@@ -1532,6 +1690,20 @@ export function CommitPanel({
   onError,
   onOpenSettings,
 }: CommitPanelProps) {
+  // 2+ selected commits → the multi-commit boxes view, regardless of which one is
+  // focused. A single (or zero) selection keeps the rich detail / staging views.
+  if (selectedCommits.length > 1) {
+    return (
+      <MultiCommitDetail
+        commits={selectedCommits}
+        repoPath={repoPath}
+        workingStatus={workingStatus}
+        onViewWorking={onViewWorking}
+        onOpenDiff={onOpenDiff}
+        activeDiff={activeDiff}
+      />
+    );
+  }
   return commit ? (
     <CommitDetail
       commit={commit}

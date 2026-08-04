@@ -7,6 +7,7 @@ import type {
   MergeState,
   PullMode,
   RefsMutationResult,
+  RepoConfig,
   RepoInfo,
   RepoRefs,
   UndoRedoState,
@@ -14,6 +15,7 @@ import type {
 } from '../../../../types/ipc';
 import { WORKING_TREE_HASH } from '../../../../types/ipc';
 import { RepoToolbar } from './RepoToolbar';
+import { RepoSettingsDialog, type RepoSettingsTabId } from './RepoSettingsDialog';
 import { RepoColumns } from './RepoColumns';
 import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
@@ -92,6 +94,14 @@ export function RepoView({
   const [pulling, setPulling] = useState(false);
   // True while the inline "new branch" input is shown at the HEAD commit.
   const [creatingBranch, setCreatingBranch] = useState(false);
+  // The commit a tag is being created at via the inline name input (with whether
+  // it's annotated), or null when not tagging.
+  const [taggingAt, setTaggingAt] = useState<{ hash: string; annotated: boolean } | null>(null);
+  // The tag names already present on the tag remote (from `git ls-remote`), so
+  // the tag menu can hide "Push" for pushed tags and "Delete on remote" for
+  // unpushed ones. `null` means it couldn't be determined (no remote, or the
+  // remote was unreachable) — the menu then shows both actions.
+  const [pushedTags, setPushedTags] = useState<Set<string> | null>(null);
   // Labels for the next undo/redo (from the reflog), or null when unavailable.
   // Refetched alongside refs/log so it tracks every HEAD move.
   const [undoRedo, setUndoRedo] = useState<UndoRedoState>({ undo: null, redo: null });
@@ -136,6 +146,7 @@ export function RepoView({
     draftLoadedFor.current = null;
     setCommitMessage('');
     setCreatingBranch(false);
+    setTaggingAt(null);
     setResolverOpen(false);
     hadMergeRef.current = false;
     void window.api.repo.commitDraft(repoPath).then((draft) => {
@@ -376,6 +387,52 @@ export function RepoView({
     [repoPath, reload, onError],
   );
 
+  // Begin the inline tag flow at a specific commit (from a commit row's menu).
+  const startTag = useCallback(
+    (hash: string, annotated: boolean) => setTaggingAt({ hash, annotated }),
+    [],
+  );
+
+  // Begin the inline tag flow at a branch's tip (from a sidebar branch menu),
+  // resolving the tip's hash from the loaded commits — the tip carries the
+  // branch's decoration — so the name input rides that commit's row.
+  const startTagAtBranch = useCallback(
+    (branch: string, annotated: boolean) => {
+      const tip = commits?.find((commit) =>
+        commit.refs.some((ref) => ref.label === branch),
+      );
+      if (tip) setTaggingAt({ hash: tip.hash, annotated });
+      else onError?.('Tag failed', `Couldn't locate “${branch}” in the loaded history.`);
+    },
+    [commits, onError],
+  );
+
+  // Create a lightweight tag at `hash`; on success clear the inline input and
+  // reload so the new tag badge appears, on failure surface git's message.
+  const createTag = useCallback(
+    async (hash: string, name: string) => {
+      const result = await window.api.repo.createTag(repoPath, name, hash, null);
+      if (result.status === 'ok') {
+        setTaggingAt(null);
+        reload();
+      } else onError?.('Tag failed', result.message);
+    },
+    [repoPath, reload, onError],
+  );
+
+  // Create an annotated tag at `hash` with `message` (collected in the confirm
+  // bar after the inline name step). Same success/failure handling as above.
+  const createAnnotatedTag = useCallback(
+    async (hash: string, name: string, message: string) => {
+      const result = await window.api.repo.createTag(repoPath, name, hash, message);
+      if (result.status === 'ok') {
+        setTaggingAt(null);
+        reload();
+      } else onError?.('Tag failed', result.message);
+    },
+    [repoPath, reload, onError],
+  );
+
   // Stash / gitflow / branch deletion all mutate the repo and hand back fresh
   // refs; on success we just reload, on failure we surface git's message via the
   // toast channel (or the conflict resolver, when the failure left conflicts).
@@ -514,6 +571,29 @@ export function RepoView({
     [repoPath],
   );
 
+  // Per-repository settings dialog (commit identity + remotes + gitflow + LFS).
+  // The identity is fetched fresh each time the dialog opens; `null` while it
+  // loads. `repoSettingsTab` picks the tab to open on (e.g. deep-linked from the
+  // gitflow start dialog's settings gear).
+  const [repoSettingsOpen, setRepoSettingsOpen] = useState(false);
+  const [repoSettingsTab, setRepoSettingsTab] = useState<RepoSettingsTabId>('general');
+  const [repoConfig, setRepoConfig] = useState<RepoConfig | null>(null);
+  const openRepoSettings = useCallback((tab: RepoSettingsTabId = 'general') => {
+    setRepoSettingsTab(tab);
+    setRepoSettingsOpen(true);
+  }, []);
+  useEffect(() => {
+    if (!repoSettingsOpen) return;
+    let live = true;
+    setRepoConfig(null);
+    void window.api.repo.repoConfig(repoPath).then((config) => {
+      if (live) setRepoConfig(config);
+    });
+    return () => {
+      live = false;
+    };
+  }, [repoSettingsOpen, repoPath]);
+
   const gitflowStart = useCallback(
     (kind: GitflowKind, name: string, source: string) =>
       runMutation('Gitflow start failed', () =>
@@ -549,6 +629,45 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
+  // Fast-forward the local branch `target` to `source` (dragging a branch onto
+  // another in the sidebar). Same mutation shape as merge/rebase.
+  const fastForward = useCallback(
+    (source: string, target: string) =>
+      runMutation('Fast-forward failed', () =>
+        window.api.repo.fastForward(repoPath, source, target),
+      ),
+    [repoPath, runMutation],
+  );
+
+  // Cherry-pick a commit onto the checked-out branch (from a commit's context
+  // menu). Conflicts surface the resolver, like merge/rebase.
+  const cherryPick = useCallback(
+    (hash: string) =>
+      runMutation('Cherry-pick failed', () =>
+        window.api.repo.cherryPick(repoPath, hash),
+      ),
+    [repoPath, runMutation],
+  );
+
+  // Push a local branch to a specific remote branch (dragging a local branch onto
+  // a remote one). Reloads the ahead/behind counts on success and resolves whether
+  // it succeeded, so a follow-up "start a pull request" only opens once the branch
+  // reached the remote.
+  const pushBranch = useCallback(
+    async (remote: string, localBranch: string, remoteBranch: string): Promise<boolean> => {
+      const result = await window.api.repo.pushBranch(repoPath, remote, localBranch, remoteBranch);
+      if (result.status === 'ok') {
+        closeDiff();
+        reload();
+        onSuccess?.('Pushed successfully', `“${localBranch}” pushed to “${remote}/${remoteBranch}”.`);
+        return true;
+      }
+      onError?.('Push failed', result.message);
+      return false;
+    },
+    [repoPath, reload, closeDiff, onError, onSuccess],
+  );
+
   const renameBranch = useCallback(
     (oldName: string, newName: string) =>
       runMutation('Rename failed', () =>
@@ -569,6 +688,84 @@ export function RepoView({
         window.api.repo.deleteRemoteBranch(repoPath, remote, branch),
       ),
     [repoPath, runMutation],
+  );
+
+  // Re-create an existing (lightweight) tag as annotated, carrying the message
+  // entered in the tags-section confirm bar; reloads so the badge refreshes.
+  const annotateTag = useCallback(
+    (name: string, message: string) =>
+      runMutation('Annotate tag failed', () =>
+        window.api.repo.annotateTag(repoPath, name, message),
+      ),
+    [repoPath, runMutation],
+  );
+
+  // The remote tags target: prefer `origin`, else the sole remote; undefined when
+  // there's no remote or several without an `origin`. Drives both the tag menu's
+  // push/delete target and which remote's tags we list to mark "already pushed".
+  const tagRemote = useMemo(() => {
+    const names = refs?.remotes.map((remote) => remote.name) ?? [];
+    if (names.includes('origin')) return 'origin';
+    return names.length === 1 ? names[0] : undefined;
+  }, [refs]);
+
+  // Re-read the remote's tag list (best-effort, network) so the tag menu knows
+  // which tags are already pushed. Called on repo/remote change and after a tag
+  // push or remote-delete — not on ordinary reloads, to keep network calls rare.
+  const refreshPushedTags = useCallback(() => {
+    if (!tagRemote) {
+      setPushedTags(null);
+      return;
+    }
+    void window.api.repo.remoteTags(repoPath, tagRemote).then((tags) => {
+      setPushedTags(tags === null ? null : new Set(tags));
+    });
+  }, [repoPath, tagRemote]);
+
+  useEffect(() => {
+    setPushedTags(null);
+    if (!tagRemote) return;
+    let live = true;
+    void window.api.repo.remoteTags(repoPath, tagRemote).then((tags) => {
+      if (live) setPushedTags(tags === null ? null : new Set(tags));
+    });
+    return () => {
+      live = false;
+    };
+  }, [repoPath, tagRemote]);
+
+  // Delete a local tag (`git tag -d`); reloads so its badge/row disappears. Any
+  // copy on a remote is untouched, so the pushed-tags set needn't refresh.
+  const deleteTag = useCallback(
+    (name: string) =>
+      runMutation('Delete tag failed', () => window.api.repo.deleteTag(repoPath, name)),
+    [repoPath, runMutation],
+  );
+
+  // Push a single tag to a remote — a normal push never carries tags, so this is
+  // the explicit way to publish one. Success/failure land as toasts; no reload
+  // is needed since the local refs don't change.
+  const pushTag = useCallback(
+    async (name: string, remote: string) => {
+      const result = await window.api.repo.pushTag(repoPath, name, remote);
+      if (result.status === 'ok') {
+        onSuccess?.('Tag pushed', `“${name}” pushed to “${remote}”.`);
+        refreshPushedTags();
+      } else onError?.('Push failed', result.message);
+    },
+    [repoPath, onSuccess, onError, refreshPushedTags],
+  );
+
+  // Delete a tag on a remote (the local tag is kept). Toast the outcome.
+  const deleteRemoteTag = useCallback(
+    async (name: string, remote: string) => {
+      const result = await window.api.repo.deleteRemoteTag(repoPath, name, remote);
+      if (result.status === 'ok') {
+        onSuccess?.('Tag deleted', `“${name}” deleted from “${remote}”.`);
+        refreshPushedTags();
+      } else onError?.('Delete failed', result.message);
+    },
+    [repoPath, onSuccess, onError, refreshPushedTags],
   );
 
   // Continue / abort / skip the in-progress operation. Each runs through the
@@ -677,6 +874,7 @@ export function RepoView({
           onRedo={() => void redo()}
           undoLabel={undoRedo.undo}
           redoLabel={undoRedo.redo}
+          onOpenRepoSettings={() => openRepoSettings()}
         />
         {mergeState && (
           <MergeBanner
@@ -710,9 +908,24 @@ export function RepoView({
           onCancelCreateBranch={() => setCreatingBranch(false)}
           onMergeBranch={(source, target) => void mergeBranch(source, target)}
           onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
+          onFastForward={(source, target) => void fastForward(source, target)}
+          onCherryPick={(hash) => void cherryPick(hash)}
+          onPushBranch={pushBranch}
           onRenameBranch={(oldName, newName) => void renameBranch(oldName, newName)}
           onDeleteBranch={(branch) => void deleteBranch(branch)}
           onDeleteRemoteBranch={(remote, branch) => void deleteRemoteBranch(remote, branch)}
+          taggingAt={taggingAt}
+          onStartTag={startTag}
+          onStartTagAtBranch={startTagAtBranch}
+          onCreateTag={(hash, name) => void createTag(hash, name)}
+          onCreateAnnotatedTag={(hash, name, message) => void createAnnotatedTag(hash, name, message)}
+          onCancelTag={() => setTaggingAt(null)}
+          onAnnotateTag={(name, message) => void annotateTag(name, message)}
+          tagRemote={tagRemote}
+          pushedTags={pushedTags}
+          onPushTag={(name, remote) => void pushTag(name, remote)}
+          onDeleteRemoteTag={(name, remote) => void deleteRemoteTag(name, remote)}
+          onDeleteTag={(name) => void deleteTag(name)}
           onStashApply={(index) => void stashApply(index)}
           onStashPop={(index) => void stashPop(index)}
           onStashDrop={(index) => void stashDrop(index)}
@@ -722,11 +935,11 @@ export function RepoView({
           onOpenWorktreeHere={openWorktreeHere}
           onOpenWorktreeInNewTab={openWorktreeInNewTab}
           gitflowConfig={gitflowConfig}
-          onGitflowSaveConfig={gitflowSaveConfig}
           onGitflowStart={(kind, name, source) => void gitflowStart(kind, name, source)}
           onGitflowFinish={() => void gitflowFinish()}
           onError={onError}
           onOpenSettings={onOpenSettings}
+          onOpenRepoSettings={openRepoSettings}
         />
         {resolverOpen && mergeState && (
           <ConflictResolver
@@ -735,6 +948,18 @@ export function RepoView({
             initialFile={resolverFile}
             onResolved={(next) => applyMergeRef.current(next)}
             onClose={() => setResolverOpen(false)}
+          />
+        )}
+        {repoSettingsOpen && (
+          <RepoSettingsDialog
+            repoPath={repoPath}
+            config={repoConfig}
+            remotes={refs?.remotes ?? []}
+            onSave={(config) => window.api.repo.repoSaveConfig(repoPath, config)}
+            gitflowConfig={gitflowConfig}
+            onGitflowSaveConfig={gitflowSaveConfig}
+            initialTab={repoSettingsTab}
+            onClose={() => setRepoSettingsOpen(false)}
           />
         )}
       </ConfirmProvider>

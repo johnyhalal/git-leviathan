@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState, type UIEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import type {
   CommitLogEntry,
   ConflictFile,
   GitflowConfig,
-  GitflowConfigResult,
   GitflowKind,
   RepoRefs,
   WorkingStatus,
 } from '../../../../types/ipc';
 import { RepoSidebar } from './RepoSidebar';
+import type { RepoSettingsTabId } from './RepoSettingsDialog';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 import { CommitList } from './CommitList';
 import { CommitPanel } from './CommitPanel';
@@ -63,12 +63,42 @@ interface RepoColumnsProps {
   onMergeBranch: (source: string, target: string) => void;
   /** Rebase one local branch onto another (dragging a branch badge onto another). */
   onRebaseBranch: (source: string, target: string) => void;
+  /** Fast-forward the local branch `target` to `source` (sidebar branch drag). */
+  onFastForward: (source: string, target: string) => void;
+  /** Cherry-pick the commit `hash` onto HEAD (from a commit's context menu). */
+  onCherryPick: (hash: string) => void;
+  /** Push a local branch to a remote branch (sidebar branch drag); resolves success. */
+  onPushBranch: (remote: string, localBranch: string, remoteBranch: string) => Promise<boolean>;
   /** Rename a local branch (`git branch -m`), from a branch's context menu. */
   onRenameBranch: (oldName: string, newName: string) => void;
   /** Delete a local branch (`git branch -D`), from a branch's context menu. */
   onDeleteBranch: (branch: string) => void;
   /** Delete a branch on its remote (`git push <remote> --delete`). */
   onDeleteRemoteBranch: (remote: string, branch: string) => void;
+  /** The commit a tag is being created at (its inline name input), or null. */
+  taggingAt: { hash: string; annotated: boolean } | null;
+  /** Begin creating a tag at `hash` (from a commit row's context menu). */
+  onStartTag: (hash: string, annotated: boolean) => void;
+  /** Begin creating a tag at the tip of `branch` (from a sidebar branch menu). */
+  onStartTagAtBranch: (branch: string, annotated: boolean) => void;
+  /** Create a lightweight tag `name` at `hash`. */
+  onCreateTag: (hash: string, name: string) => void;
+  /** Create an annotated tag `name` at `hash` with `message`. */
+  onCreateAnnotatedTag: (hash: string, name: string, message: string) => void;
+  /** Dismiss the inline tag input without creating. */
+  onCancelTag: () => void;
+  /** Re-create the tag `name` as annotated with `message` (tags section menu). */
+  onAnnotateTag: (name: string, message: string) => void;
+  /** The remote the tag menu's push/delete actions target, or undefined when none. */
+  tagRemote?: string;
+  /** Tag names already on `tagRemote`, or null when it couldn't be determined. */
+  pushedTags: Set<string> | null;
+  /** Push the tag `name` to `remote` (`git push <remote> refs/tags/<name>`). */
+  onPushTag: (name: string, remote: string) => void;
+  /** Delete the tag `name` on `remote` (local tag kept). */
+  onDeleteRemoteTag: (name: string, remote: string) => void;
+  /** Delete the local tag `name` (`git tag -d`). */
+  onDeleteTag: (name: string) => void;
   /** Apply a stash by index, keeping it (`git stash apply`). */
   onStashApply: (index: number) => void;
   /** Apply & drop a stash by index (`git stash pop`). */
@@ -91,8 +121,6 @@ interface RepoColumnsProps {
   onOpenWorktreeInNewTab: (path: string) => void;
   /** The repo's gitflow config, or null when it hasn't been configured yet. */
   gitflowConfig: GitflowConfig | null;
-  /** Persist the repo's gitflow config; resolves with the saved config or an error. */
-  onGitflowSaveConfig: (config: GitflowConfig) => Promise<GitflowConfigResult>;
   /** Start a gitflow topic branch of `kind` named `name`, based off `source`. */
   onGitflowStart: (kind: GitflowKind, name: string, source: string) => void;
   /** Finish the current gitflow topic branch. */
@@ -100,6 +128,8 @@ interface RepoColumnsProps {
   onError?: (title: string, message: string) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
+  /** Open the per-repository settings dialog, optionally to a specific tab. */
+  onOpenRepoSettings?: (tab?: RepoSettingsTabId) => void;
 }
 
 /**
@@ -130,10 +160,25 @@ export function RepoColumns({
   onCreateBranch,
   onCancelCreateBranch,
   onMergeBranch,
+  onCherryPick,
   onRebaseBranch,
+  onFastForward,
+  onPushBranch,
   onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
+  taggingAt,
+  onStartTag,
+  onStartTagAtBranch,
+  onCreateTag,
+  onCreateAnnotatedTag,
+  onCancelTag,
+  onAnnotateTag,
+  tagRemote,
+  pushedTags,
+  onPushTag,
+  onDeleteRemoteTag,
+  onDeleteTag,
   onStashApply,
   onStashPop,
   onStashDrop,
@@ -143,16 +188,33 @@ export function RepoColumns({
   onOpenWorktreeHere,
   onOpenWorktreeInNewTab,
   gitflowConfig,
-  onGitflowSaveConfig,
   onGitflowStart,
   onGitflowFinish,
   onError,
   onOpenSettings,
+  onOpenRepoSettings,
 }: RepoColumnsProps) {
   const { leftWidth, rightWidth, startResize } = useResizableColumns(240, 320);
+  // `selectedHash` is the focused commit (drives the detail panel + auto-scroll);
+  // `selectedHashes` is every highlighted row (multi-select); `anchorHash` is the
+  // pivot a Shift-range extends from — set only on plain/⌘ clicks, not Shift ones.
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
+  const [selectedHashes, setSelectedHashes] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [anchorHash, setAnchorHash] = useState<string | null>(null);
   // The file opened in the center diff viewer, or null to show the commit list.
   const [diffTarget, setDiffTarget] = useState<DiffTarget | null>(null);
+
+  // Collapse the selection to a single commit (or clear it with null), keeping
+  // the three selection pieces in sync. Every non-mouse selection path (initial
+  // preselect, post-commit, sidebar ref/stash picks, panel navigation) routes
+  // through here so it also resets the multi-select set and range anchor.
+  const selectSingle = useCallback((hash: string | null) => {
+    setSelectedHash(hash);
+    setSelectedHashes(hash ? new Set([hash]) : new Set());
+    setAnchorHash(hash);
+  }, []);
 
   // Switching repos or selecting a different commit makes any open diff stale
   // (it was taken from the previous commit/working tree), so close it.
@@ -175,16 +237,27 @@ export function RepoColumns({
     if (initializedRepo.current === repoPath) return;
     const latest = commits?.find((commit) => !commit.working && commit.stashIndex === undefined);
     if (latest) {
-      setSelectedHash(latest.hash);
+      selectSingle(latest.hash);
       initializedRepo.current = repoPath;
     }
-  }, [repoPath, commits]);
+  }, [repoPath, commits, selectSingle]);
 
   // The working-tree row isn't a real commit — selecting it highlights the row
   // but leaves the panel on the staging view (a null selection), so it's
   // excluded from what counts as the selected commit.
   const selectedCommit =
     commits?.find((commit) => commit.hash === selectedHash && !commit.working) ?? null;
+
+  // The real commits in the multi-select (list order, newest-first), excluding
+  // the synthetic working-tree and stash rows. Drives the multi-commit panel.
+  const selectedCommits = useMemo(
+    () =>
+      (commits ?? []).filter(
+        (commit) =>
+          selectedHashes.has(commit.hash) && !commit.working && commit.stashIndex === undefined,
+      ),
+    [commits, selectedHashes],
+  );
 
   // After a successful commit, close the working staging view and select the
   // freshly created commit. The new hash isn't known until history reloads, so
@@ -206,14 +279,44 @@ export function RepoColumns({
     if (!pending) return;
     const tip = tipHash();
     if (tip && tip !== pending.prevTip) {
-      setSelectedHash(tip);
+      selectSingle(tip);
       selectTipAfterReload.current = null;
     }
-  }, [commits]);
+  }, [commits, selectSingle]);
 
-  // Clicking the selected row again clears it, returning to the working view.
-  const toggleSelect = (hash: string) =>
-    setSelectedHash((prev) => (prev === hash ? null : hash));
+  // Select a commit from a mouse click in the list, honouring the modifier keys:
+  //   • Shift  — extend a contiguous range from the anchor to the clicked row.
+  //   • ⌘/Ctrl — toggle the clicked row in/out of the current selection.
+  //   • plain  — collapse to just this row (re-clicking the lone selection clears
+  //              it, returning to the working view — the single-select toggle).
+  const selectCommit = (hash: string, modifiers: { shift: boolean; meta: boolean }) => {
+    const list = commits ?? [];
+    if (modifiers.shift && anchorHash) {
+      const from = list.findIndex((commit) => commit.hash === anchorHash);
+      const to = list.findIndex((commit) => commit.hash === hash);
+      if (from !== -1 && to !== -1) {
+        const [lo, hi] = from <= to ? [from, to] : [to, from];
+        setSelectedHashes(new Set(list.slice(lo, hi + 1).map((commit) => commit.hash)));
+        setSelectedHash(hash); // focus the clicked end; the anchor stays put
+        return;
+      }
+    }
+    if (modifiers.meta) {
+      const willSelect = !selectedHashes.has(hash);
+      setSelectedHashes((prev) => {
+        const next = new Set(prev);
+        if (next.has(hash)) next.delete(hash);
+        else next.add(hash);
+        return next;
+      });
+      setAnchorHash(hash);
+      if (willSelect) setSelectedHash(hash);
+      else if (selectedHash === hash) setSelectedHash(null);
+      return;
+    }
+    if (selectedHashes.size === 1 && selectedHashes.has(hash)) selectSingle(null);
+    else selectSingle(hash);
+  };
 
   // Load the next page once the scroll position nears the bottom. onLoadMore is
   // a no-op while a fetch is in flight or the end is reached, so firing on every
@@ -231,14 +334,14 @@ export function RepoColumns({
     const tip = commits?.find((commit) =>
       commit.refs.some((ref) => ref.label === label),
     );
-    if (tip) setSelectedHash(tip.hash);
+    if (tip) selectSingle(tip.hash);
   };
 
   // Stashes carry no ref decoration, so they're matched by their stash index
   // (the `stashIndex` on the woven-in stash rows) rather than by a ref label.
   const selectStash = (index: number) => {
     const row = commits?.find((commit) => commit.stashIndex === index);
-    if (row) setSelectedHash(row.hash);
+    if (row) selectSingle(row.hash);
   };
 
   return (
@@ -252,9 +355,19 @@ export function RepoColumns({
           onCheckout={onCheckout}
           onMergeBranch={onMergeBranch}
           onRebaseBranch={onRebaseBranch}
+          onFastForward={onFastForward}
+          onCherryPick={onCherryPick}
+          onPushBranch={onPushBranch}
           onRenameBranch={onRenameBranch}
           onDeleteBranch={onDeleteBranch}
           onDeleteRemoteBranch={onDeleteRemoteBranch}
+          onStartTagAtBranch={onStartTagAtBranch}
+          onAnnotateTag={onAnnotateTag}
+          tagRemote={tagRemote}
+          pushedTags={pushedTags}
+          onPushTag={onPushTag}
+          onDeleteRemoteTag={onDeleteRemoteTag}
+          onDeleteTag={onDeleteTag}
           onStashApply={onStashApply}
           onStashPop={onStashPop}
           onStashDrop={onStashDrop}
@@ -264,10 +377,10 @@ export function RepoColumns({
           onOpenWorktreeHere={onOpenWorktreeHere}
           onOpenWorktreeInNewTab={onOpenWorktreeInNewTab}
           gitflowConfig={gitflowConfig}
-          onGitflowSaveConfig={onGitflowSaveConfig}
           onGitflowStart={onGitflowStart}
           onGitflowFinish={onGitflowFinish}
           onOpenSettings={onOpenSettings}
+          onOpenRepoSettings={onOpenRepoSettings}
         />
       </div>
 
@@ -288,19 +401,32 @@ export function RepoColumns({
           <CommitList
             commits={commits}
             selectedHash={selectedHash}
+            selectedHashes={selectedHashes}
             currentBranch={branch}
             remotes={refs?.remotes}
             workingStatus={workingStatus}
             commitMessage={commitMessage}
             onCommitMessageChange={onCommitMessageChange}
             loadingMore={loadingMore}
-            onSelect={toggleSelect}
+            onSelect={selectCommit}
             onCheckout={onCheckout}
             creatingBranch={creatingBranch}
             onCreateBranch={onCreateBranch}
             onCancelCreateBranch={onCancelCreateBranch}
+            taggingAt={taggingAt}
+            onStartTag={onStartTag}
+            onCreateTag={onCreateTag}
+            onCreateAnnotatedTag={onCreateAnnotatedTag}
+            onCancelTag={onCancelTag}
+            tagRemote={tagRemote}
+            pushedTags={pushedTags}
+            onAnnotateTag={onAnnotateTag}
+            onPushTag={onPushTag}
+            onDeleteRemoteTag={onDeleteRemoteTag}
+            onDeleteTag={onDeleteTag}
             onMergeBranch={onMergeBranch}
             onRebaseBranch={onRebaseBranch}
+            onCherryPick={onCherryPick}
             onRenameBranch={onRenameBranch}
             onDeleteBranch={onDeleteBranch}
             onDeleteRemoteBranch={onDeleteRemoteBranch}
@@ -313,6 +439,7 @@ export function RepoColumns({
       <div className="repo-column repo-column-right" style={{ width: rightWidth }}>
         <CommitPanel
           commit={selectedCommit}
+          selectedCommits={selectedCommits}
           repoPath={repoPath}
           branch={branch}
           workingStatus={workingStatus}
@@ -323,8 +450,8 @@ export function RepoColumns({
           commitMessage={commitMessage}
           onCommitMessageChange={onCommitMessageChange}
           onCommitted={handleCommitted}
-          onViewWorking={() => setSelectedHash(commits?.[0]?.hash ?? null)}
-          onSelectCommit={setSelectedHash}
+          onViewWorking={() => selectSingle(commits?.[0]?.hash ?? null)}
+          onSelectCommit={selectSingle}
           onOpenDiff={setDiffTarget}
           onCloseDiff={() => setDiffTarget(null)}
           activeDiff={diffTarget}

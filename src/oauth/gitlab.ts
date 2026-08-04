@@ -13,9 +13,11 @@ import type {
 import {
   nextPageUrl,
   pollForAccessToken as pollDeviceToken,
+  refreshAccessToken as refreshDeviceToken,
   requestDeviceAuthorization as requestDeviceAuth,
   type DeviceAuthorization,
   type DeviceEndpoints,
+  type TokenSet,
 } from './deviceFlow';
 
 const ENDPOINTS: DeviceEndpoints = {
@@ -38,8 +40,17 @@ export function pollForAccessToken(
   clientId: string,
   auth: DeviceAuthorization,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<TokenSet> {
   return pollDeviceToken(ENDPOINTS, clientId, auth, signal);
+}
+
+/** Exchange GitLab's (short-lived) refresh token for a fresh access token. */
+export function refreshAccessToken(
+  clientId: string,
+  refreshToken: string,
+  signal?: AbortSignal,
+): Promise<TokenSet> {
+  return refreshDeviceToken(ENDPOINTS, clientId, refreshToken, signal);
 }
 
 /** Headers for authenticated GitLab REST API requests. */
@@ -67,7 +78,27 @@ export async function fetchAccount(
     signal,
   });
   if (!res.ok) {
-    throw new Error(`Failed to read the GitLab account (HTTP ${res.status}).`);
+    // GitLab explains a 401/403 in an OAuth error body (`invalid_token`,
+    // `insufficient_scope`, …) and/or the `WWW-Authenticate` header — surface it
+    // so the real cause (revoked token vs. missing scope) is visible.
+    let detail = '';
+    try {
+      const body = (await res.json()) as {
+        error?: string;
+        error_description?: string;
+        message?: string;
+      };
+      detail =
+        body.error_description || body.error || body.message || '';
+    } catch {
+      // Non-JSON body — fall back to the auth challenge header, if any.
+    }
+    if (!detail) detail = res.headers.get('WWW-Authenticate') ?? '';
+    throw new Error(
+      `Failed to read the GitLab account (HTTP ${res.status})${
+        detail ? `: ${detail}` : ''
+      }.`,
+    );
   }
   const user = (await res.json()) as GitlabUser;
   if (!user.username) {

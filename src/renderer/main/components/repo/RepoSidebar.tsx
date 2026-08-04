@@ -4,6 +4,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type HTMLAttributes,
   type ReactNode,
 } from 'react';
 import {
@@ -23,7 +24,15 @@ import {
 } from '../../../../../assets/icons';
 import { RemoteAvatar } from './RemoteAvatar';
 import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
+import {
+  BranchDragMenu,
+  hasDragActions,
+  refString,
+  type DragBranchRef,
+  type DragMenuHandlers,
+} from './BranchDragMenu';
 import { StashContextMenu, type StashMenuTarget } from './StashContextMenu';
+import { TagContextMenu, type TagMenuTarget } from './TagContextMenu';
 import {
   WorktreeContextMenu,
   type WorktreeMenuTarget,
@@ -31,7 +40,6 @@ import {
 } from './WorktreeContextMenu';
 import type {
   GitflowConfig,
-  GitflowConfigResult,
   GitflowKind,
   IntegrationProvider,
   LocalBranchInfo,
@@ -48,11 +56,93 @@ import { CollapsibleSection } from './CollapsibleSection';
 import { PullRequestDialog } from './PullRequestDialog';
 import { NewPullRequestDialog } from './NewPullRequestDialog';
 import { GitflowStartDialog } from './GitflowStartDialog';
-import { GitflowSettingsDialog } from './GitflowSettingsDialog';
+import type { RepoSettingsTabId } from './RepoSettingsDialog';
 import { WorktreeDialog, type WorktreeBranchOption } from './WorktreeDialog';
 
 const cx = (...parts: (string | false | undefined)[]) =>
   parts.filter(Boolean).join(' ');
+
+/**
+ * Branch drag-and-drop plumbing shared by the local/remote branch rows.
+ * `dragSource` is the branch currently being dragged (null when idle); the
+ * callbacks start/end a drag and finish a drop of `dragSource` onto a row's own
+ * ref at screen (x, y).
+ */
+interface SidebarBranchDnd {
+  dragSource: DragBranchRef | null;
+  /** Whether dropping the dragged branch onto `target` offers any action. */
+  canDrop: (target: DragBranchRef) => boolean;
+  onDragStart: (ref: DragBranchRef) => void;
+  onDragEnd: () => void;
+  onDrop: (target: DragBranchRef, x: number, y: number) => void;
+}
+
+/**
+ * Wire one branch row for drag-and-drop: it can be dragged as the source, and is
+ * a drop target for any *other* branch being dragged. Returns the DOM props to
+ * spread on the row's outer element plus whether it's the highlighted drop target.
+ */
+function useRowDrag(self: DragBranchRef, dnd?: SidebarBranchDnd) {
+  const [dropHover, setDropHover] = useState(false);
+  if (!dnd) {
+    return {
+      rowProps: {} as HTMLAttributes<HTMLDivElement>,
+      isEligible: false,
+      isHovered: false,
+    };
+  }
+  // Eligible: a drag is under way and this row accepts it (highlighted subtly on
+  // every such row). Hovered: the cursor is currently over this eligible row.
+  const isDropTarget = dnd.dragSource !== null && dnd.canDrop(self);
+  const rowProps: HTMLAttributes<HTMLDivElement> = {
+    draggable: true,
+    onDragStart: (event) => {
+      // Don't let the drag bubble to ancestors (folder rows, text drag).
+      event.stopPropagation();
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', refString(self));
+      dnd.onDragStart(self);
+    },
+    onDragEnd: () => {
+      setDropHover(false);
+      dnd.onDragEnd();
+    },
+    onDragEnter: isDropTarget
+      ? (event) => {
+          event.preventDefault();
+          setDropHover(true);
+        }
+      : undefined,
+    // `dragover` fires continuously over the row *and* its child buttons (it
+    // bubbles up), so keeping the hover set here highlights the whole row rather
+    // than flickering off in the gaps between the children.
+    onDragOver: isDropTarget
+      ? (event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+          setDropHover(true);
+        }
+      : undefined,
+    // Only clear when the cursor actually leaves the row — moving onto a child
+    // fires `dragleave` on the row with the child as `relatedTarget`; ignore that.
+    onDragLeave: isDropTarget
+      ? (event) => {
+          const next = event.relatedTarget as Node | null;
+          if (next && event.currentTarget.contains(next)) return;
+          setDropHover(false);
+        }
+      : undefined,
+    onDrop: isDropTarget
+      ? (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setDropHover(false);
+          dnd.onDrop(self, event.clientX, event.clientY);
+        }
+      : undefined,
+  };
+  return { rowProps, isEligible: isDropTarget, isHovered: isDropTarget && dropHover };
+}
 
 const PROVIDER_LABEL: Record<IntegrationProvider, string> = {
   github: 'GitHub',
@@ -200,12 +290,14 @@ function LocalBranchRow({
   onSelect,
   onCheckout,
   onOpenMenu,
+  dnd,
 }: RowProps & {
   branch: LocalBranchInfo;
   label: string;
   depth: number;
   onCheckout: (branch: string) => void;
   onOpenMenu: (target: BranchMenuTarget, x: number, y: number) => void;
+  dnd?: SidebarBranchDnd;
 }) {
   const target: BranchMenuTarget = {
     name: branch.name,
@@ -213,14 +305,25 @@ function LocalBranchRow({
     isCurrent: branch.current,
     remote: false,
   };
+  const { rowProps, isEligible, isHovered } = useRowDrag(
+    { name: branch.name, remote: null },
+    dnd,
+  );
   return (
     <div
-      className={cx('repo-list-item', active === id && 'is-active', branch.current && 'is-current')}
+      className={cx(
+        'repo-list-item',
+        active === id && 'is-active',
+        branch.current && 'is-current',
+        isEligible && 'is-drop-eligible',
+        isHovered && 'is-drop-target',
+      )}
       style={{ paddingLeft: indent(depth) }}
       onContextMenu={(event) => {
         event.preventDefault();
         onOpenMenu(target, event.clientX, event.clientY);
       }}
+      {...rowProps}
     >
       {branch.current && (
         <span
@@ -278,6 +381,7 @@ function RemoteBranchRow({
   onSelect,
   onCheckout,
   onOpenMenu,
+  dnd,
 }: RowProps & {
   full: string;
   name: string;
@@ -286,6 +390,7 @@ function RemoteBranchRow({
   depth: number;
   onCheckout: (branch: string, remote?: string) => void;
   onOpenMenu: (target: BranchMenuTarget, x: number, y: number) => void;
+  dnd?: SidebarBranchDnd;
 }) {
   const target: BranchMenuTarget = {
     name,
@@ -294,14 +399,21 @@ function RemoteBranchRow({
     remote: true,
     remoteName: remote,
   };
+  const { rowProps, isEligible, isHovered } = useRowDrag({ name, remote }, dnd);
   return (
     <div
-      className={cx('repo-list-item', active === id && 'is-active')}
+      className={cx(
+        'repo-list-item',
+        active === id && 'is-active',
+        isEligible && 'is-drop-eligible',
+        isHovered && 'is-drop-target',
+      )}
       style={{ paddingLeft: indent(depth) }}
       onContextMenu={(event) => {
         event.preventDefault();
         onOpenMenu(target, event.clientX, event.clientY);
       }}
+      {...rowProps}
     >
       <button
         type="button"
@@ -363,19 +475,52 @@ function PullRequestRow({
   );
 }
 
-function TagRow({ tag, id, active, onSelect }: RowProps & { tag: TagInfo }) {
+function TagRow({
+  tag,
+  id,
+  active,
+  onSelect,
+  onOpenMenu,
+}: RowProps & {
+  tag: TagInfo;
+  /** Open the tag context menu (annotate) at the right-click point. */
+  onOpenMenu: (target: TagMenuTarget, x: number, y: number) => void;
+}) {
   return (
-    <button
-      type="button"
+    <div
       className={cx('repo-list-item', active === id && 'is-active')}
       style={{ paddingLeft: indent(0) }}
-      onClick={() => onSelect(id)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onOpenMenu({ name: tag.name }, event.clientX, event.clientY);
+      }}
     >
-      <TagIcon size={14} />
-      <span className="repo-list-label tooltip-host" data-tooltip={tag.name}>
-        {tag.name}
-      </span>
-    </button>
+      <button
+        type="button"
+        className="repo-row-main tooltip-host"
+        onClick={() => onSelect(id)}
+        // Annotated tags surface their message on hover; lightweight tags fall
+        // back to the name (there's no annotation to show).
+        data-tooltip={tag.message ?? tag.name}
+      >
+        <TagIcon size={14} />
+        <span className="repo-list-label">{tag.name}</span>
+      </button>
+      <button
+        type="button"
+        className="repo-row-action tooltip-host"
+        // A plain left-click on the ⋯ opens the same menu the right-click does,
+        // anchored to the button (matching the branch/stash rows).
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          onOpenMenu({ name: tag.name }, rect.right, rect.bottom);
+        }}
+        data-tooltip="Tag actions"
+        aria-label="Tag actions"
+      >
+        <MoreIcon size={16} />
+      </button>
+    </div>
   );
 }
 
@@ -566,12 +711,39 @@ interface RepoSidebarProps {
   onMergeBranch: (source: string, target: string) => void;
   /** Rebase the current branch onto another, from a branch row's context menu. */
   onRebaseBranch: (source: string, target: string) => void;
+  /** Fast-forward the local branch `target` to `source` (`merge --ff-only`). */
+  onFastForward: (source: string, target: string) => void;
+  /** Cherry-pick a branch's tip commit onto HEAD, from a branch row's context menu. */
+  onCherryPick: (committish: string) => void;
+  /**
+   * Push the local branch `localBranch` to `remoteBranch` on `remote`, resolving
+   * whether the push succeeded (so a follow-up "start a pull request" only opens
+   * once the branch actually reached the remote).
+   */
+  onPushBranch: (remote: string, localBranch: string, remoteBranch: string) => Promise<boolean>;
   /** Rename a local branch (`git branch -m`), from a branch row's context menu. */
   onRenameBranch: (oldName: string, newName: string) => void;
   /** Delete a local branch (`git branch -D`), from a branch row's context menu. */
   onDeleteBranch: (branch: string) => void;
   /** Delete a branch on its remote (`git push <remote> --delete`). */
   onDeleteRemoteBranch: (remote: string, branch: string) => void;
+  /**
+   * Begin creating a tag at the tip of branch `branch` (from its context menu):
+   * the inline name field appears at that branch's tip commit in the graph.
+   */
+  onStartTagAtBranch: (branch: string, annotated: boolean) => void;
+  /** Re-create the tag `name` as annotated with `message` (tags section menu). */
+  onAnnotateTag: (name: string, message: string) => void;
+  /** The remote the tag menu's push/delete actions target, or undefined when none. */
+  tagRemote?: string;
+  /** Tag names already on `tagRemote`, or null when it couldn't be determined. */
+  pushedTags: Set<string> | null;
+  /** Push the tag `name` to `remote` (`git push <remote> refs/tags/<name>`). */
+  onPushTag: (name: string, remote: string) => void;
+  /** Delete the tag `name` on `remote` (local tag kept). */
+  onDeleteRemoteTag: (name: string, remote: string) => void;
+  /** Delete the local tag `name` (`git tag -d`). */
+  onDeleteTag: (name: string) => void;
   /** Apply a stash by index, keeping it (`git stash apply`). */
   onStashApply: (index: number) => void;
   /** Apply & drop a stash by index (`git stash pop`). */
@@ -594,14 +766,14 @@ interface RepoSidebarProps {
   onOpenWorktreeInNewTab: (path: string) => void;
   /** The repo's gitflow config, or null when it hasn't been configured yet. */
   gitflowConfig: GitflowConfig | null;
-  /** Persist the repo's gitflow config; resolves with the saved config or error. */
-  onGitflowSaveConfig: (config: GitflowConfig) => Promise<GitflowConfigResult>;
   /** Start a gitflow topic branch of `kind` named `name`, based off `source`. */
   onGitflowStart: (kind: GitflowKind, name: string, source: string) => void;
   /** Finish the current gitflow topic branch. */
   onGitflowFinish: () => void;
   /** Open the settings modal, optionally to a section (e.g. Integrations). */
   onOpenSettings?: (section?: string) => void;
+  /** Open the per-repository settings dialog, optionally to a specific tab. */
+  onOpenRepoSettings?: (tab?: RepoSettingsTabId) => void;
 }
 
 /**
@@ -621,9 +793,19 @@ export function RepoSidebar({
   onCheckout,
   onMergeBranch,
   onRebaseBranch,
+  onFastForward,
+  onCherryPick,
+  onPushBranch,
   onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
+  onStartTagAtBranch,
+  onAnnotateTag,
+  tagRemote,
+  pushedTags,
+  onPushTag,
+  onDeleteRemoteTag,
+  onDeleteTag,
   onStashApply,
   onStashPop,
   onStashDrop,
@@ -633,20 +815,29 @@ export function RepoSidebar({
   onOpenWorktreeHere,
   onOpenWorktreeInNewTab,
   gitflowConfig,
-  onGitflowSaveConfig,
   onGitflowStart,
   onGitflowFinish,
   onOpenSettings,
+  onOpenRepoSettings,
 }: RepoSidebarProps) {
   const [active, setActive] = useState<string | null>(null);
   // Whether the "start a gitflow branch" dialog is open.
   const [gitflowStartOpen, setGitflowStartOpen] = useState(false);
   // Whether the gitflow settings dialog is open.
-  const [gitflowSettingsOpen, setGitflowSettingsOpen] = useState(false);
   // The branch delete menu opened by right-clicking a branch row, anchored at the
   // click point; null when closed.
   const [contextMenu, setContextMenu] = useState<{
     target: BranchMenuTarget;
+    x: number;
+    y: number;
+  } | null>(null);
+  // Branch drag-and-drop: the branch row currently being dragged, and the
+  // merge/rebase/push/pull-request menu opened where one branch was dropped onto
+  // another (its actions depend on both being local/remote — see BranchDragMenu).
+  const [dragRef, setDragRef] = useState<DragBranchRef | null>(null);
+  const [dropMenu, setDropMenu] = useState<{
+    source: DragBranchRef;
+    target: DragBranchRef;
     x: number;
     y: number;
   } | null>(null);
@@ -663,6 +854,16 @@ export function RepoSidebar({
   } | null>(null);
   const openStashMenu = useCallback(
     (target: StashMenuTarget, x: number, y: number) => setStashMenu({ target, x, y }),
+    [],
+  );
+  // The annotate menu opened by right-clicking a tag row; null when closed.
+  const [tagMenu, setTagMenu] = useState<{
+    target: TagMenuTarget;
+    x: number;
+    y: number;
+  } | null>(null);
+  const openTagMenu = useCallback(
+    (target: TagMenuTarget, x: number, y: number) => setTagMenu({ target, x, y }),
     [],
   );
   // Whether the "add a worktree" dialog is open.
@@ -865,7 +1066,10 @@ export function RepoSidebar({
 
   const [prResult, setPrResult] = useState<PullRequestListResult | null>(null);
   const [detailPr, setDetailPr] = useState<PullRequestSummary | null>(null);
-  const [creatingPr, setCreatingPr] = useState(false);
+  // The "new pull request" dialog, or null when closed. When opened from a branch
+  // drag it carries the source/target to pre-select; the toolbar `+` opens it with
+  // no prefill (falling back to the current/default branches).
+  const [creatingPr, setCreatingPr] = useState<{ source?: string; target?: string } | null>(null);
   // Bumped after opening a PR to re-list without waiting for the next refs load.
   const [prReload, setPrReload] = useState(0);
 
@@ -928,6 +1132,55 @@ export function RepoSidebar({
     }
   })();
 
+  // Whether a connected, supported host makes the pull-request drag actions
+  // available (a github.com/gitlab.com remote with a connected account).
+  const canPullRequest = !!(remoteUrl && dialogProvider);
+
+  // Open the "new pull request" dialog pre-filled with a source/target branch.
+  const openNewPr = useCallback(
+    (source?: string, target?: string) => setCreatingPr({ source, target }),
+    [],
+  );
+
+  // The drop menu's actions, mapped onto the repo handlers. "Push and start a
+  // pull request" pushes the local branch first and only opens the PR dialog once
+  // the branch has actually reached the remote.
+  const dragMenuHandlers: DragMenuHandlers = useMemo(
+    () => ({
+      onFastForward,
+      onMerge: onMergeBranch,
+      onRebase: onRebaseBranch,
+      onPush: (remote, localBranch, remoteBranch) =>
+        void onPushBranch(remote, localBranch, remoteBranch),
+      onPushAndPullRequest: (remote, localBranch, prSource, prTarget) => {
+        void onPushBranch(remote, localBranch, localBranch).then((ok) => {
+          if (ok) openNewPr(prSource, prTarget);
+        });
+      },
+      onStartPullRequest: (prSource, prTarget) => openNewPr(prSource, prTarget),
+    }),
+    [onFastForward, onMergeBranch, onRebaseBranch, onPushBranch, openNewPr],
+  );
+
+  // Branch drag-and-drop plumbing shared by every branch row: track the dragged
+  // ref, and on a drop over another row open the actions menu — but only when the
+  // source→target combination actually offers something.
+  const branchDnd: SidebarBranchDnd = useMemo(
+    () => ({
+      dragSource: dragRef,
+      canDrop: (target) => !!dragRef && hasDragActions(dragRef, target, canPullRequest),
+      onDragStart: setDragRef,
+      onDragEnd: () => setDragRef(null),
+      onDrop: (target, x, y) => {
+        if (dragRef && hasDragActions(dragRef, target, canPullRequest)) {
+          setDropMenu({ source: dragRef, target, x, y });
+        }
+        setDragRef(null);
+      },
+    }),
+    [dragRef, canPullRequest],
+  );
+
   return (
     <nav className="repo-sidebar" aria-label="Repository navigation">
       <CollapsibleSection
@@ -941,10 +1194,10 @@ export function RepoSidebar({
             aria-label={gitflowConfig ? 'Gitflow actions' : 'Set up gitflow'}
             data-tooltip={gitflowConfig ? 'Gitflow actions' : 'Set up gitflow'}
             onClick={() => {
-              // Unconfigured repos go straight to the settings dialog; configured
-              // ones open the "start a branch" dialog.
+              // Configured repos open the "start a branch" dialog; unconfigured
+              // ones go to the repo settings dialog's Gitflow tab to set it up.
               if (gitflowConfig) setGitflowStartOpen(true);
-              else setGitflowSettingsOpen(true);
+              else onOpenRepoSettings?.('gitflow');
             }}
           >
             <PlusIcon size={12} />
@@ -978,6 +1231,7 @@ export function RepoSidebar({
                   }}
                   onCheckout={onCheckout}
                   onOpenMenu={openBranchMenu}
+                  dnd={branchDnd}
                 />
               ) : (
                 <RemoteBranchRow
@@ -995,6 +1249,7 @@ export function RepoSidebar({
                   }}
                   onCheckout={onCheckout}
                   onOpenMenu={openBranchMenu}
+                  dnd={branchDnd}
                 />
               ),
             )}
@@ -1015,6 +1270,7 @@ export function RepoSidebar({
                     }}
                     onCheckout={onCheckout}
                     onOpenMenu={openBranchMenu}
+                    dnd={branchDnd}
                   />
                 ))}
                 {group.remotes.map((branch) => (
@@ -1033,6 +1289,7 @@ export function RepoSidebar({
                     }}
                     onCheckout={onCheckout}
                     onOpenMenu={openBranchMenu}
+                    dnd={branchDnd}
                   />
                 ))}
               </TreeFolder>
@@ -1066,6 +1323,7 @@ export function RepoSidebar({
                 }}
                 onCheckout={onCheckout}
                 onOpenMenu={openBranchMenu}
+                dnd={branchDnd}
               />
             )}
           />
@@ -1100,6 +1358,7 @@ export function RepoSidebar({
                       }}
                       onCheckout={onCheckout}
                       onOpenMenu={openBranchMenu}
+                      dnd={branchDnd}
                     />
                   )}
                 />
@@ -1173,7 +1432,7 @@ export function RepoSidebar({
               className="pill-btn pill-btn-green repo-pr-new tooltip-host"
               aria-label="New pull request"
               data-tooltip="New pull request"
-              onClick={() => setCreatingPr(true)}
+              onClick={() => openNewPr()}
             >
               <PlusIcon size={12} />
             </button>
@@ -1212,6 +1471,7 @@ export function RepoSidebar({
                   setActive(id);
                   onSelectRef?.(tag.name);
                 }}
+                onOpenMenu={openTagMenu}
               />
             ))}
       </CollapsibleSection>
@@ -1222,18 +1482,13 @@ export function RepoSidebar({
           branchOptions={prBranchOptions}
           onStart={onGitflowStart}
           onFinish={onGitflowFinish}
-          // Layer the settings dialog on top rather than replacing this one, so
-          // closing settings returns here with the in-progress form intact.
-          onOpenSettings={() => setGitflowSettingsOpen(true)}
+          // The gear opens the repo settings dialog on its Gitflow tab (the same
+          // gitflow config form). Close this dialog so the two don't stack.
+          onOpenSettings={() => {
+            setGitflowStartOpen(false);
+            onOpenRepoSettings?.('gitflow');
+          }}
           onClose={() => setGitflowStartOpen(false)}
-          suspended={gitflowSettingsOpen}
-        />
-      )}
-      {gitflowSettingsOpen && (
-        <GitflowSettingsDialog
-          config={gitflowConfig}
-          onSave={onGitflowSaveConfig}
-          onClose={() => setGitflowSettingsOpen(false)}
         />
       )}
       {contextMenu && (
@@ -1246,9 +1501,41 @@ export function RepoSidebar({
           onCheckout={onCheckout}
           onMerge={onMergeBranch}
           onRebase={onRebaseBranch}
+          onCherryPick={
+            // Cherry-pick this branch's tip onto HEAD — offered for every branch
+            // except the checked-out one. That excludes both the local current
+            // branch and its remote-tracking counterpart (`origin/dev` while on
+            // `dev`), which share the current branch's name, since picking the
+            // current branch onto itself is a no-op. A remote-only branch is
+            // addressed by its `remote/name` committish.
+            contextMenu.target.isCurrent || contextMenu.target.name === currentBranch
+              ? undefined
+              : () =>
+                  onCherryPick(
+                    contextMenu.target.local
+                      ? contextMenu.target.name
+                      : `${contextMenu.target.remoteName}/${contextMenu.target.name}`,
+                  )
+          }
           onRenameBranch={onRenameBranch}
           onDeleteBranch={onDeleteBranch}
           onDeleteRemoteBranch={onDeleteRemoteBranch}
+          onCreateTagHere={() => onStartTagAtBranch(contextMenu.target.name, false)}
+          onCreateAnnotatedTagHere={() => onStartTagAtBranch(contextMenu.target.name, true)}
+        />
+      )}
+      {tagMenu && (
+        <TagContextMenu
+          target={tagMenu.target}
+          x={tagMenu.x}
+          y={tagMenu.y}
+          remote={tagRemote}
+          pushed={pushedTags ? pushedTags.has(tagMenu.target.name) : null}
+          onClose={() => setTagMenu(null)}
+          onAnnotate={onAnnotateTag}
+          onPush={onPushTag}
+          onDeleteRemote={onDeleteRemoteTag}
+          onDeleteLocal={onDeleteTag}
         />
       )}
       {stashMenu && (
@@ -1296,10 +1583,21 @@ export function RepoSidebar({
           remoteUrl={remoteUrl}
           provider={dialogProvider}
           branches={prBranchOptions}
-          defaultSource={currentBranch}
-          defaultTarget={defaultTarget}
-          onClose={() => setCreatingPr(false)}
+          defaultSource={creatingPr.source ?? currentBranch}
+          defaultTarget={creatingPr.target ?? defaultTarget}
+          onClose={() => setCreatingPr(null)}
           onCreated={() => setPrReload((n) => n + 1)}
+        />
+      )}
+      {dropMenu && (
+        <BranchDragMenu
+          source={dropMenu.source}
+          target={dropMenu.target}
+          x={dropMenu.x}
+          y={dropMenu.y}
+          canPullRequest={canPullRequest}
+          handlers={dragMenuHandlers}
+          onClose={() => setDropMenu(null)}
         />
       )}
     </nav>

@@ -45,6 +45,20 @@ interface BranchContextMenuProps {
   onDeleteBranch: (name: string) => void;
   /** Delete this branch on its remote (`git push <remote> --delete`). */
   onDeleteRemoteBranch: (remote: string, name: string) => void;
+  /**
+   * Cherry-pick this menu's commit onto the checked-out branch. Targets the
+   * commit rather than any branch above, so it sits in its own group; omit to
+   * hide the row.
+   */
+  onCherryPick?: () => void;
+  /**
+   * Start creating a lightweight tag at this menu's commit. When provided
+   * together with {@link onCreateAnnotatedTagHere}, the two "Create tag here"
+   * rows are appended below a separator; omit both to hide the tag section.
+   */
+  onCreateTagHere?: () => void;
+  /** Start creating an annotated tag at this menu's commit (see above). */
+  onCreateAnnotatedTagHere?: () => void;
 }
 
 /** One row in the menu. */
@@ -192,6 +206,9 @@ export function BranchContextMenu({
   onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
+  onCherryPick,
+  onCreateTagHere,
+  onCreateAnnotatedTagHere,
 }: BranchContextMenuProps) {
   const requestConfirm = useConfirm();
   const handlers: Handlers = {
@@ -211,6 +228,25 @@ export function BranchContextMenu({
     if (entries.length) entries.push('separator');
     entries.push(...group);
   }
+
+  // Cherry-pick targets the commit itself (applying it onto the checked-out
+  // branch), so like the tag actions it's divided off from the branch groups.
+  if (onCherryPick) {
+    if (entries.length) entries.push('separator');
+    entries.push({
+      label: currentBranch ? `Cherry-pick onto ${currentBranch}` : 'Cherry-pick',
+      onClick: onCherryPick,
+    });
+  }
+
+  // Tag actions sit in their own group at the bottom — creating a tag targets
+  // the commit, not any one of the branches above, so it's divided off.
+  if (onCreateTagHere && onCreateAnnotatedTagHere) {
+    if (entries.length) entries.push('separator');
+    entries.push({ label: 'Create tag here', onClick: onCreateTagHere });
+    entries.push({ label: 'Create annotated tag here', onClick: onCreateAnnotatedTagHere });
+  }
+
   if (entries.length === 0) return null;
 
   return (
