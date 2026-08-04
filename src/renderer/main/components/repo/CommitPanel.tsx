@@ -325,6 +325,22 @@ interface CommitFilesProps {
 }
 
 /**
+ * How the file list is laid out — flat "Path" list or folder "Tree". Persisted
+ * to localStorage so the choice is a sticky preference that survives remounts
+ * (e.g. selecting through the working-tree view when committing) and reloads.
+ */
+type FileViewMode = 'list' | 'tree';
+const FILE_VIEW_MODE_KEY = 'gitleviathan.commit-file-view-mode';
+
+function loadFileViewMode(): FileViewMode {
+  try {
+    return localStorage.getItem(FILE_VIEW_MODE_KEY) === 'tree' ? 'tree' : 'list';
+  } catch {
+    return 'list';
+  }
+}
+
+/**
  * The commit-detail files section: a counts + controls toolbar over a flat list
  * or folder tree of the commit's files. By default it lists only the commit's
  * changes; "View all files" fetches the full repository snapshot as of that
@@ -332,7 +348,16 @@ interface CommitFilesProps {
  */
 function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFilesProps) {
   const [asc, setAsc] = useState(true);
-  const [mode, setMode] = useState<'list' | 'tree'>('list');
+  const [mode, setMode] = useState<FileViewMode>(loadFileViewMode);
+
+  // Remember the Path/Tree choice across remounts and reloads.
+  useEffect(() => {
+    try {
+      localStorage.setItem(FILE_VIEW_MODE_KEY, mode);
+    } catch {
+      /* storage unavailable — keep the in-memory choice only */
+    }
+  }, [mode]);
   const [viewAll, setViewAll] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
