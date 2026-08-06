@@ -1259,18 +1259,28 @@ function WorkingChanges({
 
   const generate = useCallback(async () => {
     setGenerating(true);
-    const result = await window.api.claude.generateCommitMessage(repoPath);
-    setGenerating(false);
-    if (result.status === 'not-connected') {
-      // Not connected yet — send the user to connect Claude Code in Settings.
-      onOpenSettings?.('integrations');
-      return;
+    try {
+      const result = await window.api.claude.generateCommitMessage(repoPath);
+      if (result.status === 'not-connected') {
+        // Not connected yet — send the user to connect Claude Code in Settings.
+        onOpenSettings?.('integrations');
+        return;
+      }
+      if (result.status === 'error') {
+        onError?.('Generate failed', result.message);
+        return;
+      }
+      onMessageChange(result.message);
+    } catch (err) {
+      // Guard against an unexpected IPC rejection so the button can't get stuck
+      // spinning — always fall back to the active state and surface the error.
+      onError?.(
+        'Generate failed',
+        err instanceof Error ? err.message : 'Could not generate a message.',
+      );
+    } finally {
+      setGenerating(false);
     }
-    if (result.status === 'error') {
-      onError?.('Generate failed', result.message);
-      return;
-    }
-    onMessageChange(result.message);
   }, [repoPath, onMessageChange, onError, onOpenSettings]);
 
   const commit = useCallback(async () => {

@@ -186,9 +186,17 @@ export function ActivityLog({ repoPath, openSignal }: ActivityLogProps) {
   );
 }
 
+/**
+ * The command word an op shells out to, so the transcript's `$` line names the
+ * real binary — `generate` runs the `claude` CLI, everything else is `git`.
+ */
+function opCommand(op: string): string {
+  return op === 'generate' ? 'claude' : 'git';
+}
+
 /** Serialize one transcript row to plain text, matching what ActivityRow renders. */
 function recordText(record: LogRecord): string {
-  if (record.kind === 'start') return `$ git ${record.op}`;
+  if (record.kind === 'start') return `$ ${opCommand(record.op)} ${record.op}`;
   if (record.kind === 'end') {
     return record.ok
       ? `✓ ${record.op} finished`
@@ -200,7 +208,11 @@ function recordText(record: LogRecord): string {
 /** Render one transcript row: a command boundary header or a line of output. */
 function ActivityRow({ record }: { record: LogRecord }) {
   if (record.kind === 'start') {
-    return <div className="activity-line activity-line--cmd">$ git {record.op}</div>;
+    return (
+      <div className="activity-line activity-line--cmd">
+        $ {opCommand(record.op)} {record.op}
+      </div>
+    );
   }
   if (record.kind === 'end') {
     return (

@@ -23,6 +23,8 @@ import {
   generateCommitMessage,
   claudeErrorMessage,
   isRunnable,
+  isCommitContextExcluded,
+  type CommitUsage,
 } from './claude';
 import {
   AppChannels,
@@ -5845,6 +5847,18 @@ function boot(): void {
  * `generateCommitMessage` (which uses the saved path, no re-detection) backs the
  * commit panel.
  */
+/** One-line summary of a generation's token usage/cost for the activity log. */
+function formatCommitUsage(usage: CommitUsage): string {
+  const n = (v: number) => v.toLocaleString('en-US');
+  const parts = [
+    `${n(usage.inputTokens)} in`,
+    `${n(usage.outputTokens)} out`,
+    `${n(usage.cacheReadTokens)} cache read`,
+    `${n(usage.cacheWriteTokens)} cache write`,
+  ];
+  return `claude token usage: ${parts.join(' · ')}`;
+}
+
 function registerClaudeIpc(): void {
   const currentStatus = (error?: string): ClaudeStatus => ({
     connected: Boolean(settings.claudeConnection),
@@ -5898,31 +5912,76 @@ function registerClaudeIpc(): void {
         }
         return { status: 'not-connected' };
       }
-      const diff = await runGitDiff(repoPath, ['diff', '--cached']);
-      if (!diff.trim()) {
+      // The full staged file list is always handed to the model, even for
+      // excluded files; only the *content* of excluded files is withheld.
+      const changedFiles = (
+        await runGit(repoPath, ['diff', '--cached', '--name-only', '-z'])
+      )
+        .split('\0')
+        .filter(Boolean);
+      if (!changedFiles.length) {
         return {
           status: 'error',
           message: 'Nothing staged to describe. Stage some changes first.',
         };
       }
+      const excludedFiles = changedFiles.filter(isCommitContextExcluded);
+      const includedFiles = changedFiles.filter((f) => !isCommitContextExcluded(f));
+      // Diff only the included files, addressed as literal pathspecs so a name
+      // with glob-like characters can't turn into a wildcard. Everything staged
+      // may be excluded, in which case the model works from the file list alone.
+      const diff = includedFiles.length
+        ? await runGitDiff(repoPath, [
+            'diff',
+            '--cached',
+            '--',
+            ...includedFiles.map((f) => `:(literal)${f}`),
+          ])
+        : '';
       const recentSubjects = (
         await runGit(repoPath, ['log', '-n', '10', '--format=%s'])
       )
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean);
+      emitActivity({ repoPath, op: 'generate', kind: 'start', ts: Date.now() });
+      if (excludedFiles.length) {
+        emitActivity({
+          repoPath,
+          op: 'generate',
+          kind: 'line',
+          stream: 'stdout',
+          text: `content withheld from ${excludedFiles.length} file(s): ${excludedFiles.join(', ')}`,
+          ts: Date.now(),
+        });
+      }
       try {
-        const { message } = await generateCommitMessage(
+        const { message, usage } = await generateCommitMessage(
           bin,
           diff,
+          changedFiles,
+          excludedFiles,
           recentSubjects,
           repoPath,
         );
         if (!message.trim()) {
+          emitActivity({ repoPath, op: 'generate', kind: 'end', ok: false, ts: Date.now() });
           return { status: 'error', message: 'Claude returned an empty message.' };
         }
+        if (usage) {
+          emitActivity({
+            repoPath,
+            op: 'generate',
+            kind: 'line',
+            stream: 'stdout',
+            text: formatCommitUsage(usage),
+            ts: Date.now(),
+          });
+        }
+        emitActivity({ repoPath, op: 'generate', kind: 'end', ok: true, ts: Date.now() });
         return { status: 'ok', message: message.trim() };
       } catch (err) {
+        emitActivity({ repoPath, op: 'generate', kind: 'end', ok: false, ts: Date.now() });
         return { status: 'error', message: claudeErrorMessage(err) };
       }
     },
