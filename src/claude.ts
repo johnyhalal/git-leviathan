@@ -70,6 +70,19 @@ export const COMMIT_CONTEXT_EXCLUDES: readonly string[] = [
   '*.eot',
   '*.zip',
   '*.gz',
+  // Certificates / keystores — opaque credential blobs, never informative in a diff.
+  '*.pem',
+  '*.crt',
+  '*.cer',
+  '*.der',
+  '*.key',
+  '*.p12',
+  '*.pfx',
+  '*.p7b',
+  '*.p7c',
+  '*.jks',
+  '*.keystore',
+  '*.truststore',
 ];
 
 /** A gitignore pattern compiled to a matcher against a repo-relative path. */
