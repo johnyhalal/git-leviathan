@@ -31,6 +31,7 @@ import {
   ClaudeChannels,
   IntegrationChannels,
   RepoChannels,
+  SigningChannels,
   ThemeChannels,
   UpdateChannels,
   GLOBAL_ACTIVITY_PATH,
@@ -51,6 +52,10 @@ import {
   type GitflowConfigResult,
   type RepoConfig,
   type RepoConfigResult,
+  type SigningCapabilities,
+  type SigningConfig,
+  type SigningConfigPatch,
+  type SigningConfigResult,
   type LfsStatus,
   type LfsResult,
   type StashInfo,
@@ -105,6 +110,7 @@ import type { DeviceAuthorization, TokenSet } from './oauth/deviceFlow';
 import * as github from './oauth/github';
 import * as gitlab from './oauth/gitlab';
 import { generateSshKeyPair } from './ssh/keygen';
+import { probeSigningCapabilities } from './signing';
 
 // Name the app before anything reads it, so app.getName(), the userData path,
 // notifications and the About panel all say "GitLeviathan" rather than
@@ -5988,6 +5994,264 @@ function registerClaudeIpc(): void {
   );
 }
 
+// ---- Commit/tag signing ---------------------------------------------------
+
+/**
+ * A display hint for a configured signing key. For SSH signing `user.signingkey`
+ * is a path to the public key, so we surface its comment (or basename); for a
+ * GPG key id / literal key the value itself is the label.
+ */
+function signingKeyLabel(key: string): string | undefined {
+  if (!key) return undefined;
+  if (key.includes('/') || key.includes('\\')) {
+    const pub = key.endsWith('.pub') ? key : `${key}.pub`;
+    try {
+      const comment = fs.readFileSync(pub, 'utf8').trim().split(/\s+/).slice(2).join(' ');
+      if (comment) return comment;
+    } catch {
+      /* fall through to the basename */
+    }
+    return path.basename(key);
+  }
+  return key;
+}
+
+/** Read the effective global signing config (empty strings/false when unset). */
+async function readSigningConfig(): Promise<SigningConfig> {
+  const home = os.homedir();
+  const [format, signingKey, commitSign, tagSign] = await Promise.all([
+    runGit(home, ['config', '--global', '--get', 'gpg.format']),
+    runGit(home, ['config', '--global', '--get', 'user.signingkey']),
+    runGit(home, ['config', '--global', '--get', 'commit.gpgsign']),
+    runGit(home, ['config', '--global', '--get', 'tag.gpgsign']),
+  ]);
+  const fmt = format.trim();
+  const key = signingKey.trim();
+  return {
+    format: fmt === 'ssh' || fmt === 'openpgp' ? fmt : '',
+    signingKey: key,
+    signingKeyLabel: signingKeyLabel(key),
+    signCommits: commitSign.trim() === 'true',
+    signTags: tagSign.trim() === 'true',
+  };
+}
+
+/** Validate an untrusted signing patch from IPC into a typed, safe patch. */
+function validateSigningPatch(
+  patch: unknown,
+): { patch: SigningConfigPatch } | { error: string } {
+  if (!patch || typeof patch !== 'object') return { error: 'Invalid signing settings.' };
+  const raw = patch as Record<string, unknown>;
+  const out: SigningConfigPatch = {};
+  if (raw.format !== undefined) {
+    if (raw.format !== 'ssh' && raw.format !== 'openpgp') {
+      return { error: 'Invalid signing format.' };
+    }
+    out.format = raw.format;
+  }
+  if (raw.signingKey !== undefined) {
+    const value = typeof raw.signingKey === 'string' ? raw.signingKey.trim() : '';
+    // Can't be read as a flag; names/paths otherwise vary too much to slug-guard.
+    if (!value || value.startsWith('-')) return { error: 'Invalid signing key.' };
+    out.signingKey = value;
+  }
+  if (raw.signCommits !== undefined) {
+    if (typeof raw.signCommits !== 'boolean') return { error: 'Invalid signing setting.' };
+    out.signCommits = raw.signCommits;
+  }
+  if (raw.signTags !== undefined) {
+    if (typeof raw.signTags !== 'boolean') return { error: 'Invalid signing setting.' };
+    out.signTags = raw.signTags;
+  }
+  return { patch: out };
+}
+
+/**
+ * Write a validated patch to git's **global** config (so it applies to every
+ * repo, matching the app-level Preferences panel) and return the fresh config.
+ * Booleans are written as explicit `true`/`false` rather than unset for clarity.
+ */
+async function applySigningPatch(patch: SigningConfigPatch): Promise<SigningConfig> {
+  const home = os.homedir();
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+  const writes: [string, string][] = [];
+  if (patch.format !== undefined) writes.push(['gpg.format', patch.format]);
+  if (patch.signingKey !== undefined) writes.push(['user.signingkey', patch.signingKey]);
+  if (patch.signCommits !== undefined) writes.push(['commit.gpgsign', String(patch.signCommits)]);
+  if (patch.signTags !== undefined) writes.push(['tag.gpgsign', String(patch.signTags)]);
+  for (const [key, value] of writes) {
+    await execFileAsync(gitBin, ['config', '--global', key, value], { cwd: home, env });
+  }
+  return readSigningConfig();
+}
+
+/**
+ * Write a freshly generated signing keypair under `~/.ssh`, owner-locking the
+ * private half and picking a non-colliding name so an existing key is never
+ * overwritten. Mirrors the auth-key writer but is not provider-scoped.
+ */
+function writeSigningKeyToDisk(pair: { publicKey: string; privateKey: string }): {
+  privateKeyPath: string;
+  publicKeyPath: string;
+} {
+  const sshDir = path.join(os.homedir(), '.ssh');
+  fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+
+  const base = 'gitleviathan_signing_ed25519';
+  let name = base;
+  for (
+    let n = 1;
+    fs.existsSync(path.join(sshDir, name)) ||
+    fs.existsSync(path.join(sshDir, `${name}.pub`));
+    n++
+  ) {
+    name = `${base}_${n}`;
+  }
+
+  const privateKeyPath = path.join(sshDir, name);
+  const publicKeyPath = `${privateKeyPath}.pub`;
+  fs.writeFileSync(privateKeyPath, pair.privateKey, { mode: 0o600 });
+  fs.writeFileSync(publicKeyPath, `${pair.publicKey}\n`, { mode: 0o644 });
+  // writeFileSync's mode is masked by the umask, so pin the private key down.
+  try {
+    fs.chmodSync(privateKeyPath, 0o600);
+  } catch {
+    // chmod is unsupported on some platforms (e.g. Windows) — ignore.
+  }
+  return { privateKeyPath, publicKeyPath };
+}
+
+/**
+ * Point git at (and populate) `~/.config/git/allowed_signers` so SSH-signed
+ * commits verify (`%G?` = `G`) rather than showing merely-present (`U`). The
+ * principal is the user's global git email; without one we still set the config
+ * path (signing works, just unverified) but write no entry to bind to.
+ */
+async function updateAllowedSigners(publicKey: string): Promise<void> {
+  const home = os.homedir();
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+  const dir = path.join(home, '.config', 'git');
+  const file = path.join(dir, 'allowed_signers');
+  await execFileAsync(
+    gitBin,
+    ['config', '--global', 'gpg.ssh.allowedSignersFile', file],
+    { cwd: home, env },
+  );
+
+  const email = (await runGit(home, ['config', '--global', '--get', 'user.email'])).trim();
+  if (!email) return;
+
+  fs.mkdirSync(dir, { recursive: true });
+  const key = publicKey.trim();
+  const keyBody = key.split(/\s+/)[1] ?? '';
+  let existing: string[] = [];
+  try {
+    existing = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+  } catch {
+    /* file doesn't exist yet */
+  }
+  // Drop any prior entry for the same key body so regenerating never duplicates.
+  const kept = existing.filter(
+    (line) => line.trim() && (!keyBody || !line.includes(keyBody)),
+  );
+  kept.push(`${email} ${key}`);
+  fs.writeFileSync(file, `${kept.join('\n')}\n`, { mode: 0o644 });
+}
+
+function registerSigningIpc(): void {
+  ipcMain.handle(
+    SigningChannels.capabilities,
+    (): Promise<SigningCapabilities> => probeSigningCapabilities(),
+  );
+
+  ipcMain.handle(
+    SigningChannels.getConfig,
+    (): Promise<SigningConfig> => readSigningConfig(),
+  );
+
+  ipcMain.handle(
+    SigningChannels.setConfig,
+    async (_event, patch: unknown): Promise<SigningConfigResult> => {
+      const validated = validateSigningPatch(patch);
+      if ('error' in validated) return { status: 'error', message: validated.error };
+      try {
+        return { status: 'ok', config: await applySigningPatch(validated.patch) };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: gitErrorMessage(err, 'Could not save signing settings.'),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.generateSshKey,
+    async (): Promise<SigningConfigResult> => {
+      const caps = await probeSigningCapabilities();
+      if (!caps.ssh.available) {
+        return {
+          status: 'error',
+          message: 'SSH signing is unavailable — ssh-keygen was not found.',
+        };
+      }
+      try {
+        const host = os.hostname().replace(/\.local$/, '');
+        const date = new Date().toISOString();
+        const pair = generateSshKeyPair(`GitLeviathan signing (${host}) ${date}`);
+        const { publicKeyPath } = writeSigningKeyToDisk(pair);
+        await applySigningPatch({ format: 'ssh', signingKey: publicKeyPath });
+        await updateAllowedSigners(pair.publicKey);
+        return { status: 'ok', config: await readSigningConfig() };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Could not generate a signing key.',
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.chooseSshKey,
+    async (event): Promise<SigningConfigResult> => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options: Electron.OpenDialogOptions = {
+        title: 'Choose SSH Signing Key',
+        buttonLabel: 'Select',
+        defaultPath: path.join(os.homedir(), '.ssh'),
+        properties: ['openFile', 'showHiddenFiles'],
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+      // Cancelling is a no-op; return the unchanged config so the UI stays in sync.
+      if (result.canceled || result.filePaths.length === 0) {
+        return { status: 'ok', config: await readSigningConfig() };
+      }
+      const picked = result.filePaths[0];
+      // git signs with the *public* key; derive the `.pub` sibling if the user
+      // picked the private key.
+      const pub =
+        !picked.endsWith('.pub') && fs.existsSync(`${picked}.pub`)
+          ? `${picked}.pub`
+          : picked;
+      try {
+        await applySigningPatch({ format: 'ssh', signingKey: pub });
+        const content = fs.readFileSync(pub, 'utf8').trim();
+        // Only refresh allowed_signers when the file is an OpenSSH public key.
+        if (/^(ssh-|sk-|ecdsa-)/.test(content)) await updateAllowedSigners(content);
+        return { status: 'ok', config: await readSigningConfig() };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Could not use that key.',
+        };
+      }
+    },
+  );
+}
+
 function registerAppIpc(): void {
   ipcMain.handle(
     AppChannels.getSidebarSections,
@@ -6280,6 +6544,7 @@ app.on('ready', () => {
   registerRepoIpc();
   registerIntegrationsIpc();
   registerClaudeIpc();
+  registerSigningIpc();
   registerAppIpc();
   registerUpdateIpc();
   boot();

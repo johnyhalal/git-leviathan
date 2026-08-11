@@ -21,6 +21,7 @@ export { PopIcon } from './PopIcon';
 export { MoreIcon } from './MoreIcon';
 export { BranchIcon } from './BranchIcon';
 export { CheckIcon } from './CheckIcon';
+export { CopyIcon } from './CopyIcon';
 export { GitflowIcon } from './GitflowIcon';
 export { RemoteIcon } from './RemoteIcon';
 export { LocalIcon } from './LocalIcon';

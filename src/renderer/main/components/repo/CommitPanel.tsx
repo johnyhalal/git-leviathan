@@ -14,7 +14,9 @@ import { FileContextMenu, type FileMenuItem } from './FileContextMenu';
 import { useConfirm, type ConfirmAction } from '../ConfirmBar';
 import {
   CertificateIcon,
+  CheckIcon,
   ChevronDownIcon,
+  CopyIcon,
   FolderIcon,
   LayersIcon,
   ListIcon,
@@ -573,6 +575,15 @@ function CommitDetail({
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [saving, setSaving] = useState(false);
+  // Brief "copied" confirmation after the hash is written to the clipboard.
+  const [hashCopied, setHashCopied] = useState(false);
+
+  const copyHash = useCallback(() => {
+    void navigator.clipboard?.writeText(commit.hash).then(() => {
+      setHashCopied(true);
+      setTimeout(() => setHashCopied(false), 1500);
+    });
+  }, [commit.hash]);
 
   useEffect(() => {
     let live = true;
@@ -659,6 +670,15 @@ function CommitDetail({
             </span>
           )}
           <span className="commit-detail-hash">commit: {commit.shortHash}</span>
+          <button
+            type="button"
+            className="commit-detail-hash-copy tooltip-host"
+            onClick={copyHash}
+            data-tooltip={hashCopied ? 'Copied' : 'Copy commit hash'}
+            aria-label="Copy commit hash"
+          >
+            {hashCopied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
+          </button>
         </div>
         {editing ? (
           <div className="commit-amend">

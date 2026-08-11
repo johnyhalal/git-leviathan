@@ -330,6 +330,32 @@ body.is-row-resizing {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* Copy-hash affordance: hidden until the hash line is hovered (or the button
+   itself is focused for keyboard users), then reveals a subtle icon button. */
+.commit-detail-hash-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.commit-detail-hashline:hover .commit-detail-hash-copy,
+.commit-detail-hash-copy:focus-visible {
+  opacity: 1;
+}
+
+.commit-detail-hash-copy:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
 /* --- File lists (shared by detail + staging) --- */
 .commit-files {
   flex: 1 1 auto;

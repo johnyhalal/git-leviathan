@@ -2,6 +2,7 @@ import type { ComponentType } from 'react';
 import { GeneralPanel } from './panels/GeneralPanel';
 import { AppearancePanel } from './panels/AppearancePanel';
 import { IntegrationsPanel } from './panels/IntegrationsPanel';
+import { CommitSigningPanel } from './panels/CommitSigningPanel';
 
 /** One category in the settings sidebar. Its `Panel` renders in the content pane. */
 export interface SettingsSectionDef {
@@ -17,5 +18,6 @@ export interface SettingsSectionDef {
 export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: 'general', label: 'General', Panel: GeneralPanel },
   { id: 'appearance', label: 'Appearance', Panel: AppearancePanel },
+  { id: 'signing', label: 'Commit Signing', Panel: CommitSigningPanel },
   { id: 'integrations', label: 'Integrations', Panel: IntegrationsPanel },
 ];

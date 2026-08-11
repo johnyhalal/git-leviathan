@@ -4,6 +4,7 @@ import {
   ClaudeChannels,
   IntegrationChannels,
   RepoChannels,
+  SigningChannels,
   ThemeChannels,
   UpdateChannels,
   type ClaudeStatus,
@@ -16,6 +17,10 @@ import {
   type GitflowConfigResult,
   type RepoConfig,
   type RepoConfigResult,
+  type SigningCapabilities,
+  type SigningConfig,
+  type SigningConfigPatch,
+  type SigningConfigResult,
   type LfsStatus,
   type LfsResult,
   type WorktreeAddOptions,
@@ -426,6 +431,27 @@ const api: ExposedApi = {
         ClaudeChannels.generateCommitMessage,
         path,
       ) as Promise<GenerateCommitResult>,
+  },
+  signing: {
+    capabilities: () =>
+      ipcRenderer.invoke(
+        SigningChannels.capabilities,
+      ) as Promise<SigningCapabilities>,
+    getConfig: () =>
+      ipcRenderer.invoke(SigningChannels.getConfig) as Promise<SigningConfig>,
+    setConfig: (patch: SigningConfigPatch) =>
+      ipcRenderer.invoke(
+        SigningChannels.setConfig,
+        patch,
+      ) as Promise<SigningConfigResult>,
+    generateSshKey: () =>
+      ipcRenderer.invoke(
+        SigningChannels.generateSshKey,
+      ) as Promise<SigningConfigResult>,
+    chooseSshKey: () =>
+      ipcRenderer.invoke(
+        SigningChannels.chooseSshKey,
+      ) as Promise<SigningConfigResult>,
   },
   update: {
     check: () =>

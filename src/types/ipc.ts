@@ -330,6 +330,56 @@ export type RepoConfigResult =
   | { status: 'ok'; config: RepoConfig }
   | { status: 'error'; message: string };
 
+/** The signing backends git supports via `gpg.format`. */
+export type SigningFormat = 'openpgp' | 'ssh';
+
+/** Availability + resolved path/version of one signing tool (ssh-keygen / gpg). */
+export interface SigningToolInfo {
+  available: boolean;
+  path?: string;
+  version?: string;
+}
+
+/**
+ * What the local machine can sign commits/tags with, driving the Commit Signing
+ * panel: which method's options are enabled vs. shown with install guidance.
+ */
+export interface SigningCapabilities {
+  ssh: SigningToolInfo;
+  gpg: SigningToolInfo;
+}
+
+/**
+ * The user's effective (global) commit-signing configuration, read from git
+ * config. `format` empty means unset (git defaults to openpgp); `signingKey`
+ * empty means no key is configured. `signingKeyLabel` is a human-friendly hint
+ * (a `.pub` comment or basename) for display only.
+ */
+export interface SigningConfig {
+  format: '' | SigningFormat;
+  signingKey: string;
+  signingKeyLabel?: string;
+  signCommits: boolean;
+  signTags: boolean;
+}
+
+/**
+ * A partial update to the signing config: each present field is written to git's
+ * **global** config, absent fields are left untouched. Lets the panel flip one
+ * toggle without re-sending the whole config.
+ */
+export interface SigningConfigPatch {
+  format?: SigningFormat;
+  signingKey?: string;
+  signCommits?: boolean;
+  signTags?: boolean;
+}
+
+/** Result of a signing-config mutation: the fresh config, or an error message. */
+export type SigningConfigResult =
+  | { status: 'ok'; config: SigningConfig }
+  | { status: 'error'; message: string };
+
 /**
  * Git LFS state for a repository, driving the repo settings' Git LFS tab. The
  * app bundles git-lfs (via dugite), so availability/version aren't surfaced —
@@ -1061,6 +1111,19 @@ export const ClaudeChannels = {
   generateCommitMessage: 'claude:generate-commit-message',
 } as const;
 
+export const SigningChannels = {
+  /** Renderer -> main (invoke): detect which signing tools are installed. */
+  capabilities: 'signing:capabilities',
+  /** Renderer -> main (invoke): read the effective (global) signing config. */
+  getConfig: 'signing:get-config',
+  /** Renderer -> main (invoke): apply a partial patch to the signing config. */
+  setConfig: 'signing:set-config',
+  /** Renderer -> main (invoke): generate a new SSH signing key and select it. */
+  generateSshKey: 'signing:generate-ssh-key',
+  /** Renderer -> main (invoke): pick an existing key file as the SSH signing key. */
+  chooseSshKey: 'signing:choose-ssh-key',
+} as const;
+
 // ---- Bridge surface exposed on `window.api` (see preload.ts) --------------
 
 export interface ThemeApi {
@@ -1722,6 +1785,19 @@ export interface ClaudeApi {
   generateCommitMessage(path: string): Promise<GenerateCommitResult>;
 }
 
+export interface SigningApi {
+  /** Detect which signing tools (ssh-keygen, gpg) are installed locally. */
+  capabilities(): Promise<SigningCapabilities>;
+  /** Read the effective (global) commit-signing configuration. */
+  getConfig(): Promise<SigningConfig>;
+  /** Write a partial patch to the global signing config; returns the fresh config. */
+  setConfig(patch: SigningConfigPatch): Promise<SigningConfigResult>;
+  /** Generate a new SSH signing key, store it, and select it for signing. */
+  generateSshKey(): Promise<SigningConfigResult>;
+  /** Pick an existing key file from disk to use as the SSH signing key. */
+  chooseSshKey(): Promise<SigningConfigResult>;
+}
+
 export interface ExposedApi {
   /** Host OS platform, mirrored from the main process' `process.platform`. */
   platform: NodeJS.Platform;
@@ -1732,5 +1808,6 @@ export interface ExposedApi {
   repo: RepoApi;
   integrations: IntegrationsApi;
   claude: ClaudeApi;
+  signing: SigningApi;
   update: UpdateApi;
 }
