@@ -11,7 +11,7 @@
  * install what's missing. This module is Electron-free; the main process owns all
  * key storage and git-config writes.
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -102,7 +102,7 @@ export function resolveSshKeygenBin(
   return resolveBin('ssh-keygen', override);
 }
 
-/** Locate `gpg` (only probed in this slice; OpenPGP signing lands later). */
+/** Locate `gpg` (an explicit `override` wins, e.g. the `gpg.program` config). */
 export function resolveGpgBin(override?: string | null): Promise<string | null> {
   return resolveBin('gpg', override);
 }
@@ -183,4 +183,192 @@ export async function probeSigningCapabilities(): Promise<SigningCapabilities> {
     : { available: false };
 
   return { ssh, gpg: gpgInfo };
+}
+
+/** A secret (private) OpenPGP key available for signing, from `gpg`. */
+export interface GpgSecretKey {
+  /** Long key id (16 hex), used to set `user.signingkey`. */
+  keyId: string;
+  /** Full 40-hex fingerprint (preferred `user.signingkey` value). */
+  fingerprint: string;
+  /** Primary user id, e.g. `Jane Doe <jane@example.com>`. */
+  uid: string;
+  /** True when gpg reports the key as expired or revoked. */
+  expired: boolean;
+}
+
+/** Decode gpg's `--with-colons` C-style `\xNN` escapes in a user-id field. */
+function decodeColonField(value: string): string {
+  return value.replace(/\\x([0-9a-fA-F]{2})/g, (_m, hex) =>
+    String.fromCharCode(parseInt(hex, 16)),
+  );
+}
+
+/**
+ * List the secret keys the `gpg` binary can sign with, parsed from its stable
+ * `--with-colons` output. Each `sec` record starts a key; the following `fpr`
+ * gives its fingerprint and the first `uid` its primary identity. Returns an
+ * empty list when gpg is absent or has no secret keys.
+ */
+export async function listGpgSecretKeys(gpgBin: string): Promise<GpgSecretKey[]> {
+  let stdout = '';
+  try {
+    ({ stdout } = await execFileAsync(
+      gpgBin,
+      ['--list-secret-keys', '--with-colons'],
+      { timeout: PROBE_TIMEOUT_MS },
+    ));
+  } catch {
+    return [];
+  }
+
+  const keys: GpgSecretKey[] = [];
+  let current: GpgSecretKey | null = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const f = line.split(':');
+    if (f[0] === 'sec') {
+      if (current) keys.push(current);
+      current = {
+        keyId: f[4] ?? '',
+        fingerprint: '',
+        uid: '',
+        expired: f[1] === 'e' || f[1] === 'r',
+      };
+    } else if (f[0] === 'fpr' && current && !current.fingerprint) {
+      current.fingerprint = f[9] ?? '';
+    } else if (f[0] === 'uid' && current && !current.uid) {
+      current.uid = decodeColonField(f[9] ?? '');
+    }
+  }
+  if (current) keys.push(current);
+  return keys;
+}
+
+/**
+ * Generate a new ed25519 OpenPGP **signing** key non-interactively and return
+ * its 40-hex fingerprint. Driven by `gpg --batch --gen-key` reading a parameter
+ * file on stdin; the key is created *without* a passphrase (`%no-protection`) so
+ * git can sign headlessly with no pinentry prompt. `name`/`email` are sanitized
+ * because the parameter file is line-based (a newline could inject a directive).
+ */
+export function generateGpgKey(
+  gpgBin: string,
+  name: string,
+  email: string,
+): Promise<string> {
+  const safeName = name.replace(/[\r\n%<>()]/g, '').trim();
+  const safeEmail = email.replace(/[\r\n%<>()\s]/g, '').trim();
+  if (!safeName) return Promise.reject(new Error('A name is required.'));
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(safeEmail)) {
+    return Promise.reject(new Error('A valid email is required.'));
+  }
+  const params =
+    [
+      'Key-Type: eddsa',
+      'Key-Curve: ed25519',
+      'Key-Usage: sign',
+      `Name-Real: ${safeName}`,
+      `Name-Email: ${safeEmail}`,
+      'Expire-Date: 0',
+      '%no-protection',
+      '%commit',
+    ].join('\n') + '\n';
+
+  return new Promise((resolve, reject) => {
+    // `--status-fd=1` puts machine-readable status on stdout, incl. KEY_CREATED.
+    const child = spawn(gpgBin, ['--batch', '--status-fd=1', '--gen-key']);
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => child.kill(), 120_000);
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const created = /\[GNUPG:\] KEY_CREATED \S+ ([0-9A-Fa-f]{40})/.exec(out);
+      if (created) resolve(created[1]);
+      else reject(new Error(err.trim() || `gpg exited with code ${code ?? '?'}.`));
+    });
+    child.stdin.end(params);
+  });
+}
+
+/**
+ * Export a key's ASCII-armored public block (`gpg --armor --export`), suitable
+ * for uploading to GitHub/GitLab. Returns '' when the key can't be exported.
+ */
+export async function exportGpgPublicKey(
+  gpgBin: string,
+  fingerprint: string,
+): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      gpgBin,
+      ['--armor', '--export', fingerprint],
+      { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
+    );
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Load `passphrase` for the key `fingerprint` into gpg-agent's cache by doing a
+ * throwaway loopback sign. Once cached, git's own signing (which goes through the
+ * same agent) succeeds without a pinentry prompt — the workaround for signing a
+ * protected key from a GUI app with no tty. The passphrase is written to a pipe
+ * (fd 3), never argv, so it can't leak in the process list. Rejects on a bad
+ * passphrase or gpg failure.
+ */
+export function primeGpgPassphrase(
+  gpgBin: string,
+  fingerprint: string,
+  passphrase: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      gpgBin,
+      [
+        '--batch',
+        '--yes',
+        '--pinentry-mode',
+        'loopback',
+        '--passphrase-fd',
+        '3',
+        '--local-user',
+        fingerprint,
+        '--sign',
+        '--output',
+        '-', // stdout, which we discard via stdio 'ignore'
+      ],
+      { stdio: ['pipe', 'ignore', 'pipe', 'pipe'] },
+    );
+    let err = '';
+    const timer = setTimeout(() => child.kill(), 30_000);
+    child.stderr?.on('data', (d) => (err += d));
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else if (/bad pass|no pass/i.test(err)) reject(new Error('Incorrect passphrase.'));
+      else reject(new Error(err.trim() || `gpg exited with code ${code ?? '?'}.`));
+    });
+    const pass = child.stdio[3] as NodeJS.WritableStream | null;
+    // Swallow EPIPE if gpg exits before reading (e.g. an unknown key).
+    child.stdin?.on('error', () => {
+      /* ignore */
+    });
+    pass?.on('error', () => {
+      /* ignore */
+    });
+    pass?.end(passphrase);
+    child.stdin?.end('prime');
+  });
 }

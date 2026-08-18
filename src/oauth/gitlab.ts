@@ -11,6 +11,7 @@ import type {
   RemoteRepo,
 } from '../types/ipc';
 import {
+  KeyAccessError,
   nextPageUrl,
   pollForAccessToken as pollDeviceToken,
   refreshAccessToken as refreshDeviceToken,
@@ -144,6 +145,28 @@ async function keyUploadError(res: Response): Promise<string> {
   }.`;
 }
 
+/** GitLab's own reason for a failed GPG key upload. */
+async function gpgKeyError(res: Response): Promise<string> {
+  let detail = '';
+  try {
+    const body = (await res.json()) as GitlabKeyError;
+    if (typeof body.message === 'string') {
+      detail = body.message;
+    } else if (body.message && typeof body.message === 'object') {
+      detail = Object.entries(body.message)
+        .map(([field, msgs]) => `${field} ${msgs.join(', ')}`)
+        .join('; ');
+    } else if (typeof body.error === 'string') {
+      detail = body.error;
+    }
+  } catch {
+    // Non-JSON body — fall back to the status code alone.
+  }
+  return `Failed to upload the GPG key to GitLab (HTTP ${res.status})${
+    detail ? `: ${detail}` : ''
+  }.`;
+}
+
 /**
  * Upload a public SSH key to the authenticated user's GitLab account. Resolves
  * with the created key's id, needed to remove it later.
@@ -170,6 +193,39 @@ export async function uploadSshKey(
   return body.id;
 }
 
+/**
+ * Upload a public SSH **signing** key to the authenticated user's GitLab
+ * account. GitLab uses the same `/user/keys` endpoint as auth keys but tags the
+ * usage with `usage_type: 'signing'`, and only verifies SSH-signed commits
+ * against signing-capable keys. Resolves with the created key's id.
+ */
+export async function uploadSshSigningKey(
+  accessToken: string,
+  title: string,
+  publicKey: string,
+  signal?: AbortSignal,
+): Promise<number> {
+  const res = await fetch(`${API_BASE}/user/keys`, {
+    method: 'POST',
+    headers: { ...apiHeaders(accessToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, key: publicKey, usage_type: 'signing' }),
+    signal,
+  });
+  if (!res.ok) {
+    // A permission failure is distinguished from other errors so the caller can
+    // tailor guidance (reconnect OAuth vs. mint a PAT with the signing scope).
+    if (res.status === 401 || res.status === 403 || res.status === 404) {
+      throw new KeyAccessError(await keyUploadError(res));
+    }
+    throw new Error(await keyUploadError(res));
+  }
+  const body = (await res.json()) as { id?: number };
+  if (typeof body.id !== 'number') {
+    throw new Error('GitLab did not return the new signing key id.');
+  }
+  return body.id;
+}
+
 /** Remove an SSH key (by its id) from the authenticated user's GitLab account. */
 export async function deleteSshKey(
   accessToken: string,
@@ -184,6 +240,139 @@ export async function deleteSshKey(
   // 404 means it's already gone — treat that as success.
   if (!res.ok && res.status !== 404) {
     throw new Error(`Failed to remove the SSH key from GitLab (HTTP ${res.status}).`);
+  }
+}
+
+/** The identifying part of an OpenSSH public key: its type + base64, sans comment. */
+function publicKeyIdentity(key: string): string {
+  return key.trim().split(/\s+/).slice(0, 2).join(' ');
+}
+
+/** The base64 body of an ASCII-armored PGP key, so two armorings compare equal. */
+function gpgArmorPayload(armored: string): string {
+  const out: string[] = [];
+  let inBlock = false;
+  for (const line of armored.split(/\r?\n/)) {
+    if (line.startsWith('-----BEGIN')) {
+      inBlock = true;
+      continue;
+    }
+    if (line.startsWith('-----END')) break;
+    if (!inBlock) continue;
+    const t = line.trim();
+    if (!t || t.includes(':') || t.startsWith('=')) continue;
+    out.push(t);
+  }
+  return out.join('');
+}
+
+/**
+ * Upload an ASCII-armored **GPG** public key to the authenticated user's GitLab
+ * account (`/user/gpg_keys`; covered by the `api` scope). Resolves with the
+ * created key's id.
+ */
+export async function uploadGpgKey(
+  accessToken: string,
+  armoredKey: string,
+  signal?: AbortSignal,
+): Promise<number> {
+  const res = await fetch(`${API_BASE}/user/gpg_keys`, {
+    method: 'POST',
+    headers: { ...apiHeaders(accessToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: armoredKey }),
+    signal,
+  });
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403 || res.status === 404) {
+      throw new KeyAccessError(await keyUploadError(res));
+    }
+    throw new Error(await gpgKeyError(res));
+  }
+  const body = (await res.json()) as { id?: number };
+  if (typeof body.id !== 'number') {
+    throw new Error('GitLab did not return the new GPG key id.');
+  }
+  return body.id;
+}
+
+/**
+ * Remove the GPG key matching `armoredKey` from the authenticated user's GitLab
+ * account. Looks it up in `/user/gpg_keys` by comparing armored bodies, then
+ * deletes it by id. A missing key is treated as success (idempotent).
+ */
+export async function removeGpgKey(
+  accessToken: string,
+  armoredKey: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const list = await fetch(`${API_BASE}/user/gpg_keys?per_page=100`, {
+    headers: apiHeaders(accessToken),
+    signal,
+  });
+  if (!list.ok) {
+    if (list.status === 401 || list.status === 403 || list.status === 404) {
+      throw new KeyAccessError(await keyUploadError(list));
+    }
+    throw new Error(`Failed to read GitLab GPG keys (HTTP ${list.status}).`);
+  }
+  const keys = (await list.json()) as { id: number; key?: string }[];
+  const target = gpgArmorPayload(armoredKey);
+  const match = keys.find((k) => k.key && gpgArmorPayload(k.key) === target);
+  if (!match) return; // Already absent — nothing to do.
+
+  const del = await fetch(`${API_BASE}/user/gpg_keys/${match.id}`, {
+    method: 'DELETE',
+    headers: apiHeaders(accessToken),
+    signal,
+  });
+  if (!del.ok && del.status !== 404) {
+    throw new Error(`Failed to remove the GitLab GPG key (HTTP ${del.status}).`);
+  }
+}
+
+/**
+ * Remove the SSH **signing** key matching `publicKey` from the authenticated
+ * user's GitLab account. GitLab keeps keys in one `/user/keys` collection tagged
+ * by `usage_type`; we match a signing-capable key by its body and delete it.
+ * A missing key is treated as success, so removal is idempotent.
+ */
+export async function removeSshSigningKey(
+  accessToken: string,
+  publicKey: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const list = await fetch(`${API_BASE}/user/keys?per_page=100`, {
+    headers: apiHeaders(accessToken),
+    signal,
+  });
+  if (!list.ok) {
+    if (list.status === 401 || list.status === 403 || list.status === 404) {
+      throw new KeyAccessError(await keyUploadError(list));
+    }
+    throw new Error(`Failed to read GitLab keys (HTTP ${list.status}).`);
+  }
+  const keys = (await list.json()) as {
+    id: number;
+    key: string;
+    usage_type?: string;
+  }[];
+  const target = publicKeyIdentity(publicKey);
+  const match = keys.find(
+    (k) =>
+      publicKeyIdentity(k.key) === target &&
+      (k.usage_type === undefined ||
+        k.usage_type === 'signing' ||
+        k.usage_type === 'auth_and_signing'),
+  );
+  if (!match) return; // Already absent — nothing to do.
+
+  const del = await fetch(`${API_BASE}/user/keys/${match.id}`, {
+    method: 'DELETE',
+    headers: apiHeaders(accessToken),
+    signal,
+  });
+  if (!del.ok && del.status !== 404) {
+    throw new Error(`Failed to remove the GitLab signing key (HTTP ${del.status}).`);
   }
 }
 

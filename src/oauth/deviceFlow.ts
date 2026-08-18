@@ -9,6 +9,19 @@
 // Pure networking — no Electron imports — so the main process keeps ownership of
 // token storage, browser launch and IPC.
 
+/**
+ * Thrown when a key-management call is rejected for lack of permission (HTTP
+ * 401/403/404) — i.e. the stored credential doesn't carry the required scope.
+ * Lets callers give method-aware guidance (reconnect OAuth vs. mint a new PAT)
+ * instead of string-matching an opaque provider message.
+ */
+export class KeyAccessError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'KeyAccessError';
+  }
+}
+
 /** The two POST endpoints a provider exposes for the device flow. */
 export interface DeviceEndpoints {
   /** POST here to obtain a device/user code pair. */

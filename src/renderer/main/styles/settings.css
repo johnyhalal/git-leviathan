@@ -178,6 +178,29 @@
   border-color: var(--accent, #2ea043);
 }
 
+.settings-input {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  min-width: 200px;
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: var(--accent, #2ea043);
+}
+
+/* Cap a select whose options can be long (e.g. a GPG uid) so a wide entry can't
+   stretch the row; the closed control ellipsizes instead. */
+.settings-select-truncate {
+  max-width: 260px;
+  text-overflow: ellipsis;
+}
+
 .settings-empty {
   margin: 0;
   padding: 24px 16px;

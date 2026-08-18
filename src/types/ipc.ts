@@ -34,6 +34,10 @@ export const AppChannels = {
   getPullMode: 'app:get-pull-mode',
   /** Renderer -> main (invoke): persist the default pull mode (global). */
   setPullMode: 'app:set-pull-mode',
+  /** Renderer -> main (invoke): read the last-opened settings section id. */
+  getSettingsSection: 'app:get-settings-section',
+  /** Renderer -> main (invoke): persist the last-opened settings section id. */
+  setSettingsSection: 'app:set-settings-section',
   /** Renderer -> main (invoke): read the auto-update check interval (minutes). */
   getUpdateCheckInterval: 'app:get-update-check-interval',
   /** Renderer -> main (invoke): persist the auto-update check interval. */
@@ -333,6 +337,18 @@ export type RepoConfigResult =
 /** The signing backends git supports via `gpg.format`. */
 export type SigningFormat = 'openpgp' | 'ssh';
 
+/** A secret OpenPGP key available for signing, as reported by the `gpg` binary. */
+export interface GpgSecretKey {
+  /** Long key id (16 hex). */
+  keyId: string;
+  /** Full 40-hex fingerprint (the value written to `user.signingkey`). */
+  fingerprint: string;
+  /** Primary user id, e.g. `Jane Doe <jane@example.com>`. */
+  uid: string;
+  /** True when gpg reports the key as expired or revoked. */
+  expired: boolean;
+}
+
 /** Availability + resolved path/version of one signing tool (ssh-keygen / gpg). */
 export interface SigningToolInfo {
   available: boolean;
@@ -359,8 +375,24 @@ export interface SigningConfig {
   format: '' | SigningFormat;
   signingKey: string;
   signingKeyLabel?: string;
+  /** Override for the SSH signing binary (`gpg.ssh.program`); '' uses the default. */
+  sshProgram: string;
+  /** Override for the OpenPGP binary (`gpg.program`); '' uses the default. */
+  gpgProgram: string;
+  /**
+   * Connected hosts the *current* signing key has been uploaded to. Tracked
+   * against the key's identity, so changing/regenerating the key empties this
+   * and the user is prompted to upload again.
+   */
+  uploadedTo: IntegrationProvider[];
   signCommits: boolean;
   signTags: boolean;
+  /**
+   * Whether a passphrase is stored for the current (OpenPGP) signing key, so the
+   * app can prime gpg-agent and sign without a pinentry prompt. Always false for
+   * SSH keys (the app generates them passphraseless).
+   */
+  hasPassphrase: boolean;
 }
 
 /**
@@ -373,11 +405,19 @@ export interface SigningConfigPatch {
   signingKey?: string;
   signCommits?: boolean;
   signTags?: boolean;
+  /** Set the SSH signing binary override; empty string clears it (use default). */
+  sshProgram?: string;
+  /** Set the OpenPGP binary override; empty string clears it (use default). */
+  gpgProgram?: string;
 }
 
-/** Result of a signing-config mutation: the fresh config, or an error message. */
+/**
+ * Result of a signing-config mutation: the fresh config, or an error message.
+ * `warning` carries a non-fatal notice (e.g. the key was configured locally but a
+ * provider rejected the signing-key upload) — the operation still succeeded.
+ */
 export type SigningConfigResult =
-  | { status: 'ok'; config: SigningConfig }
+  | { status: 'ok'; config: SigningConfig; warning?: string }
   | { status: 'error'; message: string };
 
 /**
@@ -1122,6 +1162,20 @@ export const SigningChannels = {
   generateSshKey: 'signing:generate-ssh-key',
   /** Renderer -> main (invoke): pick an existing key file as the SSH signing key. */
   chooseSshKey: 'signing:choose-ssh-key',
+  /** Renderer -> main (invoke): upload the configured signing key to one host. */
+  uploadSigningKey: 'signing:upload-signing-key',
+  /** Renderer -> main (invoke): remove the configured signing key from one host. */
+  removeSigningKey: 'signing:remove-signing-key',
+  /** Renderer -> main (invoke): pick the signing program binary for a format. */
+  chooseProgram: 'signing:choose-program',
+  /** Renderer -> main (invoke): list the gpg secret keys available for signing. */
+  listGpgKeys: 'signing:list-gpg-keys',
+  /** Renderer -> main (invoke): generate a new gpg signing key and select it. */
+  generateGpgKey: 'signing:generate-gpg-key',
+  /** Renderer -> main (invoke): store + cache the passphrase for the gpg key. */
+  setGpgPassphrase: 'signing:set-gpg-passphrase',
+  /** Renderer -> main (invoke): forget the stored passphrase for the gpg key. */
+  clearGpgPassphrase: 'signing:clear-gpg-passphrase',
 } as const;
 
 // ---- Bridge surface exposed on `window.api` (see preload.ts) --------------
@@ -1154,6 +1208,10 @@ export interface AppApi {
   getPullMode(): Promise<PullMode>;
   /** Persist the default pull mode (global). */
   setPullMode(mode: PullMode): Promise<void>;
+  /** Read the last-opened settings section id (empty string when never set). */
+  getSettingsSection(): Promise<string>;
+  /** Persist the last-opened settings section id. */
+  setSettingsSection(id: string): Promise<void>;
   /**
    * Read the auto-update check interval, in minutes. `0` means the periodic
    * check is disabled. Defaults to {@link DEFAULT_UPDATE_CHECK_INTERVAL}.
@@ -1796,6 +1854,20 @@ export interface SigningApi {
   generateSshKey(): Promise<SigningConfigResult>;
   /** Pick an existing key file from disk to use as the SSH signing key. */
   chooseSshKey(): Promise<SigningConfigResult>;
+  /** Upload the currently-configured signing key to one connected host. */
+  uploadSigningKey(provider: IntegrationProvider): Promise<SigningConfigResult>;
+  /** Remove the currently-configured signing key from one connected host. */
+  removeSigningKey(provider: IntegrationProvider): Promise<SigningConfigResult>;
+  /** Pick, via a file dialog, the binary to use for the given signing format. */
+  chooseProgram(format: SigningFormat): Promise<SigningConfigResult>;
+  /** List the gpg secret keys available for OpenPGP signing (empty if none/absent). */
+  listGpgKeys(): Promise<GpgSecretKey[]>;
+  /** Generate a new gpg signing key for `name`/`email` and select it for signing. */
+  generateGpgKey(name: string, email: string): Promise<SigningConfigResult>;
+  /** Validate + store the passphrase for the current gpg key (primes gpg-agent). */
+  setGpgPassphrase(passphrase: string): Promise<SigningConfigResult>;
+  /** Forget the stored passphrase for the current gpg key. */
+  clearGpgPassphrase(): Promise<SigningConfigResult>;
 }
 
 export interface ExposedApi {

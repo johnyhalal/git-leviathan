@@ -17,6 +17,7 @@ import {
   type GitflowConfigResult,
   type RepoConfig,
   type RepoConfigResult,
+  type GpgSecretKey,
   type SigningCapabilities,
   type SigningConfig,
   type SigningConfigPatch,
@@ -84,6 +85,10 @@ const api: ExposedApi = {
       ipcRenderer.invoke(AppChannels.getPullMode) as Promise<PullMode>,
     setPullMode: (mode: PullMode) =>
       ipcRenderer.invoke(AppChannels.setPullMode, mode) as Promise<void>,
+    getSettingsSection: () =>
+      ipcRenderer.invoke(AppChannels.getSettingsSection) as Promise<string>,
+    setSettingsSection: (id: string) =>
+      ipcRenderer.invoke(AppChannels.setSettingsSection, id) as Promise<void>,
     getUpdateCheckInterval: () =>
       ipcRenderer.invoke(
         AppChannels.getUpdateCheckInterval,
@@ -451,6 +456,38 @@ const api: ExposedApi = {
     chooseSshKey: () =>
       ipcRenderer.invoke(
         SigningChannels.chooseSshKey,
+      ) as Promise<SigningConfigResult>,
+    uploadSigningKey: (provider: IntegrationProvider) =>
+      ipcRenderer.invoke(
+        SigningChannels.uploadSigningKey,
+        provider,
+      ) as Promise<SigningConfigResult>,
+    removeSigningKey: (provider: IntegrationProvider) =>
+      ipcRenderer.invoke(
+        SigningChannels.removeSigningKey,
+        provider,
+      ) as Promise<SigningConfigResult>,
+    chooseProgram: (format) =>
+      ipcRenderer.invoke(
+        SigningChannels.chooseProgram,
+        format,
+      ) as Promise<SigningConfigResult>,
+    listGpgKeys: () =>
+      ipcRenderer.invoke(SigningChannels.listGpgKeys) as Promise<GpgSecretKey[]>,
+    generateGpgKey: (name: string, email: string) =>
+      ipcRenderer.invoke(
+        SigningChannels.generateGpgKey,
+        name,
+        email,
+      ) as Promise<SigningConfigResult>,
+    setGpgPassphrase: (passphrase: string) =>
+      ipcRenderer.invoke(
+        SigningChannels.setGpgPassphrase,
+        passphrase,
+      ) as Promise<SigningConfigResult>,
+    clearGpgPassphrase: () =>
+      ipcRenderer.invoke(
+        SigningChannels.clearGpgPassphrase,
       ) as Promise<SigningConfigResult>,
   },
   update: {
