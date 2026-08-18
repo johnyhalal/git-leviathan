@@ -10,11 +10,32 @@ interface SettingsProps {
 
 /** Modal settings dialog: a category rail on the left, the active panel on the right. */
 export function Settings({ onClose, initialSection }: SettingsProps) {
-  const [activeId, setActiveId] = useState(
-    () =>
-      SETTINGS_SECTIONS.find((section) => section.id === initialSection)?.id ??
-      SETTINGS_SECTIONS[0].id,
-  );
+  // An explicit `initialSection` (a deep-link, e.g. "open to Integrations") wins;
+  // otherwise we restore the last-opened section from settings.json on mount.
+  const requested = SETTINGS_SECTIONS.find((s) => s.id === initialSection)?.id;
+  const [activeId, setActiveId] = useState(requested ?? SETTINGS_SECTIONS[0].id);
+
+  // Persist so the next open remembers where the user was.
+  const selectSection = (id: string) => {
+    setActiveId(id);
+    void window.api.app.setSettingsSection(id);
+  };
+
+  useEffect(() => {
+    let alive = true;
+    if (requested) {
+      // A deep-linked section also becomes the remembered one.
+      void window.api.app.setSettingsSection(requested);
+    } else {
+      void window.api.app.getSettingsSection().then((id) => {
+        if (alive && SETTINGS_SECTIONS.some((s) => s.id === id)) setActiveId(id);
+      });
+    }
+    return () => {
+      alive = false;
+    };
+    // Mount-only: `requested` is fixed for the modal's lifetime.
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -64,7 +85,7 @@ export function Settings({ onClose, initialSection }: SettingsProps) {
                 role="tab"
                 aria-selected={section.id === activeId}
                 className={section.id === activeId ? 'active' : undefined}
-                onClick={() => setActiveId(section.id)}
+                onClick={() => selectSection(section.id)}
               >
                 {section.label}
               </button>

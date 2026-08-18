@@ -23,6 +23,35 @@ permissions:
   contents: write # allow creating the Release + uploading assets via GITHUB_TOKEN
 
 jobs:
+  # Resolves the tag/version once and renders the release body from the commits
+  # since the previous tag, so the three build jobs agree on all three and no
+  # release page ships blank. Needs full history + tags (fetch-depth: 0) — a
+  # shallow clone has no previous tag to diff against.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      notes: ${{ steps.meta.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag and notes
+        id: meta
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="${{ inputs.tag }}"
+          [ -z "$TAG" ] && TAG="v$VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            node scripts/release-notes.mjs --tag "$TAG"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
   # One DMG per macOS arch instead of a single universal image. Both arches build
   # on Apple Silicon runners (macos-latest): arm64 natively, x64 cross-compiled
   # via `--arch=x64`. Nothing here is host-arch-bound — Electron's binary is
@@ -32,6 +61,7 @@ jobs:
   # hanging the job forever). No @electron/universal stitching; each app ships a
   # single-arch resources/git.
   build-macos:
+    needs: prepare
     if: ${{ inputs.target == 'all' || inputs.target == 'macos' }}
     strategy:
       fail-fast: false
@@ -136,15 +166,6 @@ jobs:
             sleep 60
           done
 
-      - name: Resolve release tag
-        id: meta
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          TAG="${{ inputs.tag }}"
-          [ -z "$TAG" ] && TAG="v$VERSION"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       # Only this arch's DMG/ZIP exist under out/make, so the first match is it.
       # The DMG is the first-install image; the ZIP (MakerZIP) is the in-app
       # auto-update payload that update.electronjs.org serves to running apps.
@@ -162,14 +183,16 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: GitLeviathan ${{ steps.meta.outputs.version }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: GitLeviathan ${{ needs.prepare.outputs.version }}
+          body: ${{ needs.prepare.outputs.notes }}
           files: |
             GitLeviathan-macOS-${{ matrix.arch }}.dmg
             GitLeviathan-macOS-${{ matrix.arch }}.zip
           fail_on_unmatched_files: true
 
   build-windows:
+    needs: prepare
     if: ${{ inputs.target == 'all' || inputs.target == 'windows' }}
     runs-on: windows-latest
     # Every `run:` here is bash (find/cp/[ -z ]); the Windows runner has Git Bash,
@@ -211,15 +234,6 @@ jobs:
       - name: Build Windows distributable
         run: npm run make
 
-      - name: Resolve release tag
-        id: meta
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          TAG="${{ inputs.tag }}"
-          [ -z "$TAG" ] && TAG="v$VERSION"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Stage asset with a stable name
         run: |
           EXE=$(find out/make -name '*.exe' | head -n1)
@@ -231,8 +245,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: GitLeviathan ${{ steps.meta.outputs.version }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: GitLeviathan ${{ needs.prepare.outputs.version }}
+          body: ${{ needs.prepare.outputs.notes }}
           files: GitLeviathan-Windows-Setup.exe
           fail_on_unmatched_files: true
 
@@ -255,7 +270,7 @@ jobs:
           esac
 
   build-linux:
-    needs: setup-linux
+    needs: [prepare, setup-linux]
     runs-on: ubuntu-latest
     # Build each arch on the amd64 runner. The app is pure JS (no native modules
     # to rebuild) and dpkg/rpmbuild just stamp arch metadata, so arm64 packages
@@ -303,15 +318,6 @@ jobs:
       - name: Build Linux distributables
         run: npm run make -- --arch=${{ matrix.arch }}
 
-      - name: Resolve release tag
-        id: meta
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          TAG="${{ inputs.tag }}"
-          [ -z "$TAG" ] && TAG="v$VERSION"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       # Only this arch's packages exist under out/make, so the first match is it.
       - name: Stage assets with stable names
         run: |
@@ -327,8 +333,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: GitLeviathan ${{ steps.meta.outputs.version }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: GitLeviathan ${{ needs.prepare.outputs.version }}
+          body: ${{ needs.prepare.outputs.notes }}
           files: |
             GitLeviathan-Linux-${{ matrix.arch }}.deb
             GitLeviathan-Linux-${{ matrix.arch }}.rpm

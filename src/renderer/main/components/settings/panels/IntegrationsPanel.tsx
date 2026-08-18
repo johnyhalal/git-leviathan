@@ -34,8 +34,9 @@ const PROVIDERS: ProviderMeta[] = [
     Icon: GithubIcon,
     blurb: 'Connect your GitHub account to browse and clone your repositories.',
     tokenHelp: {
-      url: 'https://github.com/settings/tokens/new?scopes=repo,read:org&description=GitLeviathan',
-      scopes: 'repo and read:org',
+      url: 'https://github.com/settings/tokens/new?scopes=repo,read:org,write:public_key,write:ssh_signing_key,write:gpg_key&description=GitLeviathan',
+      scopes:
+        'repo, read:org, write:public_key, write:ssh_signing_key and write:gpg_key',
     },
   },
   {

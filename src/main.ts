@@ -23,12 +23,15 @@ import {
   generateCommitMessage,
   claudeErrorMessage,
   isRunnable,
+  isCommitContextExcluded,
+  type CommitUsage,
 } from './claude';
 import {
   AppChannels,
   ClaudeChannels,
   IntegrationChannels,
   RepoChannels,
+  SigningChannels,
   ThemeChannels,
   UpdateChannels,
   GLOBAL_ACTIVITY_PATH,
@@ -49,6 +52,11 @@ import {
   type GitflowConfigResult,
   type RepoConfig,
   type RepoConfigResult,
+  type GpgSecretKey,
+  type SigningCapabilities,
+  type SigningConfig,
+  type SigningConfigPatch,
+  type SigningConfigResult,
   type LfsStatus,
   type LfsResult,
   type StashInfo,
@@ -99,10 +107,19 @@ import {
   type UpdateInfo,
   type UpdateStatus,
 } from './types/ipc';
+import { KeyAccessError } from './oauth/deviceFlow';
 import type { DeviceAuthorization, TokenSet } from './oauth/deviceFlow';
 import * as github from './oauth/github';
 import * as gitlab from './oauth/gitlab';
 import { generateSshKeyPair } from './ssh/keygen';
+import {
+  probeSigningCapabilities,
+  resolveGpgBin,
+  listGpgSecretKeys,
+  exportGpgPublicKey,
+  generateGpgKey,
+  primeGpgPassphrase,
+} from './signing';
 
 // Name the app before anything reads it, so app.getName(), the userData path,
 // notifications and the About panel all say "GitLeviathan" rather than
@@ -138,7 +155,9 @@ interface ProviderClient {
   /**
    * Scopes to request — enough to list and clone repos, read the handle,
    * push changes to GitHub Actions workflow files (`workflow`), and upload an
-   * SSH key (`write:public_key` on GitHub, write `api` on GitLab).
+   * SSH auth key (`write:public_key` on GitHub, `api` on GitLab) plus SSH and
+   * GPG signing keys (`write:ssh_signing_key` + `write:gpg_key` on GitHub; `api`
+   * covers both on GitLab).
    */
   scope: string;
   requestDeviceAuthorization: typeof github.requestDeviceAuthorization;
@@ -149,6 +168,10 @@ interface ProviderClient {
   fetchPullRequests: typeof github.fetchPullRequests;
   createPullRequest: typeof github.createPullRequest;
   uploadSshKey: typeof github.uploadSshKey;
+  uploadSshSigningKey: typeof github.uploadSshSigningKey;
+  removeSshSigningKey: typeof github.removeSshSigningKey;
+  uploadGpgKey: typeof github.uploadGpgKey;
+  removeGpgKey: typeof github.removeGpgKey;
   deleteSshKey: typeof github.deleteSshKey;
 }
 
@@ -156,7 +179,8 @@ interface ProviderClient {
 const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
   github: {
     clientId: GITHUB_CLIENT_ID,
-    scope: 'repo workflow read:user write:public_key',
+    scope:
+      'repo workflow read:user write:public_key write:ssh_signing_key write:gpg_key',
     requestDeviceAuthorization: github.requestDeviceAuthorization,
     pollForAccessToken: github.pollForAccessToken,
     refreshAccessToken: github.refreshAccessToken,
@@ -165,6 +189,10 @@ const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
     fetchPullRequests: github.fetchPullRequests,
     createPullRequest: github.createPullRequest,
     uploadSshKey: github.uploadSshKey,
+    uploadSshSigningKey: github.uploadSshSigningKey,
+    removeSshSigningKey: github.removeSshSigningKey,
+    uploadGpgKey: github.uploadGpgKey,
+    removeGpgKey: github.removeGpgKey,
     deleteSshKey: github.deleteSshKey,
   },
   gitlab: {
@@ -179,6 +207,10 @@ const PROVIDER_CLIENTS: Record<IntegrationProvider, ProviderClient> = {
     fetchPullRequests: gitlab.fetchPullRequests,
     createPullRequest: gitlab.createPullRequest,
     uploadSshKey: gitlab.uploadSshKey,
+    uploadSshSigningKey: gitlab.uploadSshSigningKey,
+    removeSshSigningKey: gitlab.removeSshSigningKey,
+    uploadGpgKey: gitlab.uploadGpgKey,
+    removeGpgKey: gitlab.removeGpgKey,
     deleteSshKey: gitlab.deleteSshKey,
   },
 };
@@ -210,6 +242,14 @@ interface Settings {
   sidebarSections?: Record<string, boolean>;
   /** Default pull mode for the toolbar's pull action (global, not per-repo). */
   pullMode?: PullMode;
+  /** Last-opened section id of the Settings dialog, restored on next open. */
+  settingsSection?: string;
+  /**
+   * Per-provider record of the signing key (its `user.signingkey` value) that
+   * was last uploaded there, so the panel can show an "uploaded" state that
+   * resets when the key changes.
+   */
+  signingKeyUploads?: Partial<Record<IntegrationProvider, string>>;
   /** Auto-update check interval in minutes; `0` disables the periodic check. */
   updateCheckInterval?: UpdateCheckInterval;
   /** Connected Git host accounts, keyed by provider id. */
@@ -374,6 +414,17 @@ function loadSettings(): void {
     }
     if (PULL_MODES.includes(parsed.pullMode as PullMode)) {
       settings.pullMode = parsed.pullMode as PullMode;
+    }
+    if (typeof parsed.settingsSection === 'string' && parsed.settingsSection) {
+      settings.settingsSection = parsed.settingsSection;
+    }
+    if (parsed.signingKeyUploads && typeof parsed.signingKeyUploads === 'object') {
+      const raw = parsed.signingKeyUploads as Record<string, unknown>;
+      const valid: Partial<Record<IntegrationProvider, string>> = {};
+      for (const provider of INTEGRATION_PROVIDERS) {
+        if (typeof raw[provider] === 'string') valid[provider] = raw[provider] as string;
+      }
+      settings.signingKeyUploads = valid;
     }
     if (UPDATE_CHECK_INTERVALS.includes(parsed.updateCheckInterval as UpdateCheckInterval)) {
       settings.updateCheckInterval = parsed.updateCheckInterval as UpdateCheckInterval;
@@ -679,20 +730,26 @@ function sshProviderForUrl(remoteUrl: string): IntegrationProvider | null {
 
 /**
  * The `GIT_SSH_COMMAND` for an SSH remote whose host has a key this app
- * generated and uploaded: `ssh -i <key> -o IdentitiesOnly=yes`, so git
- * authenticates with our own key rather than falling back to the ssh agent
- * (e.g. 1Password) — the fallback that otherwise surfaces an extra credential
- * prompt on push/pull. Null for HTTPS URLs, unsupported hosts, or a host we hold
- * no key for (or whose key file has since been removed), leaving ssh's own key
- * resolution untouched. `IdentitiesOnly=yes` is the load-bearing flag: without it
- * ssh still offers agent keys first.
+ * generated and uploaded: `ssh -i <key> -o IdentitiesOnly=yes -o
+ * IdentityAgent=none`, so git authenticates with our own key rather than falling
+ * back to the ssh agent (e.g. 1Password) — the fallback that otherwise surfaces
+ * an extra credential prompt on push/pull. Null for HTTPS URLs, unsupported
+ * hosts, or a host we hold no key for (or whose key file has since been
+ * removed), leaving ssh's own key resolution untouched.
+ *
+ * Both options are load-bearing, and neither implies the other:
+ * `IdentitiesOnly=yes` stops ssh offering agent keys ahead of ours, but ssh
+ * still *connects* to the agent to look for our key there — enough to make
+ * 1Password (installed as `Host * IdentityAgent …`) raise its approval dialog,
+ * and to fail the push outright if the user denies it. `IdentityAgent=none`
+ * takes the agent out of the picture entirely.
  */
 function sshCommandForUrl(remoteUrl: string): string | null {
   const provider = sshProviderForUrl(remoteUrl);
   if (!provider) return null;
   const keyPath = settings.sshKeys?.[provider]?.[0]?.privateKeyPath;
   if (!keyPath || !fs.existsSync(keyPath)) return null;
-  return `ssh -i ${shellQuoteArg(keyPath)} -o IdentitiesOnly=yes`;
+  return `ssh -i ${shellQuoteArg(keyPath)} -o IdentitiesOnly=yes -o IdentityAgent=none`;
 }
 
 /**
@@ -2199,6 +2256,8 @@ async function rewordCommit(
   message: string,
 ): Promise<CommitResult> {
   const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+  // Rewording rewrites commits, which re-signs them when signing is on.
+  await primeSigningIfNeeded(cwd);
   const head = (await runGit(cwd, ['rev-parse', 'HEAD'])).trim();
 
   // Rewording HEAD is a plain amend; `--only` with no paths ignores the index,
@@ -3242,6 +3301,7 @@ function registerRepoIpc(): void {
       if (!text) return { status: 'error', message: 'Enter a commit message.' };
       const args = amend === true ? ['commit', '--amend', '-m', text] : ['commit', '-m', text];
       try {
+        await primeSigningIfNeeded(repoPath);
         await spawnGit(repoPath, args, 'commit');
       } catch (err) {
         // A pre-commit / commit-msg hook aborts with only its own output (git
@@ -3556,6 +3616,8 @@ function registerRepoIpc(): void {
         message === null
           ? ['tag', tag, target]
           : ['tag', '-a', '-m', annotation, tag, target];
+      // An annotated tag is signed when `tag.gpgsign` is on.
+      if (message !== null) await primeSigningIfNeeded(repoPath);
       return mutateRepo(repoPath, [step], `Could not create tag “${tag}”.`);
     },
   );
@@ -3584,6 +3646,7 @@ function registerRepoIpc(): void {
       }
       // Force-recreate the tag in place as annotated, keeping the same commit
       // (`^{commit}` peels a lightweight or annotated tag down to its commit).
+      await primeSigningIfNeeded(repoPath);
       return mutateRepo(
         repoPath,
         [['tag', '-a', '-f', '-m', annotation, tag, `${tag}^{commit}`]],
@@ -5032,6 +5095,71 @@ function decryptField(value: string | undefined): string | null {
   }
 }
 
+// ---- GPG passphrase store (sealed, keyed by key fingerprint) ---------------
+// Kept out of settings.json (like the token store) and encrypted with the OS
+// keychain, so the app can prime gpg-agent to sign a protected key headlessly.
+
+const gpgPassphrasesPath = () =>
+  path.join(app.getPath('userData'), 'gpg-passphrases.json');
+
+function loadGpgPassphrases(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(gpgPassphrasesPath(), 'utf-8'),
+    ) as unknown;
+    if (parsed && typeof parsed === 'object') {
+      const out: Record<string, string> = {};
+      for (const [fpr, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof value === 'string') out[fpr] = value;
+      }
+      return out;
+    }
+  } catch {
+    // None yet or unreadable — treat as empty.
+  }
+  return {};
+}
+
+function saveGpgPassphrases(store: Record<string, string>): void {
+  try {
+    fs.writeFileSync(gpgPassphrasesPath(), JSON.stringify(store), 'utf-8');
+    try {
+      fs.chmodSync(gpgPassphrasesPath(), 0o600);
+    } catch {
+      // chmod is unsupported on some platforms (e.g. Windows) — ignore.
+    }
+  } catch (err) {
+    console.error('Failed to persist GPG passphrases:', err);
+  }
+}
+
+/** Seal + store a passphrase for `fingerprint`. Throws if sealing is unavailable. */
+function storeGpgPassphrase(fingerprint: string, passphrase: string): void {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure storage is unavailable, so the passphrase was not saved.');
+  }
+  const store = loadGpgPassphrases();
+  store[fingerprint] = safeStorage.encryptString(passphrase).toString('base64');
+  saveGpgPassphrases(store);
+}
+
+/** The stored passphrase for `fingerprint`, or null when none/undecryptable. */
+function getGpgPassphrase(fingerprint: string): string | null {
+  return decryptField(loadGpgPassphrases()[fingerprint]);
+}
+
+function clearGpgPassphrase(fingerprint: string): void {
+  const store = loadGpgPassphrases();
+  if (fingerprint in store) {
+    delete store[fingerprint];
+    saveGpgPassphrases(store);
+  }
+}
+
+function hasGpgPassphrase(fingerprint: string): boolean {
+  return fingerprint in loadGpgPassphrases();
+}
+
 /**
  * Refresh the access token this many ms before it actually expires, so an
  * in-flight git op or API call never races the expiry boundary.
@@ -5845,6 +5973,18 @@ function boot(): void {
  * `generateCommitMessage` (which uses the saved path, no re-detection) backs the
  * commit panel.
  */
+/** One-line summary of a generation's token usage/cost for the activity log. */
+function formatCommitUsage(usage: CommitUsage): string {
+  const n = (v: number) => v.toLocaleString('en-US');
+  const parts = [
+    `${n(usage.inputTokens)} in`,
+    `${n(usage.outputTokens)} out`,
+    `${n(usage.cacheReadTokens)} cache read`,
+    `${n(usage.cacheWriteTokens)} cache write`,
+  ];
+  return `claude token usage: ${parts.join(' · ')}`;
+}
+
 function registerClaudeIpc(): void {
   const currentStatus = (error?: string): ClaudeStatus => ({
     connected: Boolean(settings.claudeConnection),
@@ -5898,33 +6038,714 @@ function registerClaudeIpc(): void {
         }
         return { status: 'not-connected' };
       }
-      const diff = await runGitDiff(repoPath, ['diff', '--cached']);
-      if (!diff.trim()) {
+      // The full staged file list is always handed to the model, even for
+      // excluded files; only the *content* of excluded files is withheld.
+      const changedFiles = (
+        await runGit(repoPath, ['diff', '--cached', '--name-only', '-z'])
+      )
+        .split('\0')
+        .filter(Boolean);
+      if (!changedFiles.length) {
         return {
           status: 'error',
           message: 'Nothing staged to describe. Stage some changes first.',
         };
       }
+      const excludedFiles = changedFiles.filter(isCommitContextExcluded);
+      const includedFiles = changedFiles.filter((f) => !isCommitContextExcluded(f));
+      // Diff only the included files, addressed as literal pathspecs so a name
+      // with glob-like characters can't turn into a wildcard. Everything staged
+      // may be excluded, in which case the model works from the file list alone.
+      const diff = includedFiles.length
+        ? await runGitDiff(repoPath, [
+            'diff',
+            '--cached',
+            '--',
+            ...includedFiles.map((f) => `:(literal)${f}`),
+          ])
+        : '';
       const recentSubjects = (
         await runGit(repoPath, ['log', '-n', '10', '--format=%s'])
       )
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean);
+      emitActivity({ repoPath, op: 'generate', kind: 'start', ts: Date.now() });
+      if (excludedFiles.length) {
+        emitActivity({
+          repoPath,
+          op: 'generate',
+          kind: 'line',
+          stream: 'stdout',
+          text: `content withheld from ${excludedFiles.length} file(s): ${excludedFiles.join(', ')}`,
+          ts: Date.now(),
+        });
+      }
       try {
-        const { message } = await generateCommitMessage(
+        const { message, usage } = await generateCommitMessage(
           bin,
           diff,
+          changedFiles,
+          excludedFiles,
           recentSubjects,
           repoPath,
         );
         if (!message.trim()) {
+          emitActivity({ repoPath, op: 'generate', kind: 'end', ok: false, ts: Date.now() });
           return { status: 'error', message: 'Claude returned an empty message.' };
         }
+        if (usage) {
+          emitActivity({
+            repoPath,
+            op: 'generate',
+            kind: 'line',
+            stream: 'stdout',
+            text: formatCommitUsage(usage),
+            ts: Date.now(),
+          });
+        }
+        emitActivity({ repoPath, op: 'generate', kind: 'end', ok: true, ts: Date.now() });
         return { status: 'ok', message: message.trim() };
       } catch (err) {
+        emitActivity({ repoPath, op: 'generate', kind: 'end', ok: false, ts: Date.now() });
         return { status: 'error', message: claudeErrorMessage(err) };
       }
+    },
+  );
+}
+
+// ---- Commit/tag signing ---------------------------------------------------
+
+/** Filename prefix of every signing keypair this app generates under `~/.ssh`. */
+const SIGNING_KEY_PREFIX = 'gitleviathan_signing';
+
+/**
+ * A display hint for a configured signing key: the value of `user.signingkey`
+ * itself — the public-key file path for SSH signing (generated or chosen alike),
+ * or the key id / literal for GPG. Empty when nothing is configured.
+ */
+function signingKeyLabel(key: string): string | undefined {
+  return key || undefined;
+}
+
+/** Read the effective global signing config (empty strings/false when unset). */
+async function readSigningConfig(): Promise<SigningConfig> {
+  const home = os.homedir();
+  const [format, signingKey, commitSign, tagSign, sshProgram, gpgProgram] =
+    await Promise.all([
+      runGit(home, ['config', '--global', '--get', 'gpg.format']),
+      runGit(home, ['config', '--global', '--get', 'user.signingkey']),
+      runGit(home, ['config', '--global', '--get', 'commit.gpgsign']),
+      runGit(home, ['config', '--global', '--get', 'tag.gpgsign']),
+      runGit(home, ['config', '--global', '--get', 'gpg.ssh.program']),
+      runGit(home, ['config', '--global', '--get', 'gpg.program']),
+    ]);
+  const fmt = format.trim();
+  let key = signingKey.trim();
+  // If an SSH signing-key *file* was deleted out from under us, treat the key as
+  // unset so the UI reverts to "generate / choose" instead of pointing at a
+  // ghost path. (A GPG key id has no path to check, so it's left alone.)
+  if (key && (key.includes('/') || key.includes('\\')) && !fs.existsSync(key)) {
+    key = '';
+  }
+  // Only count an upload as current when it was recorded against *this* key, so
+  // changing/regenerating the key clears the "uploaded" state automatically.
+  const uploadedTo = key
+    ? INTEGRATION_PROVIDERS.filter((p) => settings.signingKeyUploads?.[p] === key)
+    : [];
+  return {
+    format: fmt === 'ssh' || fmt === 'openpgp' ? fmt : '',
+    signingKey: key,
+    signingKeyLabel: signingKeyLabel(key),
+    sshProgram: sshProgram.trim(),
+    gpgProgram: gpgProgram.trim(),
+    uploadedTo,
+    signCommits: commitSign.trim() === 'true',
+    signTags: tagSign.trim() === 'true',
+    // Only an OpenPGP key (a non-path key id) can carry a stored passphrase.
+    hasPassphrase: fmt === 'openpgp' && !!key && hasGpgPassphrase(key),
+  };
+}
+
+/**
+ * Best-effort: before a signed git operation, if this repo signs with an OpenPGP
+ * key whose passphrase we hold, load it into gpg-agent's cache so git can sign
+ * without a pinentry prompt. Reads the repo-effective config (local over global).
+ * Any failure is swallowed — git surfaces the real signing error itself.
+ */
+async function primeSigningIfNeeded(repoPath: string): Promise<void> {
+  try {
+    const [format, key, commitSign, tagSign, gpgProgram] = await Promise.all([
+      runGit(repoPath, ['config', '--get', 'gpg.format']),
+      runGit(repoPath, ['config', '--get', 'user.signingkey']),
+      runGit(repoPath, ['config', '--get', 'commit.gpgsign']),
+      runGit(repoPath, ['config', '--get', 'tag.gpgsign']),
+      runGit(repoPath, ['config', '--get', 'gpg.program']),
+    ]);
+    if (format.trim() !== 'openpgp') return;
+    if (commitSign.trim() !== 'true' && tagSign.trim() !== 'true') return;
+    const fpr = key.trim();
+    if (!fpr) return;
+    const passphrase = getGpgPassphrase(fpr);
+    if (!passphrase) return;
+    const bin = await resolveGpgBin(gpgProgram.trim() || null);
+    if (!bin) return;
+    await primeGpgPassphrase(bin, fpr, passphrase);
+  } catch {
+    // Non-fatal — the git op proceeds and reports any signing error.
+  }
+}
+
+/** Validate an untrusted signing patch from IPC into a typed, safe patch. */
+function validateSigningPatch(
+  patch: unknown,
+): { patch: SigningConfigPatch } | { error: string } {
+  if (!patch || typeof patch !== 'object') return { error: 'Invalid signing settings.' };
+  const raw = patch as Record<string, unknown>;
+  const out: SigningConfigPatch = {};
+  if (raw.format !== undefined) {
+    if (raw.format !== 'ssh' && raw.format !== 'openpgp') {
+      return { error: 'Invalid signing format.' };
+    }
+    out.format = raw.format;
+  }
+  if (raw.signingKey !== undefined) {
+    const value = typeof raw.signingKey === 'string' ? raw.signingKey.trim() : '';
+    // Can't be read as a flag; names/paths otherwise vary too much to slug-guard.
+    if (!value || value.startsWith('-')) return { error: 'Invalid signing key.' };
+    out.signingKey = value;
+  }
+  if (raw.signCommits !== undefined) {
+    if (typeof raw.signCommits !== 'boolean') return { error: 'Invalid signing setting.' };
+    out.signCommits = raw.signCommits;
+  }
+  if (raw.signTags !== undefined) {
+    if (typeof raw.signTags !== 'boolean') return { error: 'Invalid signing setting.' };
+    out.signTags = raw.signTags;
+  }
+  // Program overrides are file paths; empty is allowed (it clears the override).
+  for (const field of ['sshProgram', 'gpgProgram'] as const) {
+    if (raw[field] !== undefined) {
+      const value = typeof raw[field] === 'string' ? (raw[field] as string).trim() : '';
+      if (value.startsWith('-')) return { error: 'Invalid program path.' };
+      out[field] = value;
+    }
+  }
+  return { patch: out };
+}
+
+/**
+ * Write a validated patch to git's **global** config (so it applies to every
+ * repo, matching the app-level Preferences panel) and return the fresh config.
+ * Booleans are written as explicit `true`/`false` rather than unset for clarity.
+ */
+async function applySigningPatch(patch: SigningConfigPatch): Promise<SigningConfig> {
+  const home = os.homedir();
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+  const writes: [string, string][] = [];
+  const unsets: string[] = [];
+  // Switching methods (a `format` change with no new key in the same patch)
+  // means the existing `user.signingkey` belongs to the *other* format — clear
+  // it so the UI resets to "no key" instead of showing the wrong key.
+  let methodSwitched = false;
+  if (patch.format !== undefined && patch.signingKey === undefined) {
+    const current = (await runGit(home, ['config', '--global', '--get', 'gpg.format'])).trim();
+    methodSwitched = current !== patch.format;
+  }
+  if (patch.format !== undefined) writes.push(['gpg.format', patch.format]);
+  if (patch.signingKey !== undefined) writes.push(['user.signingkey', patch.signingKey]);
+  else if (methodSwitched) unsets.push('user.signingkey');
+  if (patch.signCommits !== undefined) writes.push(['commit.gpgsign', String(patch.signCommits)]);
+  if (patch.signTags !== undefined) writes.push(['tag.gpgsign', String(patch.signTags)]);
+  // A program override is written when set, and unset (back to git's default
+  // binary) when cleared to an empty string.
+  if (patch.sshProgram !== undefined) {
+    if (patch.sshProgram) writes.push(['gpg.ssh.program', patch.sshProgram]);
+    else unsets.push('gpg.ssh.program');
+  }
+  if (patch.gpgProgram !== undefined) {
+    if (patch.gpgProgram) writes.push(['gpg.program', patch.gpgProgram]);
+    else unsets.push('gpg.program');
+  }
+  for (const [key, value] of writes) {
+    await execFileAsync(gitBin, ['config', '--global', key, value], { cwd: home, env });
+  }
+  for (const key of unsets) {
+    // `--unset` exits non-zero when the key is already absent; that's fine.
+    await execFileAsync(gitBin, ['config', '--global', '--unset', key], {
+      cwd: home,
+      env,
+    }).catch(() => undefined);
+  }
+  // Changing (or clearing) the key invalidates any recorded uploads — nothing is
+  // published under the new state, so the panel prompts to upload again.
+  if (patch.signingKey !== undefined || methodSwitched) {
+    settings.signingKeyUploads = {};
+    saveSettings();
+  }
+  return readSigningConfig();
+}
+
+/**
+ * Write a freshly generated signing keypair under `~/.ssh`, owner-locking the
+ * private half and picking a non-colliding name so an existing key is never
+ * overwritten. Mirrors the auth-key writer but is not provider-scoped.
+ */
+function writeSigningKeyToDisk(
+  pair: { publicKey: string; privateKey: string },
+  base = `${SIGNING_KEY_PREFIX}_ed25519`,
+): {
+  privateKeyPath: string;
+  publicKeyPath: string;
+} {
+  const sshDir = path.join(os.homedir(), '.ssh');
+  fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+
+  let name = base;
+  for (
+    let n = 1;
+    fs.existsSync(path.join(sshDir, name)) ||
+    fs.existsSync(path.join(sshDir, `${name}.pub`));
+    n++
+  ) {
+    name = `${base}_${n}`;
+  }
+
+  const privateKeyPath = path.join(sshDir, name);
+  const publicKeyPath = `${privateKeyPath}.pub`;
+  fs.writeFileSync(privateKeyPath, pair.privateKey, { mode: 0o600 });
+  fs.writeFileSync(publicKeyPath, `${pair.publicKey}\n`, { mode: 0o644 });
+  // writeFileSync's mode is masked by the umask, so pin the private key down.
+  try {
+    fs.chmodSync(privateKeyPath, 0o600);
+  } catch {
+    // chmod is unsupported on some platforms (e.g. Windows) — ignore.
+  }
+  return { privateKeyPath, publicKeyPath };
+}
+
+/**
+ * Point git at (and populate) `~/.config/git/allowed_signers` so SSH-signed
+ * commits verify (`%G?` = `G`) rather than showing merely-present (`U`). The
+ * principal is the user's global git email; without one we still set the config
+ * path (signing works, just unverified) but write no entry to bind to.
+ */
+async function updateAllowedSigners(publicKey: string): Promise<void> {
+  const home = os.homedir();
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+  const dir = path.join(home, '.config', 'git');
+  const file = path.join(dir, 'allowed_signers');
+  await execFileAsync(
+    gitBin,
+    ['config', '--global', 'gpg.ssh.allowedSignersFile', file],
+    { cwd: home, env },
+  );
+
+  const email = (await runGit(home, ['config', '--global', '--get', 'user.email'])).trim();
+  if (!email) return;
+
+  fs.mkdirSync(dir, { recursive: true });
+  const key = publicKey.trim();
+  const keyBody = key.split(/\s+/)[1] ?? '';
+  let existing: string[] = [];
+  try {
+    existing = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+  } catch {
+    /* file doesn't exist yet */
+  }
+  // Drop any prior entry for the same key body so regenerating never duplicates.
+  const kept = existing.filter(
+    (line) => line.trim() && (!keyBody || !line.includes(keyBody)),
+  );
+  kept.push(`${email} ${key}`);
+  fs.writeFileSync(file, `${kept.join('\n')}\n`, { mode: 0o644 });
+}
+
+/** The PAT scope a provider needs to manage the given signing-key kind. */
+function signingKeyScopeHint(
+  provider: IntegrationProvider,
+  format: 'ssh' | 'openpgp',
+): string {
+  if (provider !== 'github') return 'api';
+  return format === 'ssh' ? 'write:ssh_signing_key' : 'write:gpg_key';
+}
+
+/**
+ * Turn a signing-key API failure into one human-facing warning line. A
+ * permission failure (the credential lacks the signing-key scope) gets remedy
+ * guidance that differs for OAuth (reconnect) vs. a PAT (mint a new token);
+ * anything else is passed through with the provider's own message.
+ */
+function signingKeyErrorMessage(
+  provider: IntegrationProvider,
+  format: 'ssh' | 'openpgp',
+  err: unknown,
+): string {
+  const label = PROVIDER_LABELS[provider];
+  if (err instanceof KeyAccessError) {
+    const method = settings.integrations?.[provider]?.method ?? 'oauth';
+    return method === 'token'
+      ? `Your ${label} personal access token lacks the signing-key permission. Create a new token with the ${signingKeyScopeHint(provider, format)} scope, then reconnect.`
+      : `${label} denied the request — reconnect your account to grant signing-key permission.`;
+  }
+  return `${label}: ${err instanceof Error ? err.message : String(err)}`;
+}
+
+/** The resolved pieces the upload/remove handlers act on. */
+interface SigningKeyContext {
+  provider: IntegrationProvider;
+  config: SigningConfig;
+  token: string;
+  format: 'ssh' | 'openpgp';
+  /** The SSH public-key line, or the ASCII-armored GPG public block. */
+  publicKey: string;
+}
+
+/**
+ * Publish the configured signing public key to one connected provider — as an
+ * SSH signing key or a GPG key per `ctx.format` (each a list GitHub keeps
+ * separate). Returns `undefined` on success (including the key already being
+ * present, so re-uploading is idempotent), or a human-facing warning.
+ */
+async function uploadSigningKeyToProvider(
+  ctx: SigningKeyContext,
+): Promise<string | undefined> {
+  const client = PROVIDER_CLIENTS[ctx.provider];
+  try {
+    if (ctx.format === 'ssh') {
+      const host = os.hostname().replace(/\.local$/, '');
+      await client.uploadSshSigningKey(ctx.token, `GitLeviathan signing (${host})`, ctx.publicKey);
+    } else {
+      await client.uploadGpgKey(ctx.token, ctx.publicKey);
+    }
+    return undefined;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    if (/already/i.test(detail)) return undefined; // Already on the account — fine.
+    return signingKeyErrorMessage(ctx.provider, ctx.format, err);
+  }
+}
+
+/**
+ * Remove the configured signing key from one connected provider. Idempotent (a
+ * key already absent is success). Returns `undefined` on success or a warning.
+ */
+async function removeSigningKeyFromProvider(
+  ctx: SigningKeyContext,
+): Promise<string | undefined> {
+  const client = PROVIDER_CLIENTS[ctx.provider];
+  try {
+    if (ctx.format === 'ssh') await client.removeSshSigningKey(ctx.token, ctx.publicKey);
+    else await client.removeGpgKey(ctx.token, ctx.publicKey);
+    return undefined;
+  } catch (err) {
+    return signingKeyErrorMessage(ctx.provider, ctx.format, err);
+  }
+}
+
+/**
+ * Shared setup for the per-provider upload/remove handlers: validate the
+ * provider, ensure a signing key is configured, resolve the public material to
+ * send (an SSH `.pub` for SSH; the armored block via `gpg --export` for GPG),
+ * and get a live token. Returns the pieces both handlers need, or an error.
+ */
+async function resolveSigningKeyContext(
+  provider: unknown,
+): Promise<{ ok: true } & SigningKeyContext | { ok: false; result: SigningConfigResult }> {
+  const fail = (message: string) =>
+    ({ ok: false, result: { status: 'error', message } }) as const;
+
+  if (!isIntegrationProvider(provider)) return fail('Unknown provider.');
+  const config = await readSigningConfig();
+  if (!config.signingKey) return fail('No signing key is configured yet.');
+  // Anything but SSH is treated as OpenPGP (git's default when unset).
+  const format: 'ssh' | 'openpgp' = config.format === 'ssh' ? 'ssh' : 'openpgp';
+
+  let publicKey: string;
+  if (format === 'ssh') {
+    // `user.signingkey` holds the public-key path; read it back for the API call.
+    const pubPath = config.signingKey.endsWith('.pub')
+      ? config.signingKey
+      : `${config.signingKey}.pub`;
+    try {
+      publicKey = fs.readFileSync(pubPath, 'utf8').trim();
+    } catch {
+      return fail('Could not read the signing public key from disk.');
+    }
+    if (!/^(ssh-|sk-|ecdsa-)/.test(publicKey)) {
+      return fail('The configured signing key is not an OpenSSH public key.');
+    }
+  } else {
+    const bin = await resolveGpgBin(config.gpgProgram || null);
+    if (!bin) return fail('gpg was not found — set its path in Signing method.');
+    publicKey = await exportGpgPublicKey(bin, config.signingKey);
+    if (!publicKey) return fail('Could not export the GPG public key.');
+  }
+
+  const token = await getToken(provider);
+  if (!token) return fail(`Connect your ${PROVIDER_LABELS[provider]} account first.`);
+
+  return { ok: true, provider, config, token, format, publicKey };
+}
+
+function registerSigningIpc(): void {
+  ipcMain.handle(
+    SigningChannels.capabilities,
+    (): Promise<SigningCapabilities> => probeSigningCapabilities(),
+  );
+
+  ipcMain.handle(
+    SigningChannels.getConfig,
+    (): Promise<SigningConfig> => readSigningConfig(),
+  );
+
+  ipcMain.handle(
+    SigningChannels.setConfig,
+    async (_event, patch: unknown): Promise<SigningConfigResult> => {
+      const validated = validateSigningPatch(patch);
+      if ('error' in validated) return { status: 'error', message: validated.error };
+      try {
+        return { status: 'ok', config: await applySigningPatch(validated.patch) };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: gitErrorMessage(err, 'Could not save signing settings.'),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.generateSshKey,
+    async (): Promise<SigningConfigResult> => {
+      const caps = await probeSigningCapabilities();
+      if (!caps.ssh.available) {
+        return {
+          status: 'error',
+          message: 'SSH signing is unavailable — ssh-keygen was not found.',
+        };
+      }
+      try {
+        const host = os.hostname().replace(/\.local$/, '');
+        // Local time to the second, so keys made on the same day stay distinct.
+        const now = new Date();
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const ymd = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+        // Readable form for the key comment; filesystem-safe form for the name
+        // (no spaces/colons — they break Windows paths and SSH signing).
+        const readable = `${ymd} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+        const stamp = `${ymd}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+        const safeHost =
+          host.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'host';
+        const title = `GitLeviathan signing key for ${host} ${readable}`;
+        const base = `${SIGNING_KEY_PREFIX}_${safeHost}_${stamp}_ed25519`;
+        const pair = generateSshKeyPair(title);
+        const { publicKeyPath } = writeSigningKeyToDisk(pair, base);
+        await applySigningPatch({ format: 'ssh', signingKey: publicKeyPath });
+        await updateAllowedSigners(pair.publicKey);
+        // Generation only configures signing locally. Publishing the public key
+        // to GitHub/GitLab (so their "Verified" badge lights up) is a separate,
+        // explicit step — the "Upload key" action / `uploadSigningKey`.
+        return { status: 'ok', config: await readSigningConfig() };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Could not generate a signing key.',
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.chooseSshKey,
+    async (event): Promise<SigningConfigResult> => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options: Electron.OpenDialogOptions = {
+        title: 'Choose SSH Signing Key',
+        buttonLabel: 'Select',
+        defaultPath: path.join(os.homedir(), '.ssh'),
+        properties: ['openFile', 'showHiddenFiles'],
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+      // Cancelling is a no-op; return the unchanged config so the UI stays in sync.
+      if (result.canceled || result.filePaths.length === 0) {
+        return { status: 'ok', config: await readSigningConfig() };
+      }
+      const picked = result.filePaths[0];
+      // git signs with the *public* key; derive the `.pub` sibling if the user
+      // picked the private key.
+      const pub =
+        !picked.endsWith('.pub') && fs.existsSync(`${picked}.pub`)
+          ? `${picked}.pub`
+          : picked;
+      try {
+        await applySigningPatch({ format: 'ssh', signingKey: pub });
+        const content = fs.readFileSync(pub, 'utf8').trim();
+        // Only refresh allowed_signers when the file is an OpenSSH public key.
+        if (/^(ssh-|sk-|ecdsa-)/.test(content)) await updateAllowedSigners(content);
+        return { status: 'ok', config: await readSigningConfig() };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Could not use that key.',
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.uploadSigningKey,
+    async (_event, provider: unknown): Promise<SigningConfigResult> => {
+      const ctx = await resolveSigningKeyContext(provider);
+      if (!ctx.ok) return ctx.result;
+      const warning = await uploadSigningKeyToProvider(ctx);
+      if (!warning) {
+        // Record the upload against this exact key so the panel shows it as
+        // uploaded until the key changes.
+        settings.signingKeyUploads = {
+          ...settings.signingKeyUploads,
+          [ctx.provider]: ctx.config.signingKey,
+        };
+        saveSettings();
+      }
+      // Re-read so the returned config reflects the fresh `uploadedTo`.
+      return { status: 'ok', config: await readSigningConfig(), ...(warning ? { warning } : {}) };
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.removeSigningKey,
+    async (_event, provider: unknown): Promise<SigningConfigResult> => {
+      const ctx = await resolveSigningKeyContext(provider);
+      if (!ctx.ok) return ctx.result;
+      const warning = await removeSigningKeyFromProvider(ctx);
+      if (!warning) {
+        // Forget the record so the panel flips back to "Upload" for this host.
+        if (settings.signingKeyUploads?.[ctx.provider] !== undefined) {
+          const next = { ...settings.signingKeyUploads };
+          delete next[ctx.provider];
+          settings.signingKeyUploads = next;
+          saveSettings();
+        }
+      }
+      return { status: 'ok', config: await readSigningConfig(), ...(warning ? { warning } : {}) };
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.chooseProgram,
+    async (event, format: unknown): Promise<SigningConfigResult> => {
+      if (format !== 'ssh' && format !== 'openpgp') {
+        return { status: 'error', message: 'Unknown signing format.' };
+      }
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const label = format === 'ssh' ? 'ssh-keygen' : 'gpg';
+      const options: Electron.OpenDialogOptions = {
+        title: `Choose the ${label} binary`,
+        buttonLabel: 'Select',
+        properties: ['openFile', 'showHiddenFiles'],
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+      // Cancelling is a no-op; return the unchanged config so the UI stays in sync.
+      if (result.canceled || result.filePaths.length === 0) {
+        return { status: 'ok', config: await readSigningConfig() };
+      }
+      const picked = result.filePaths[0];
+      try {
+        const patch: SigningConfigPatch =
+          format === 'ssh' ? { sshProgram: picked } : { gpgProgram: picked };
+        return { status: 'ok', config: await applySigningPatch(patch) };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: gitErrorMessage(err, 'Could not set the signing program.'),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.listGpgKeys,
+    async (): Promise<GpgSecretKey[]> => {
+      // Prefer the configured `gpg.program` override, else the auto-detected gpg.
+      const config = await readSigningConfig();
+      const bin = await resolveGpgBin(config.gpgProgram || null);
+      if (!bin) return [];
+      return listGpgSecretKeys(bin);
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.generateGpgKey,
+    async (_event, name: unknown, email: unknown): Promise<SigningConfigResult> => {
+      if (typeof name !== 'string' || !name.trim()) {
+        return { status: 'error', message: 'Enter a name for the key.' };
+      }
+      if (typeof email !== 'string' || !email.trim()) {
+        return { status: 'error', message: 'Enter an email for the key.' };
+      }
+      const config = await readSigningConfig();
+      const bin = await resolveGpgBin(config.gpgProgram || null);
+      if (!bin) {
+        return { status: 'error', message: 'gpg was not found — set its path first.' };
+      }
+      try {
+        const fingerprint = await generateGpgKey(bin, name, email);
+        // Select the new key: set format + user.signingkey (resets upload state).
+        return {
+          status: 'ok',
+          config: await applySigningPatch({ format: 'openpgp', signingKey: fingerprint }),
+        };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Could not create a GPG key.',
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.setGpgPassphrase,
+    async (_event, passphrase: unknown): Promise<SigningConfigResult> => {
+      if (typeof passphrase !== 'string' || !passphrase) {
+        return { status: 'error', message: 'Enter the key passphrase.' };
+      }
+      if (!safeStorage.isEncryptionAvailable()) {
+        return { status: 'error', message: 'Secure storage is unavailable on this system.' };
+      }
+      const config = await readSigningConfig();
+      if (config.format !== 'openpgp' || !config.signingKey) {
+        return { status: 'error', message: 'Select an OpenPGP signing key first.' };
+      }
+      const bin = await resolveGpgBin(config.gpgProgram || null);
+      if (!bin) {
+        return { status: 'error', message: 'gpg was not found — set its path first.' };
+      }
+      try {
+        // Validate by priming gpg-agent; only persist once we know it's correct.
+        await primeGpgPassphrase(bin, config.signingKey, passphrase);
+        storeGpgPassphrase(config.signingKey, passphrase);
+        return { status: 'ok', config: await readSigningConfig() };
+      } catch (err) {
+        return {
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Could not verify the passphrase.',
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    SigningChannels.clearGpgPassphrase,
+    async (): Promise<SigningConfigResult> => {
+      const config = await readSigningConfig();
+      if (config.signingKey) clearGpgPassphrase(config.signingKey);
+      return { status: 'ok', config: await readSigningConfig() };
     },
   );
 }
@@ -5959,6 +6780,21 @@ function registerAppIpc(): void {
       throw new Error('Invalid pull mode');
     }
     settings.pullMode = mode as PullMode;
+    saveSettings();
+  });
+
+  ipcMain.handle(
+    AppChannels.getSettingsSection,
+    (): string => settings.settingsSection ?? '',
+  );
+
+  ipcMain.handle(AppChannels.setSettingsSection, (_event, id: unknown): void => {
+    // The renderer owns the set of valid section ids and re-validates on read, so
+    // just guard the shape here (a short, non-empty string).
+    if (typeof id !== 'string' || !id || id.length > 64) {
+      throw new Error('Invalid settings section id');
+    }
+    settings.settingsSection = id;
     saveSettings();
   });
 
@@ -6221,6 +7057,7 @@ app.on('ready', () => {
   registerRepoIpc();
   registerIntegrationsIpc();
   registerClaudeIpc();
+  registerSigningIpc();
   registerAppIpc();
   registerUpdateIpc();
   boot();

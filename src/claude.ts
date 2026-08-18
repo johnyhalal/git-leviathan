@@ -21,10 +21,153 @@ import fs from 'node:fs';
 const execFileAsync = promisify(execFile);
 
 /** How long a single `claude` invocation may run before we give up (ms). */
-const GENERATE_TIMEOUT_MS = 120_000;
+const GENERATE_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 8_000;
 /** Cap the diff we hand to the model so a huge changeset can't blow up the call. */
 const MAX_DIFF_CHARS = 100_000;
+
+/**
+ * Files whose *diff content* is withheld from the commit-message model. The
+ * filenames are still listed for the model (so it knows they changed) — only
+ * their patch hunks are dropped, keeping lockfiles/generated/binary noise out of
+ * the prompt. This is a code-level config, gitignore syntax, deliberately NOT
+ * user-editable: tune it by editing this list. Later patterns override earlier
+ * ones, and a leading `!` re-includes (same precedence rules as .gitignore).
+ */
+export const COMMIT_CONTEXT_EXCLUDES: readonly string[] = [
+  // Lockfiles — large, noisy, rarely inform the message.
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'bun.lockb',
+  'composer.lock',
+  'Cargo.lock',
+  'Gemfile.lock',
+  'poetry.lock',
+  '*.lock',
+  // Generated / minified / source maps.
+  '*.min.js',
+  '*.min.css',
+  '*.map',
+  // Build output and vendored dependencies.
+  'dist/',
+  'build/',
+  'out/',
+  'vendor/',
+  'node_modules/',
+  // Binary-ish assets — no meaningful textual diff.
+  '*.png',
+  '*.jpg',
+  '*.jpeg',
+  '*.gif',
+  '*.webp',
+  '*.ico',
+  '*.svg',
+  '*.pdf',
+  '*.woff',
+  '*.woff2',
+  '*.ttf',
+  '*.eot',
+  '*.zip',
+  '*.gz',
+  // Certificates / keystores — opaque credential blobs, never informative in a diff.
+  '*.pem',
+  '*.crt',
+  '*.cer',
+  '*.der',
+  '*.key',
+  '*.p12',
+  '*.pfx',
+  '*.p7b',
+  '*.p7c',
+  '*.jks',
+  '*.keystore',
+  '*.truststore',
+];
+
+/** A gitignore pattern compiled to a matcher against a repo-relative path. */
+interface CompiledExclude {
+  re: RegExp;
+  /** A `!`-prefixed pattern re-includes a path an earlier pattern excluded. */
+  negated: boolean;
+}
+
+/** Translate a single gitignore-style pattern into a regex, or null to skip it. */
+function compileGitignore(pattern: string): CompiledExclude | null {
+  let pat = pattern.trim();
+  if (!pat || pat.startsWith('#')) return null;
+
+  let negated = false;
+  if (pat.startsWith('!')) {
+    negated = true;
+    pat = pat.slice(1);
+  }
+
+  // A trailing slash restricts the match to directories (i.e. the path must
+  // continue past the name); strip it and remember.
+  let dirOnly = false;
+  if (pat.endsWith('/')) {
+    dirOnly = true;
+    pat = pat.slice(0, -1);
+  }
+
+  // A leading slash, or any interior slash, anchors the pattern to the repo
+  // root; a bare name (no slash) matches at any depth.
+  let anchored = false;
+  if (pat.startsWith('/')) {
+    anchored = true;
+    pat = pat.slice(1);
+  } else if (pat.includes('/')) {
+    anchored = true;
+  }
+
+  let body = '';
+  for (let i = 0; i < pat.length; i++) {
+    const c = pat[i];
+    if (c === '*') {
+      if (pat[i + 1] === '*') {
+        i++;
+        if (pat[i + 1] === '/') {
+          i++;
+          body += '(?:.*/)?'; // `**/` — zero or more leading directories
+        } else {
+          body += '.*'; // `**` — anything, crossing directory separators
+        }
+      } else {
+        body += '[^/]*'; // `*` — anything within a single path segment
+      }
+    } else if (c === '?') {
+      body += '[^/]';
+    } else {
+      body += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+
+  const prefix = anchored ? '^' : '(?:^|/)';
+  // A directory pattern must be followed by a separator; a name pattern may end
+  // the path or be a directory prefix of it.
+  const suffix = dirOnly ? '/' : '(?:/|$)';
+  return { re: new RegExp(prefix + body + suffix), negated };
+}
+
+const COMPILED_EXCLUDES: CompiledExclude[] = COMMIT_CONTEXT_EXCLUDES.map(
+  compileGitignore,
+).filter((c): c is CompiledExclude => c !== null);
+
+/**
+ * Whether a staged file's *content* should be withheld from the model. Evaluates
+ * all patterns in order so a later `!` negation can re-include an earlier match,
+ * mirroring .gitignore precedence. Backslashes are normalized so Windows paths
+ * match the same forward-slash patterns.
+ */
+export function isCommitContextExcluded(filePath: string): boolean {
+  const p = filePath.replace(/\\/g, '/');
+  let excluded = false;
+  for (const { re, negated } of COMPILED_EXCLUDES) {
+    if (re.test(p)) excluded = !negated;
+  }
+  return excluded;
+}
 
 /** Well-known absolute install locations, checked before a login-shell lookup. */
 function candidatePaths(): string[] {
@@ -147,6 +290,7 @@ const COMMIT_INSTRUCTION = [
   'For breaking changes, either append "!" before the colon (e.g. "feat!:") and/or add a footer starting with "BREAKING CHANGE: " describing the break.',
   'Other footers use the "Token: value" form (e.g. "Refs: #123", "Reviewed-by: name"), one per line after a blank line.',
   'Prefer a type/scope consistent with the recent commit subjects listed on stdin when they already follow this convention.',
+  'The stdin lists every changed file; some are marked "(diff omitted)" (e.g. lockfiles, generated or binary files) and their patch is intentionally not shown — still account for them in the message when relevant, but base the wording on the files whose diff you can see.',
   'Make the commit description short and compact as possible or if it is just contain not major changes then you can leave it.',
 ].join(' ');
 
@@ -251,11 +395,17 @@ function parseCommitResult(stdout: string): CommitMessageResult {
 /**
  * Generate a commit message from the staged diff by piping it to `claude -p`.
  * `recentSubjects` are woven into stdin (never argv) so a crafted commit subject
- * can't influence the command line. Rejects with a distilled error on failure.
+ * can't influence the command line. `changedFiles` is the full staged file list
+ * — always shown so the model sees every change — while `excludedFiles` (a
+ * subset) are the ones whose patch content was withheld (see
+ * `COMMIT_CONTEXT_EXCLUDES`); they're listed but flagged, and `diff` already
+ * omits their hunks. Rejects with a distilled error on failure.
  */
 export function generateCommitMessage(
   bin: string,
   diff: string,
+  changedFiles: string[],
+  excludedFiles: string[],
   recentSubjects: string[],
   cwd: string,
 ): Promise<CommitMessageResult> {
@@ -263,12 +413,20 @@ export function generateCommitMessage(
     diff.length > MAX_DIFF_CHARS
       ? `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated for length]`
       : diff;
+  const excludedSet = new Set(excludedFiles);
+  const filesSection = changedFiles.length
+    ? `Changed files (staged):\n${changedFiles
+        .map((f) => (excludedSet.has(f) ? `- ${f} (diff omitted)` : `- ${f}`))
+        .join('\n')}\n\n`
+    : '';
   const stdin =
     (recentSubjects.length
       ? `Recent commit subjects in this repository (match their style):\n${recentSubjects
           .map((s) => `- ${s}`)
           .join('\n')}\n\n`
-      : '') + `Staged diff:\n${trimmedDiff}\n`;
+      : '') +
+    filesSection +
+    `Staged diff:\n${trimmedDiff}\n`;
 
   return new Promise((resolve, reject) => {
     // `--output-format json` wraps the message in an envelope that also carries
@@ -281,7 +439,9 @@ export function generateCommitMessage(
     let out = '';
     let err = '';
     const timer = setTimeout(() => {
-      child.kill();
+      // SIGKILL (not the default SIGTERM) so a wedged `claude` can't ignore the
+      // signal and keep the button spinning past the timeout.
+      child.kill('SIGKILL');
       reject(new Error('Claude timed out generating the message.'));
     }, GENERATE_TIMEOUT_MS);
 
