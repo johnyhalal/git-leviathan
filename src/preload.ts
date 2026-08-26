@@ -25,6 +25,7 @@ import {
   type LfsStatus,
   type LfsResult,
   type WorktreeAddOptions,
+  type SubmoduleAddOptions,
   type CloneProgress,
   type RepoActivityEvent,
   type CloneRequest,
@@ -58,6 +59,8 @@ import {
   type UpdateCheckInterval,
   type RepoInfo,
   type RepoRefs,
+  type ResetMode,
+  type ResetPreview,
   type SshKeyInfo,
   type ThemeSource,
   type ThemeState,
@@ -176,6 +179,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.pull, path, mode) as Promise<CommitResult>,
     checkout: (path: string, branch: string, remote?: string) =>
       ipcRenderer.invoke(RepoChannels.checkout, path, branch, remote) as Promise<CheckoutResult>,
+    checkoutCommit: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.checkoutCommit, path, hash) as Promise<CheckoutResult>,
     createBranch: (path: string, name: string) =>
       ipcRenderer.invoke(RepoChannels.createBranch, path, name) as Promise<RefsMutationResult>,
     createTag: (path: string, name: string, ref: string, message: string | null) =>
@@ -230,6 +235,10 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.fastForward, path, source, target) as Promise<RefsMutationResult>,
     cherryPick: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.cherryPick, path, hash) as Promise<RefsMutationResult>,
+    reset: (path: string, hash: string, mode: ResetMode) =>
+      ipcRenderer.invoke(RepoChannels.reset, path, hash, mode) as Promise<RefsMutationResult>,
+    resetPreview: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.resetPreview, path, hash) as Promise<ResetPreview>,
     pushBranch: (path: string, remote: string, localBranch: string, remoteBranch: string) =>
       ipcRenderer.invoke(
         RepoChannels.pushBranch,
@@ -266,6 +275,45 @@ const api: ExposedApi = {
         worktreePath,
         lock,
         reason,
+      ) as Promise<RefsMutationResult>,
+    submoduleAdd: (path: string, options: SubmoduleAddOptions) =>
+      ipcRenderer.invoke(RepoChannels.submoduleAdd, path, options) as Promise<RefsMutationResult>,
+    submoduleInit: (path: string, submodulePath?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleInit,
+        path,
+        submodulePath,
+      ) as Promise<RefsMutationResult>,
+    submoduleUpdate: (path: string, submodulePath?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleUpdate,
+        path,
+        submodulePath,
+      ) as Promise<RefsMutationResult>,
+    submoduleUpdateRemote: (path: string, submodulePath?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleUpdateRemote,
+        path,
+        submodulePath,
+      ) as Promise<RefsMutationResult>,
+    submoduleSync: (path: string, submodulePath?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleSync,
+        path,
+        submodulePath,
+      ) as Promise<RefsMutationResult>,
+    submoduleDeinit: (path: string, submodulePath: string, force?: boolean) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleDeinit,
+        path,
+        submodulePath,
+        force,
+      ) as Promise<RefsMutationResult>,
+    submoduleRemove: (path: string, submodulePath: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleRemove,
+        path,
+        submodulePath,
       ) as Promise<RefsMutationResult>,
     isWorktree: (path: string) =>
       ipcRenderer.invoke(RepoChannels.isWorktree, path) as Promise<boolean>,

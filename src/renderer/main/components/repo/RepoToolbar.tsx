@@ -107,6 +107,9 @@ export function RepoToolbar({
     });
   };
 
+  // Shown in the undo/redo tooltips so the shortcuts are discoverable.
+  const mod = window.api.platform === 'darwin' ? '⌘' : 'Ctrl+';
+
   return (
     <div className="repo-toolbar">
       <div className="repo-toolbar-left">
@@ -117,7 +120,7 @@ export function RepoToolbar({
         <button
           type="button"
           className={`repo-action tooltip-host${undoLabel ? '' : ' is-disabled'}`}
-          data-tooltip={undoLabel ? `Undo ${undoLabel}` : 'Nothing to undo'}
+          data-tooltip={`${undoLabel ? `Undo ${undoLabel}` : 'Nothing to undo'} (${mod}Z)`}
           aria-label={undoLabel ? `Undo ${undoLabel}` : 'Nothing to undo'}
           onClick={() => undoLabel && onUndo()}
           aria-disabled={!undoLabel}
@@ -128,7 +131,7 @@ export function RepoToolbar({
         <button
           type="button"
           className={`repo-action tooltip-host${redoLabel ? '' : ' is-disabled'}`}
-          data-tooltip={redoLabel ? `Redo ${redoLabel}` : 'Nothing to redo'}
+          data-tooltip={`${redoLabel ? `Redo ${redoLabel}` : 'Nothing to redo'} (${mod}R)`}
           aria-label={redoLabel ? `Redo ${redoLabel}` : 'Nothing to redo'}
           onClick={() => redoLabel && onRedo()}
           aria-disabled={!redoLabel}

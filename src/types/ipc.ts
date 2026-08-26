@@ -248,6 +248,41 @@ export interface WorktreeAddOptions {
   startPoint: string;
 }
 
+/** The state of a submodule, from the `git submodule status` line prefix. */
+export type SubmoduleState = 'ok' | 'uninitialized' | 'out-of-date' | 'conflicted';
+
+/** A submodule of the open repository (`.gitmodules` + `git submodule status`). */
+export interface SubmoduleInfo {
+  /** The name in `.gitmodules` (`submodule.<name>.*`); usually equals `path`. */
+  name: string;
+  /** The submodule's path, relative to the superproject's root. */
+  path: string;
+  /** The URL recorded in `.gitmodules` (empty when the entry has none). */
+  url: string;
+  /** The branch recorded in `.gitmodules` (`submodule.<name>.branch`), when set. */
+  branch?: string;
+  /** Short SHA the superproject records for it; empty when not initialized. */
+  head: string;
+  /**
+   * `ok` when the checked-out commit matches the recorded one, `uninitialized`
+   * when the working directory is empty, `out-of-date` when it sits at a
+   * different commit, `conflicted` during a merge conflict on the gitlink.
+   */
+  state: SubmoduleState;
+  /** The `git describe` output git appends in parentheses, when it gave one. */
+  describe?: string;
+}
+
+/** Options for adding a submodule (`git submodule add`). */
+export interface SubmoduleAddOptions {
+  /** The clone URL of the repository to add. */
+  url: string;
+  /** Destination path, relative to the superproject's root (e.g. "vendor/foo"). */
+  path: string;
+  /** Optional branch to track (`-b`), which enables "update to remote". */
+  branch?: string;
+}
+
 /** The refs of an open repository, for the sidebar. */
 export interface RepoRefs {
   localBranches: LocalBranchInfo[];
@@ -258,6 +293,8 @@ export interface RepoRefs {
   stashes: StashInfo[];
   /** Linked working trees (`git worktree list`), including the main one. */
   worktrees: WorktreeInfo[];
+  /** Submodules declared in `.gitmodules`, with their checkout state. */
+  submodules: SubmoduleInfo[];
 }
 
 /**
@@ -279,6 +316,24 @@ export type RefsMutationResult =
 
 /** Outcome of a branch checkout. On success it carries the repo's fresh refs. */
 export type CheckoutResult = RefsMutationResult;
+
+/**
+ * How far a reset rewinds alongside the branch label. Every mode moves the
+ * branch to the target commit; they differ only in what happens to the dropped
+ * commits' changes:
+ * - `soft`  — keep them **staged**, ready to re-commit.
+ * - `mixed` — keep them **unstaged** (git's own default).
+ * - `hard`  — discard them, along with any uncommitted work. Destructive.
+ */
+export type ResetMode = 'soft' | 'mixed' | 'hard';
+
+/** What a reset to a given commit would cost, read before confirming a hard one. */
+export interface ResetPreview {
+  /** Commits between the target and HEAD that the reset would drop. */
+  commits: number;
+  /** Whether the working tree is dirty, so a hard reset would destroy real work. */
+  dirty: boolean;
+}
 
 /**
  * The next undoable/redoable HEAD-moving action, read from the reflog. Each is a
@@ -739,6 +794,8 @@ export const RepoChannels = {
   pull: 'repo:pull',
   /** Renderer -> main (invoke): check out a branch; returns fresh refs. */
   checkout: 'repo:checkout',
+  /** Renderer -> main (invoke): check out a commit (detached HEAD); returns fresh refs. */
+  checkoutCommit: 'repo:checkout-commit',
   /** Renderer -> main (invoke): create a branch at HEAD; returns fresh refs. */
   createBranch: 'repo:create-branch',
   /** Renderer -> main (invoke): create a tag at a commit; returns fresh refs. */
@@ -767,6 +824,10 @@ export const RepoChannels = {
   fastForward: 'repo:fast-forward',
   /** Renderer -> main (invoke): cherry-pick a commit onto HEAD; returns fresh refs. */
   cherryPick: 'repo:cherry-pick',
+  /** Renderer -> main (invoke): reset the current branch to a commit; returns fresh refs. */
+  reset: 'repo:reset',
+  /** Renderer -> main (invoke): what a reset to a commit would drop (for its confirmation). */
+  resetPreview: 'repo:reset-preview',
   /** Renderer -> main (invoke): push a local branch to a remote branch. */
   pushBranch: 'repo:push-branch',
   /** Renderer -> main (invoke): stash uncommitted changes (`git stash push`). */
@@ -783,6 +844,20 @@ export const RepoChannels = {
   worktreeRemove: 'repo:worktree-remove',
   /** Renderer -> main (invoke): lock/unlock a linked worktree (`git worktree lock`). */
   worktreeLock: 'repo:worktree-lock',
+  /** Renderer -> main (invoke): add a submodule (`git submodule add`). */
+  submoduleAdd: 'repo:submodule-add',
+  /** Renderer -> main (invoke): initialize + check out submodules. */
+  submoduleInit: 'repo:submodule-init',
+  /** Renderer -> main (invoke): update submodules to their recorded commits. */
+  submoduleUpdate: 'repo:submodule-update',
+  /** Renderer -> main (invoke): update submodules to their upstream tips. */
+  submoduleUpdateRemote: 'repo:submodule-update-remote',
+  /** Renderer -> main (invoke): re-sync submodule URLs from `.gitmodules`. */
+  submoduleSync: 'repo:submodule-sync',
+  /** Renderer -> main (invoke): deinitialize a submodule (`git submodule deinit`). */
+  submoduleDeinit: 'repo:submodule-deinit',
+  /** Renderer -> main (invoke): remove a submodule entirely. */
+  submoduleRemove: 'repo:submodule-remove',
   /** Renderer -> main (invoke): whether a path is itself a linked worktree. */
   isWorktree: 'repo:is-worktree',
   /** Renderer -> main (invoke): whether a would-be path sits inside a git work tree. */
@@ -1403,6 +1478,13 @@ export interface RepoApi {
    */
   checkout(path: string, branch: string, remote?: string): Promise<CheckoutResult>;
   /**
+   * Check out the commit `hash` in the repository at `path`
+   * (`git checkout <hash>`), leaving the repo on a detached HEAD. Resolves with
+   * the repo's fresh refs on success, or an error message (unknown commit,
+   * conflicting local changes…).
+   */
+  checkoutCommit(path: string, hash: string): Promise<CheckoutResult>;
+  /**
    * Create a new branch named `name` at HEAD and check it out
    * (`git checkout -b <name>`). Resolves with the repo's fresh refs on success,
    * or an error message (invalid name, a branch of that name already exists,
@@ -1495,6 +1577,19 @@ export interface RepoApi {
    */
   cherryPick(path: string, hash: string): Promise<RefsMutationResult>;
   /**
+   * Move the checked-out branch back to the commit `hash` (`git reset --<mode>`),
+   * dropping every commit after it. `mode` decides what becomes of those commits'
+   * changes — see {@link ResetMode}; only `hard` can lose uncommitted work.
+   * Resolves with fresh refs on success, or an error message.
+   */
+  reset(path: string, hash: string, mode: ResetMode): Promise<RefsMutationResult>;
+  /**
+   * How many commits a reset to `hash` would drop, and whether the working tree
+   * is dirty. Read before raising the hard-reset confirmation so it can say what
+   * is actually at stake; degrades to zeroes when it can't be determined.
+   */
+  resetPreview(path: string, hash: string): Promise<ResetPreview>;
+  /**
    * Push the local branch `localBranch` to `remoteBranch` on `remote`
    * (`git push --set-upstream <remote> <localBranch>:<remoteBranch>`), setting it
    * as the local branch's upstream. Unlike `push`, the branch need not be checked
@@ -1556,6 +1651,51 @@ export interface RepoApi {
     lock: boolean,
     reason?: string,
   ): Promise<RefsMutationResult>;
+  /**
+   * Add a submodule at `options.path` (`git submodule add`). Clones it, writes the
+   * `.gitmodules` entry and stages both — the caller still has to commit. Resolves
+   * with fresh refs, or an error (bad URL, occupied path, clone failure).
+   */
+  submoduleAdd(path: string, options: SubmoduleAddOptions): Promise<RefsMutationResult>;
+  /**
+   * Initialize and check out submodules (`git submodule update --init`). Without
+   * `submodulePath` every submodule is initialized. Returns fresh refs.
+   */
+  submoduleInit(path: string, submodulePath?: string): Promise<RefsMutationResult>;
+  /**
+   * Check submodules out at the commits the superproject records
+   * (`git submodule update --init --recursive`). Without `submodulePath` all of
+   * them are updated. Returns fresh refs.
+   */
+  submoduleUpdate(path: string, submodulePath?: string): Promise<RefsMutationResult>;
+  /**
+   * Move submodules to their upstream branch tip (`git submodule update --remote`),
+   * which stages a new gitlink for the caller to commit. Without `submodulePath`
+   * all of them move. Returns fresh refs.
+   */
+  submoduleUpdateRemote(path: string, submodulePath?: string): Promise<RefsMutationResult>;
+  /**
+   * Re-apply the URLs in `.gitmodules` to the submodules' own configs
+   * (`git submodule sync`), after the file was edited or a remote moved. Without
+   * `submodulePath` all of them are synced. Returns fresh refs.
+   */
+  submoduleSync(path: string, submodulePath?: string): Promise<RefsMutationResult>;
+  /**
+   * Empty a submodule's working directory (`git submodule deinit`), keeping its
+   * `.gitmodules` entry so it can be initialized again. `force` discards local
+   * modifications inside it. Returns fresh refs.
+   */
+  submoduleDeinit(
+    path: string,
+    submodulePath: string,
+    force?: boolean,
+  ): Promise<RefsMutationResult>;
+  /**
+   * Remove a submodule completely: deinitialize it, `git rm` its path and
+   * `.gitmodules` entry (staged, not committed), and delete its internal clone
+   * under `.git/modules`. Returns fresh refs.
+   */
+  submoduleRemove(path: string, submodulePath: string): Promise<RefsMutationResult>;
   /**
    * Whether `path` is itself a *linked* worktree (i.e. one added via
    * `git worktree add`) rather than the repository's main worktree. False for a
