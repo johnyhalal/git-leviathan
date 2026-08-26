@@ -581,6 +581,35 @@ body.is-col-resizing {
   padding: 2px 2px;
 }
 
+/* Trailing detail on a submodule row: the recorded short SHA when the checkout
+   matches it, otherwise a state badge saying how it differs. Both sit after the
+   path and never squeeze it out of the row. */
+.repo-submodule-head {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.repo-submodule-badge {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  background: var(--control-bg);
+}
+
+/* The "update all" button shares the plus button's compact padding so the two
+   sit level in the Submodules header. */
+.repo-submodule-update-all {
+  padding: 2px 2px;
+}
+
 /* Lock badge in the gutter, left of the icon, on a locked worktree row. Mirrors
    the branch-check placement so the worktree icon stays column-aligned. */
 .repo-worktree-lock {
@@ -889,7 +918,8 @@ body.is-col-resizing {
    it. Scoped to sections that carry a header action (pull requests, gitflow). */
 .repo-section-header-row:has(.repo-section-header-action) .repo-pr-new,
 .repo-section-header-row:has(.repo-section-header-action) .repo-gitflow-new,
-.repo-section-header-row:has(.repo-section-header-action) .repo-worktree-new {
+.repo-section-header-row:has(.repo-section-header-action) .repo-worktree-new,
+.repo-section-header-row:has(.repo-section-header-action) .repo-submodule-update-all {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
@@ -897,7 +927,8 @@ body.is-col-resizing {
 
 .repo-section-header-row:has(.repo-section-header-action):hover .repo-pr-new,
 .repo-section-header-row:has(.repo-section-header-action):hover .repo-gitflow-new,
-.repo-section-header-row:has(.repo-section-header-action):hover .repo-worktree-new {
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-worktree-new,
+.repo-section-header-row:has(.repo-section-header-action):hover .repo-submodule-update-all {
   opacity: 1;
   pointer-events: auto;
 }

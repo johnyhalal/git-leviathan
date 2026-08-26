@@ -25,6 +25,7 @@ import {
   type LfsStatus,
   type LfsResult,
   type WorktreeAddOptions,
+  type SubmoduleAddOptions,
   type CloneProgress,
   type RepoActivityEvent,
   type CloneRequest,
@@ -266,6 +267,45 @@ const api: ExposedApi = {
         worktreePath,
         lock,
         reason,
+      ) as Promise<RefsMutationResult>,
+    submoduleAdd: (path: string, options: SubmoduleAddOptions) =>
+      ipcRenderer.invoke(RepoChannels.submoduleAdd, path, options) as Promise<RefsMutationResult>,
+    submoduleInit: (path: string, submodulePath?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleInit,
+        path,
+        submodulePath,
+      ) as Promise<RefsMutationResult>,
+    submoduleUpdate: (path: string, submodulePath?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleUpdate,
+        path,
+        submodulePath,
+      ) as Promise<RefsMutationResult>,
+    submoduleUpdateRemote: (path: string, submodulePath?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleUpdateRemote,
+        path,
+        submodulePath,
+      ) as Promise<RefsMutationResult>,
+    submoduleSync: (path: string, submodulePath?: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleSync,
+        path,
+        submodulePath,
+      ) as Promise<RefsMutationResult>,
+    submoduleDeinit: (path: string, submodulePath: string, force?: boolean) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleDeinit,
+        path,
+        submodulePath,
+        force,
+      ) as Promise<RefsMutationResult>,
+    submoduleRemove: (path: string, submodulePath: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.submoduleRemove,
+        path,
+        submodulePath,
       ) as Promise<RefsMutationResult>,
     isWorktree: (path: string) =>
       ipcRenderer.invoke(RepoChannels.isWorktree, path) as Promise<boolean>,

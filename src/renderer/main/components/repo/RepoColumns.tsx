@@ -10,6 +10,7 @@ import type {
 import { RepoSidebar } from './RepoSidebar';
 import type { RepoSettingsTabId } from './RepoSettingsDialog';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
+import type { SubmoduleDeinitOutcome } from './SubmoduleContextMenu';
 import { CommitList } from './CommitList';
 import { CommitPanel } from './CommitPanel';
 import { DiffView, type DiffTarget } from './DiffView';
@@ -117,8 +118,22 @@ interface RepoColumnsProps {
   onWorktreeLock: (path: string, lock: boolean, reason?: string) => void;
   /** Open a worktree's folder as a repository in the current tab. */
   onOpenWorktreeHere: (path: string) => void;
-  /** Open a worktree's folder as a repository in a new tab. */
+  /** Open a worktree's or submodule's folder as a repository in a new tab. */
   onOpenWorktreeInNewTab: (path: string) => void;
+  /** A submodule was added via the dialog: refs should reload. */
+  onSubmoduleAdded: () => void;
+  /** Initialize the submodule at `path`, or every one when omitted. */
+  onSubmoduleInit: (path?: string) => void;
+  /** Update the submodule at `path` to its recorded commit, or every one. */
+  onSubmoduleUpdate: (path?: string) => void;
+  /** Move the submodule at `path` to its upstream branch tip. */
+  onSubmoduleUpdateRemote: (path: string) => void;
+  /** Re-apply the URL in `.gitmodules` to the submodule at `path`. */
+  onSubmoduleSync: (path: string) => void;
+  /** Deinitialize the submodule at `path`; resolves whether it needs forcing. */
+  onSubmoduleDeinit: (path: string, force: boolean) => Promise<SubmoduleDeinitOutcome>;
+  /** Remove the submodule at `path` entirely. */
+  onSubmoduleRemove: (path: string) => void;
   /** The repo's gitflow config, or null when it hasn't been configured yet. */
   gitflowConfig: GitflowConfig | null;
   /** Start a gitflow topic branch of `kind` named `name`, based off `source`. */
@@ -187,6 +202,13 @@ export function RepoColumns({
   onWorktreeLock,
   onOpenWorktreeHere,
   onOpenWorktreeInNewTab,
+  onSubmoduleAdded,
+  onSubmoduleInit,
+  onSubmoduleUpdate,
+  onSubmoduleUpdateRemote,
+  onSubmoduleSync,
+  onSubmoduleDeinit,
+  onSubmoduleRemove,
   gitflowConfig,
   onGitflowStart,
   onGitflowFinish,
@@ -376,6 +398,13 @@ export function RepoColumns({
           onWorktreeLock={onWorktreeLock}
           onOpenWorktreeHere={onOpenWorktreeHere}
           onOpenWorktreeInNewTab={onOpenWorktreeInNewTab}
+          onSubmoduleAdded={onSubmoduleAdded}
+          onSubmoduleInit={onSubmoduleInit}
+          onSubmoduleUpdate={onSubmoduleUpdate}
+          onSubmoduleUpdateRemote={onSubmoduleUpdateRemote}
+          onSubmoduleSync={onSubmoduleSync}
+          onSubmoduleDeinit={onSubmoduleDeinit}
+          onSubmoduleRemove={onSubmoduleRemove}
           gitflowConfig={gitflowConfig}
           onGitflowStart={onGitflowStart}
           onGitflowFinish={onGitflowFinish}

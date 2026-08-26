@@ -21,6 +21,7 @@ import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
 import { ConfirmProvider } from '../ConfirmBar';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
+import type { SubmoduleDeinitOutcome } from './SubmoduleContextMenu';
 
 interface RepoViewProps {
   title: string;
@@ -524,6 +525,69 @@ export function RepoView({
     [repoPath, refs, reload, onWorktreeRemoved, onError],
   );
 
+  // --- Submodules -----------------------------------------------------------
+  // Every one goes through `runMutation`, so a success reloads the repo and the
+  // main process' `notice` (e.g. "committed to record it") surfaces as an info
+  // toast. Passing no path means "every submodule" — what the section header's
+  // "update all" button does.
+
+  const submoduleInit = useCallback(
+    (path?: string) =>
+      runMutation('Initialize submodule failed', () =>
+        window.api.repo.submoduleInit(repoPath, path),
+      ),
+    [repoPath, runMutation],
+  );
+
+  const submoduleUpdate = useCallback(
+    (path?: string) =>
+      runMutation('Update submodule failed', () =>
+        window.api.repo.submoduleUpdate(repoPath, path),
+      ),
+    [repoPath, runMutation],
+  );
+
+  const submoduleUpdateRemote = useCallback(
+    (path: string) =>
+      runMutation('Update submodule failed', () =>
+        window.api.repo.submoduleUpdateRemote(repoPath, path),
+      ),
+    [repoPath, runMutation],
+  );
+
+  const submoduleSync = useCallback(
+    (path: string) =>
+      runMutation('Sync submodule failed', () =>
+        window.api.repo.submoduleSync(repoPath, path),
+      ),
+    [repoPath, runMutation],
+  );
+
+  const submoduleDeinit = useCallback(
+    async (path: string, force: boolean): Promise<SubmoduleDeinitOutcome> => {
+      const result = await window.api.repo.submoduleDeinit(repoPath, path, force);
+      if (result.status === 'ok') {
+        reload();
+        return 'ok';
+      }
+      // git refuses to deinit a submodule with local modifications unless --force
+      // is given — its message says so. Let the caller offer to force rather than
+      // surfacing that as a dead-end error.
+      if (!force && /--force|-f\b/.test(result.message)) return 'needs-force';
+      onError?.('Deinitialize submodule failed', result.message);
+      return 'error';
+    },
+    [repoPath, reload, onError],
+  );
+
+  const submoduleRemove = useCallback(
+    (path: string) =>
+      runMutation('Remove submodule failed', () =>
+        window.api.repo.submoduleRemove(repoPath, path),
+      ),
+    [repoPath, runMutation],
+  );
+
   const worktreeLock = useCallback(
     (path: string, lock: boolean, reason?: string) =>
       runMutation(lock ? 'Lock worktree failed' : 'Unlock worktree failed', () =>
@@ -934,6 +998,13 @@ export function RepoView({
           onWorktreeLock={(path, lock, reason) => void worktreeLock(path, lock, reason)}
           onOpenWorktreeHere={openWorktreeHere}
           onOpenWorktreeInNewTab={openWorktreeInNewTab}
+          onSubmoduleAdded={reload}
+          onSubmoduleInit={(path) => void submoduleInit(path)}
+          onSubmoduleUpdate={(path) => void submoduleUpdate(path)}
+          onSubmoduleUpdateRemote={(path) => void submoduleUpdateRemote(path)}
+          onSubmoduleSync={(path) => void submoduleSync(path)}
+          onSubmoduleDeinit={submoduleDeinit}
+          onSubmoduleRemove={(path) => void submoduleRemove(path)}
           gitflowConfig={gitflowConfig}
           onGitflowStart={(kind, name, source) => void gitflowStart(kind, name, source)}
           onGitflowFinish={() => void gitflowFinish()}

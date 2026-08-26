@@ -16,8 +16,10 @@ import {
   LockIcon,
   MoreIcon,
   PlusIcon,
+  RefreshIcon,
   RemoteIcon,
   PullRequestIcon,
+  SubmoduleIcon,
   TrayIcon,
   TagIcon,
   WorktreeIcon,
@@ -32,6 +34,12 @@ import {
   type DragMenuHandlers,
 } from './BranchDragMenu';
 import { StashContextMenu, type StashMenuTarget } from './StashContextMenu';
+import {
+  SubmoduleContextMenu,
+  type SubmoduleMenuTarget,
+  type SubmoduleDeinitOutcome,
+} from './SubmoduleContextMenu';
+import { SubmoduleDialog } from './SubmoduleDialog';
 import { TagContextMenu, type TagMenuTarget } from './TagContextMenu';
 import {
   WorktreeContextMenu,
@@ -49,6 +57,7 @@ import type {
   RemoteBranchInfo,
   RepoRefs,
   StashInfo,
+  SubmoduleInfo,
   TagInfo,
   WorktreeInfo,
 } from '../../../../types/ipc';
@@ -676,6 +685,89 @@ function WorktreeRow({
   );
 }
 
+/** Short badge text for a submodule state; null when it's simply up to date. */
+function submoduleBadge(state: SubmoduleInfo['state']): string | null {
+  if (state === 'uninitialized') return 'not initialized';
+  if (state === 'out-of-date') return 'out of date';
+  if (state === 'conflicted') return 'conflicted';
+  return null;
+}
+
+function SubmoduleRow({
+  submodule,
+  repoPath,
+  id,
+  active,
+  onSelect,
+  onOpen,
+  onOpenMenu,
+}: RowProps & {
+  submodule: SubmoduleInfo;
+  /** The superproject's path, to resolve the submodule's absolute location. */
+  repoPath: string;
+  /** Open the submodule's folder as a repository in a new tab. */
+  onOpen: (path: string) => void;
+  /** Open the submodule context menu at the given point. */
+  onOpenMenu: (target: SubmoduleMenuTarget, x: number, y: number) => void;
+}) {
+  // `.gitmodules` always stores forward slashes, so join with the repo's own
+  // separator to get a path the main process can open on this platform.
+  const sep = repoPath.includes('\\') && !repoPath.includes('/') ? '\\' : '/';
+  const absolutePath =
+    repoPath.replace(/[/\\]+$/, '') + sep + submodule.path.split('/').join(sep);
+  const target: SubmoduleMenuTarget = {
+    path: submodule.path,
+    absolutePath,
+    state: submodule.state,
+    branch: submodule.branch,
+  };
+  const initialized = submodule.state !== 'uninitialized';
+  const badge = submoduleBadge(submodule.state);
+  return (
+    <div
+      className={cx('repo-list-item', active === id && 'is-active')}
+      style={{ paddingLeft: indent(0) }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onOpenMenu(target, event.clientX, event.clientY);
+      }}
+    >
+      <button
+        type="button"
+        className="repo-row-main tooltip-host"
+        onClick={() => onSelect(id)}
+        onDoubleClick={() => {
+          if (initialized) onOpen(absolutePath);
+        }}
+        data-tooltip={
+          initialized
+            ? `${submodule.url || submodule.path} — double-click to open in a new tab`
+            : `${submodule.url || submodule.path} — not initialized`
+        }
+      >
+        <SubmoduleIcon size={14} />
+        <span className="repo-list-label">{submodule.path}</span>
+        {submodule.head && !badge && (
+          <span className="repo-submodule-head">{submodule.head}</span>
+        )}
+        {badge && <span className="repo-submodule-badge">{badge}</span>}
+      </button>
+      <button
+        type="button"
+        className="repo-row-action tooltip-host"
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          onOpenMenu(target, rect.right, rect.bottom);
+        }}
+        data-tooltip="Submodule actions"
+        aria-label="Submodule actions"
+      >
+        <MoreIcon size={16} />
+      </button>
+    </div>
+  );
+}
+
 // --- Sidebar ----------------------------------------------------------------
 
 /**
@@ -762,8 +854,22 @@ interface RepoSidebarProps {
   onWorktreeLock: (path: string, lock: boolean, reason?: string) => void;
   /** Open a worktree's folder as a repository in the current tab. */
   onOpenWorktreeHere: (path: string) => void;
-  /** Open a worktree's folder as a repository in a new tab. */
+  /** Open a worktree's or submodule's folder as a repository in a new tab. */
   onOpenWorktreeInNewTab: (path: string) => void;
+  /** A submodule was added via the dialog: refs should reload. */
+  onSubmoduleAdded: () => void;
+  /** Initialize the submodule at `path`, or every one when omitted. */
+  onSubmoduleInit: (path?: string) => void;
+  /** Update the submodule at `path` to its recorded commit, or every one. */
+  onSubmoduleUpdate: (path?: string) => void;
+  /** Move the submodule at `path` to its upstream branch tip. */
+  onSubmoduleUpdateRemote: (path: string) => void;
+  /** Re-apply the URL in `.gitmodules` to the submodule at `path`. */
+  onSubmoduleSync: (path: string) => void;
+  /** Deinitialize the submodule at `path`; resolves whether it needs forcing. */
+  onSubmoduleDeinit: (path: string, force: boolean) => Promise<SubmoduleDeinitOutcome>;
+  /** Remove the submodule at `path` entirely. */
+  onSubmoduleRemove: (path: string) => void;
   /** The repo's gitflow config, or null when it hasn't been configured yet. */
   gitflowConfig: GitflowConfig | null;
   /** Start a gitflow topic branch of `kind` named `name`, based off `source`. */
@@ -814,6 +920,13 @@ export function RepoSidebar({
   onWorktreeLock,
   onOpenWorktreeHere,
   onOpenWorktreeInNewTab,
+  onSubmoduleAdded,
+  onSubmoduleInit,
+  onSubmoduleUpdate,
+  onSubmoduleUpdateRemote,
+  onSubmoduleSync,
+  onSubmoduleDeinit,
+  onSubmoduleRemove,
   gitflowConfig,
   onGitflowStart,
   onGitflowFinish,
@@ -880,6 +993,20 @@ export function RepoSidebar({
     [],
   );
 
+  // Whether the "add a submodule" dialog is open.
+  const [submoduleDialogOpen, setSubmoduleDialogOpen] = useState(false);
+  // The update/remove menu opened by right-clicking a submodule row; null closed.
+  const [submoduleMenu, setSubmoduleMenu] = useState<{
+    target: SubmoduleMenuTarget;
+    x: number;
+    y: number;
+  } | null>(null);
+  const openSubmoduleMenu = useCallback(
+    (target: SubmoduleMenuTarget, x: number, y: number) =>
+      setSubmoduleMenu({ target, x, y }),
+    [],
+  );
+
   // Persisted open/closed state of each section, keyed by a stable id. Missing
   // keys default to closed, so a repo opened for the first time is all-collapsed.
   const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({});
@@ -913,6 +1040,7 @@ export function RepoSidebar({
   const stashes = refs?.stashes ?? [];
   // All worktrees, including the main one (flagged as current in its row).
   const worktrees = refs?.worktrees ?? [];
+  const submodules = refs?.submodules ?? [];
   const currentBranch = localBranches.find((branch) => branch.current)?.name;
 
   // The repo's gitflow branches for the section body, or null when unconfigured:
@@ -1398,6 +1526,56 @@ export function RepoSidebar({
             ))}
       </CollapsibleSection>
 
+      {/* Always rendered, even with no submodules — its "+" action is the only way
+          to add the first one. Matches the Worktrees section, which likewise shows
+          for every repo. */}
+      <CollapsibleSection
+        label="Submodules"
+        icon={<SubmoduleIcon size={16} />}
+        count={submodules.length}
+        action={
+          <>
+            {/* "Update all" only means something once there's something to update. */}
+            {submodules.length > 0 && (
+              <button
+                type="button"
+                className="pill-btn pill-btn-gray repo-submodule-update-all tooltip-host"
+                aria-label="Update all submodules"
+                data-tooltip="Update all submodules"
+                onClick={() => onSubmoduleUpdate()}
+              >
+                <RefreshIcon size={12} />
+              </button>
+            )}
+            <button
+              type="button"
+              className="pill-btn pill-btn-green repo-worktree-new tooltip-host"
+              aria-label="Add a submodule"
+              data-tooltip="Add a submodule"
+              onClick={() => setSubmoduleDialogOpen(true)}
+            >
+              <PlusIcon size={12} />
+            </button>
+          </>
+        }
+        {...sectionProps('submodules')}
+      >
+        {submodules.length === 0
+          ? placeholder('No submodules')
+          : submodules.map((submodule) => (
+              <SubmoduleRow
+                key={submodule.path}
+                submodule={submodule}
+                repoPath={repoPath}
+                id={`submodule:${submodule.path}`}
+                active={active}
+                onSelect={setActive}
+                onOpen={onOpenWorktreeInNewTab}
+                onOpenMenu={openSubmoduleMenu}
+              />
+            ))}
+      </CollapsibleSection>
+
       {stashes.length > 0 && (
         <CollapsibleSection
           label="Stashes"
@@ -1559,6 +1737,29 @@ export function RepoSidebar({
           onOpenInNewTab={onOpenWorktreeInNewTab}
           onRemove={onWorktreeRemove}
           onLock={onWorktreeLock}
+        />
+      )}
+      {submoduleMenu && (
+        <SubmoduleContextMenu
+          target={submoduleMenu.target}
+          x={submoduleMenu.x}
+          y={submoduleMenu.y}
+          onClose={() => setSubmoduleMenu(null)}
+          onOpenInNewTab={onOpenWorktreeInNewTab}
+          onInit={onSubmoduleInit}
+          onUpdate={onSubmoduleUpdate}
+          onUpdateRemote={onSubmoduleUpdateRemote}
+          onSync={onSubmoduleSync}
+          onDeinit={onSubmoduleDeinit}
+          onRemove={onSubmoduleRemove}
+        />
+      )}
+      {submoduleDialogOpen && (
+        <SubmoduleDialog
+          repoPath={repoPath}
+          existingPaths={submodules.map((submodule) => submodule.path)}
+          onClose={() => setSubmoduleDialogOpen(false)}
+          onAdded={onSubmoduleAdded}
         />
       )}
       {worktreeDialogOpen && (

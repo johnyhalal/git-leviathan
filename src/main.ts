@@ -62,6 +62,9 @@ import {
   type StashInfo,
   type WorktreeInfo,
   type WorktreeAddOptions,
+  type SubmoduleInfo,
+  type SubmoduleState,
+  type SubmoduleAddOptions,
   type CommitLogEntry,
   type CommitRefDecoration,
   type CommitDetailData,
@@ -1059,6 +1062,91 @@ async function readWorktrees(cwd: string): Promise<WorktreeInfo[]> {
   return trees;
 }
 
+/** Map a `git submodule status` line prefix to a state. */
+function submoduleState(prefix: string): SubmoduleState {
+  if (prefix === '-') return 'uninitialized';
+  if (prefix === '+') return 'out-of-date';
+  if (prefix === 'U') return 'conflicted';
+  return 'ok';
+}
+
+/**
+ * The repo's submodules. `.gitmodules` is the source of truth for *which*
+ * submodules exist (it's the committed declaration); `git submodule status` only
+ * decorates each with its checkout state, so an entry missing from one of the two
+ * still lists. A repo without a `.gitmodules` reads empty and returns [].
+ */
+async function readSubmodules(cwd: string): Promise<SubmoduleInfo[]> {
+  // -z gives NUL-separated "key\nvalue" records, so a value containing a newline
+  // can't be mistaken for the next entry. `core.quotePath=false` keeps non-ASCII
+  // paths raw (UTF-8) rather than C-quoted, same as `readWorktrees`.
+  const config = await runGit(cwd, [
+    '-c',
+    'core.quotePath=false',
+    'config',
+    '-f',
+    '.gitmodules',
+    '-z',
+    '--get-regexp',
+    '^submodule\\.',
+  ]);
+  if (!config) return [];
+
+  // Keyed by name, since a single submodule contributes several config keys.
+  const byName = new Map<string, { path?: string; url?: string; branch?: string }>();
+  for (const record of config.split('\0')) {
+    if (!record) continue;
+    const newline = record.indexOf('\n');
+    const key = (newline === -1 ? record : record.slice(0, newline)).trim();
+    const value = newline === -1 ? '' : record.slice(newline + 1);
+    // submodule.<name>.<field>, where <name> may itself contain dots.
+    const match = /^submodule\.(.+)\.(path|url|branch)$/.exec(key);
+    if (!match) continue;
+    const [, name, field] = match;
+    const entry = byName.get(name) ?? {};
+    entry[field as 'path' | 'url' | 'branch'] = value;
+    byName.set(name, entry);
+  }
+
+  // "<prefix><sha1> <path> (<describe>)" — the prefix is a single char, blank for
+  // an up-to-date submodule, so slice rather than split on whitespace.
+  const statusOut = await runGit(cwd, ['-c', 'core.quotePath=false', 'submodule', 'status']);
+  const statusByPath = new Map<string, { head: string; state: SubmoduleState; describe?: string }>();
+  for (const line of nonEmptyLines(statusOut)) {
+    const rest = line.slice(1);
+    const space = rest.indexOf(' ');
+    if (space === -1) continue;
+    const sha = rest.slice(0, space);
+    const tail = rest.slice(space + 1);
+    const described = /^(.*?) \((.*)\)$/.exec(tail);
+    statusByPath.set(described ? described[1] : tail, {
+      head: sha.slice(0, 7),
+      state: submoduleState(line[0]),
+      describe: described ? described[2] : undefined,
+    });
+  }
+
+  const submodules: SubmoduleInfo[] = [];
+  for (const [name, entry] of byName) {
+    const modulePath = entry.path;
+    if (!modulePath) continue;
+    const status = statusByPath.get(modulePath);
+    submodules.push({
+      name,
+      path: modulePath,
+      url: entry.url ?? '',
+      branch: entry.branch || undefined,
+      head: status?.head ?? '',
+      // Declared in .gitmodules but absent from `submodule status` means it was
+      // never checked out.
+      state: status?.state ?? 'uninitialized',
+      describe: status?.describe,
+    });
+  }
+  submodules.sort((a, b) => a.path.localeCompare(b.path));
+  return submodules;
+}
+
 /**
  * Whether `cwd` is a *linked* worktree rather than the repository's main one.
  * A linked worktree's per-worktree git dir (`.git/worktrees/<name>`) differs from
@@ -1074,15 +1162,17 @@ async function isLinkedWorktree(cwd: string): Promise<boolean> {
 }
 
 async function readRefs(cwd: string): Promise<RepoRefs> {
-  const [localBranches, remoteBranches, remotes, tags, stashes, worktrees] = await Promise.all([
-    readLocalBranches(cwd),
-    readRemoteBranches(cwd),
-    readRemotes(cwd),
-    readTags(cwd),
-    readStashes(cwd),
-    readWorktrees(cwd),
-  ]);
-  return { localBranches, remoteBranches, remotes, tags, stashes, worktrees };
+  const [localBranches, remoteBranches, remotes, tags, stashes, worktrees, submodules] =
+    await Promise.all([
+      readLocalBranches(cwd),
+      readRemoteBranches(cwd),
+      readRemotes(cwd),
+      readTags(cwd),
+      readStashes(cwd),
+      readWorktrees(cwd),
+      readSubmodules(cwd),
+    ]);
+  return { localBranches, remoteBranches, remotes, tags, stashes, worktrees, submodules };
 }
 
 /**
@@ -1307,8 +1397,9 @@ async function mutateRepo(
   cwd: string,
   steps: string[][],
   fallback: string,
+  extraEnv?: Record<string, string>,
 ): Promise<RefsMutationResult> {
-  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+  const env = gitEnv({ GIT_TERMINAL_PROMPT: '0', ...extraEnv });
   try {
     for (const args of steps) {
       await spawnGit(cwd, args, activityOp(args), env);
@@ -3006,6 +3097,7 @@ function registerRepoIpc(): void {
           tags: [],
           stashes: [],
           worktrees: [],
+          submodules: [],
         };
       }
       return readRefs(repoPath);
@@ -4221,6 +4313,237 @@ function registerRepoIpc(): void {
       if (why) args.push('--reason', why.slice(0, 500));
       args.push(treePath);
       return mutateRepo(repoPath, [args], 'Could not lock the worktree.');
+    },
+  );
+
+  // --- Submodules ----------------------------------------------------------
+  //
+  // A submodule path always comes back from the renderer as one we handed it, but
+  // the preload bridge is not a trust boundary for argument *shapes* — so every
+  // handler resolves the path against the repo's own `.gitmodules` list rather
+  // than passing it to git, which makes traversal out of the repo impossible.
+
+  /** Resolve an untrusted submodule path against the repo's declared submodules. */
+  async function resolveSubmodule(
+    repoPath: string,
+    submodulePath: unknown,
+  ): Promise<SubmoduleInfo | null> {
+    if (typeof submodulePath !== 'string') return null;
+    const wanted = submodulePath.trim().replace(/\/+$/, '');
+    if (!wanted) return null;
+    const submodules = await readSubmodules(repoPath);
+    return submodules.find((submodule) => submodule.path === wanted) ?? null;
+  }
+
+  /**
+   * Build the args for a `git submodule <verb>` that optionally targets a single
+   * submodule, or null when a path was given that this repo doesn't declare.
+   * `--` terminates the options so a path can never be read as a flag.
+   */
+  async function submoduleArgs(
+    repoPath: string,
+    submodulePath: unknown,
+    args: string[],
+  ): Promise<string[] | null> {
+    if (submodulePath === undefined || submodulePath === null) return args;
+    const submodule = await resolveSubmodule(repoPath, submodulePath);
+    if (!submodule) return null;
+    return [...args, '--', submodule.path];
+  }
+
+  ipcMain.handle(
+    RepoChannels.submoduleAdd,
+    async (_event, repoPath: unknown, options: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const opts = (options ?? {}) as Partial<SubmoduleAddOptions>;
+      // The URL is a positional arg: reject a leading dash so it can't be read as
+      // a flag. The transport itself is restricted by GIT_ALLOW_PROTOCOL below.
+      const url = typeof opts.url === 'string' ? opts.url.trim() : '';
+      if (!url || url.startsWith('-')) {
+        return { status: 'error', message: 'Enter the submodule’s repository URL.' };
+      }
+      // The path must stay inside the superproject: relative, no "..", no drive or
+      // root prefix. git would refuse most of these, but the message is clearer.
+      const modulePath = typeof opts.path === 'string' ? opts.path.trim().replace(/\/+$/, '') : '';
+      if (
+        !modulePath ||
+        modulePath.startsWith('-') ||
+        path.isAbsolute(modulePath) ||
+        /^[A-Za-z]:/.test(modulePath) ||
+        modulePath.split(/[/\\]/).some((part) => part === '..')
+      ) {
+        return { status: 'error', message: 'Enter a path inside this repository.' };
+      }
+      if (fs.existsSync(path.join(repoPath, modulePath))) {
+        return { status: 'error', message: 'That path already exists — pick another.' };
+      }
+      const args = ['submodule', 'add'];
+      // Keep the branch ref-legal so it can't inject a flag, matching worktreeAdd.
+      const branch = typeof opts.branch === 'string' ? opts.branch.trim() : '';
+      if (branch) {
+        if (!/^[A-Za-z0-9._/-]+$/.test(branch) || branch.startsWith('-')) {
+          return { status: 'error', message: 'Enter a valid branch name.' };
+        }
+        args.push('-b', branch);
+      }
+      args.push('--', url, modulePath);
+      const result = await mutateRepo(
+        repoPath,
+        [args],
+        `Could not add “${modulePath}”.`,
+        // Same transport allowlist as clone: block ext::/fd:: helpers, which would
+        // otherwise let a crafted URL run a command.
+        { GIT_ALLOW_PROTOCOL: 'https:http:git:ssh:file' },
+      );
+      if (result.status === 'ok') {
+        return {
+          ...result,
+          notice: `“${modulePath}” was added and staged — commit to record it.`,
+        };
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.submoduleInit,
+    async (_event, repoPath: unknown, submodulePath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const args = await submoduleArgs(repoPath, submodulePath, [
+        'submodule',
+        'update',
+        '--init',
+      ]);
+      if (!args) return { status: 'error', message: 'No such submodule.' };
+      return mutateRepo(repoPath, [args], 'Could not initialize the submodule.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.submoduleUpdate,
+    async (_event, repoPath: unknown, submodulePath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // --init so an update also picks up a submodule that was never checked out;
+      // --recursive so nested submodules follow along.
+      const args = await submoduleArgs(repoPath, submodulePath, [
+        'submodule',
+        'update',
+        '--init',
+        '--recursive',
+      ]);
+      if (!args) return { status: 'error', message: 'No such submodule.' };
+      return mutateRepo(repoPath, [args], 'Could not update the submodule.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.submoduleUpdateRemote,
+    async (_event, repoPath: unknown, submodulePath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const args = await submoduleArgs(repoPath, submodulePath, [
+        'submodule',
+        'update',
+        '--init',
+        '--remote',
+      ]);
+      if (!args) return { status: 'error', message: 'No such submodule.' };
+      const result = await mutateRepo(
+        repoPath,
+        [args],
+        'Could not update the submodule from its remote.',
+      );
+      if (result.status === 'ok') {
+        return {
+          ...result,
+          notice: 'Moved to the upstream tip — commit to record the new revision.',
+        };
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.submoduleSync,
+    async (_event, repoPath: unknown, submodulePath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const args = await submoduleArgs(repoPath, submodulePath, [
+        'submodule',
+        'sync',
+        '--recursive',
+      ]);
+      if (!args) return { status: 'error', message: 'No such submodule.' };
+      return mutateRepo(repoPath, [args], 'Could not sync the submodule’s URL.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.submoduleDeinit,
+    async (
+      _event,
+      repoPath: unknown,
+      submodulePath: unknown,
+      force: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const submodule = await resolveSubmodule(repoPath, submodulePath);
+      if (!submodule) return { status: 'error', message: 'No such submodule.' };
+      const args = ['submodule', 'deinit'];
+      if (force === true) args.push('--force');
+      args.push('--', submodule.path);
+      return mutateRepo(repoPath, [args], `Could not deinitialize “${submodule.path}”.`);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.submoduleRemove,
+    async (_event, repoPath: unknown, submodulePath: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const submodule = await resolveSubmodule(repoPath, submodulePath);
+      if (!submodule) return { status: 'error', message: 'No such submodule.' };
+      // git has no "submodule rm": empty the working directory, then `git rm` the
+      // path — which also drops the `.gitmodules` entry and stages both changes.
+      const result = await mutateRepo(
+        repoPath,
+        [
+          ['submodule', 'deinit', '--force', '--', submodule.path],
+          ['rm', '--force', '--', submodule.path],
+        ],
+        `Could not remove “${submodule.path}”.`,
+      );
+      if (result.status !== 'ok') return result;
+      // Finally drop the submodule's internal clone, which git leaves behind and
+      // which would otherwise conflict with re-adding the same name. Resolve the
+      // common dir so this is right inside a linked worktree too. A failure here
+      // doesn't undo the removal, so it's swallowed rather than surfaced.
+      try {
+        const commonDir = (await runGit(repoPath, ['rev-parse', '--git-common-dir'])).trim();
+        if (commonDir) {
+          await fs.promises.rm(path.resolve(repoPath, commonDir, 'modules', submodule.name), {
+            recursive: true,
+            force: true,
+          });
+        }
+      } catch {
+        // Leaving the internal clone behind is harmless; the removal still stands.
+      }
+      return {
+        ...result,
+        notice: `“${submodule.path}” was removed and staged — commit to record it.`,
+      };
     },
   );
 

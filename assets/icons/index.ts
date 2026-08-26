@@ -31,6 +31,7 @@ export { CertificateIcon } from './CertificateIcon';
 export { SortIcon } from './SortIcon';
 export { TrashIcon } from './TrashIcon';
 export { ListIcon } from './ListIcon';
+export { SubmoduleIcon } from './SubmoduleIcon';
 export { TreeIcon } from './TreeIcon';
 export { WorktreeIcon } from './WorktreeIcon';
 export { LockIcon } from './LockIcon';

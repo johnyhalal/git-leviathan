@@ -248,6 +248,41 @@ export interface WorktreeAddOptions {
   startPoint: string;
 }
 
+/** The state of a submodule, from the `git submodule status` line prefix. */
+export type SubmoduleState = 'ok' | 'uninitialized' | 'out-of-date' | 'conflicted';
+
+/** A submodule of the open repository (`.gitmodules` + `git submodule status`). */
+export interface SubmoduleInfo {
+  /** The name in `.gitmodules` (`submodule.<name>.*`); usually equals `path`. */
+  name: string;
+  /** The submodule's path, relative to the superproject's root. */
+  path: string;
+  /** The URL recorded in `.gitmodules` (empty when the entry has none). */
+  url: string;
+  /** The branch recorded in `.gitmodules` (`submodule.<name>.branch`), when set. */
+  branch?: string;
+  /** Short SHA the superproject records for it; empty when not initialized. */
+  head: string;
+  /**
+   * `ok` when the checked-out commit matches the recorded one, `uninitialized`
+   * when the working directory is empty, `out-of-date` when it sits at a
+   * different commit, `conflicted` during a merge conflict on the gitlink.
+   */
+  state: SubmoduleState;
+  /** The `git describe` output git appends in parentheses, when it gave one. */
+  describe?: string;
+}
+
+/** Options for adding a submodule (`git submodule add`). */
+export interface SubmoduleAddOptions {
+  /** The clone URL of the repository to add. */
+  url: string;
+  /** Destination path, relative to the superproject's root (e.g. "vendor/foo"). */
+  path: string;
+  /** Optional branch to track (`-b`), which enables "update to remote". */
+  branch?: string;
+}
+
 /** The refs of an open repository, for the sidebar. */
 export interface RepoRefs {
   localBranches: LocalBranchInfo[];
@@ -258,6 +293,8 @@ export interface RepoRefs {
   stashes: StashInfo[];
   /** Linked working trees (`git worktree list`), including the main one. */
   worktrees: WorktreeInfo[];
+  /** Submodules declared in `.gitmodules`, with their checkout state. */
+  submodules: SubmoduleInfo[];
 }
 
 /**
@@ -783,6 +820,20 @@ export const RepoChannels = {
   worktreeRemove: 'repo:worktree-remove',
   /** Renderer -> main (invoke): lock/unlock a linked worktree (`git worktree lock`). */
   worktreeLock: 'repo:worktree-lock',
+  /** Renderer -> main (invoke): add a submodule (`git submodule add`). */
+  submoduleAdd: 'repo:submodule-add',
+  /** Renderer -> main (invoke): initialize + check out submodules. */
+  submoduleInit: 'repo:submodule-init',
+  /** Renderer -> main (invoke): update submodules to their recorded commits. */
+  submoduleUpdate: 'repo:submodule-update',
+  /** Renderer -> main (invoke): update submodules to their upstream tips. */
+  submoduleUpdateRemote: 'repo:submodule-update-remote',
+  /** Renderer -> main (invoke): re-sync submodule URLs from `.gitmodules`. */
+  submoduleSync: 'repo:submodule-sync',
+  /** Renderer -> main (invoke): deinitialize a submodule (`git submodule deinit`). */
+  submoduleDeinit: 'repo:submodule-deinit',
+  /** Renderer -> main (invoke): remove a submodule entirely. */
+  submoduleRemove: 'repo:submodule-remove',
   /** Renderer -> main (invoke): whether a path is itself a linked worktree. */
   isWorktree: 'repo:is-worktree',
   /** Renderer -> main (invoke): whether a would-be path sits inside a git work tree. */
@@ -1556,6 +1607,51 @@ export interface RepoApi {
     lock: boolean,
     reason?: string,
   ): Promise<RefsMutationResult>;
+  /**
+   * Add a submodule at `options.path` (`git submodule add`). Clones it, writes the
+   * `.gitmodules` entry and stages both — the caller still has to commit. Resolves
+   * with fresh refs, or an error (bad URL, occupied path, clone failure).
+   */
+  submoduleAdd(path: string, options: SubmoduleAddOptions): Promise<RefsMutationResult>;
+  /**
+   * Initialize and check out submodules (`git submodule update --init`). Without
+   * `submodulePath` every submodule is initialized. Returns fresh refs.
+   */
+  submoduleInit(path: string, submodulePath?: string): Promise<RefsMutationResult>;
+  /**
+   * Check submodules out at the commits the superproject records
+   * (`git submodule update --init --recursive`). Without `submodulePath` all of
+   * them are updated. Returns fresh refs.
+   */
+  submoduleUpdate(path: string, submodulePath?: string): Promise<RefsMutationResult>;
+  /**
+   * Move submodules to their upstream branch tip (`git submodule update --remote`),
+   * which stages a new gitlink for the caller to commit. Without `submodulePath`
+   * all of them move. Returns fresh refs.
+   */
+  submoduleUpdateRemote(path: string, submodulePath?: string): Promise<RefsMutationResult>;
+  /**
+   * Re-apply the URLs in `.gitmodules` to the submodules' own configs
+   * (`git submodule sync`), after the file was edited or a remote moved. Without
+   * `submodulePath` all of them are synced. Returns fresh refs.
+   */
+  submoduleSync(path: string, submodulePath?: string): Promise<RefsMutationResult>;
+  /**
+   * Empty a submodule's working directory (`git submodule deinit`), keeping its
+   * `.gitmodules` entry so it can be initialized again. `force` discards local
+   * modifications inside it. Returns fresh refs.
+   */
+  submoduleDeinit(
+    path: string,
+    submodulePath: string,
+    force?: boolean,
+  ): Promise<RefsMutationResult>;
+  /**
+   * Remove a submodule completely: deinitialize it, `git rm` its path and
+   * `.gitmodules` entry (staged, not committed), and delete its internal clone
+   * under `.git/modules`. Returns fresh refs.
+   */
+  submoduleRemove(path: string, submodulePath: string): Promise<RefsMutationResult>;
   /**
    * Whether `path` is itself a *linked* worktree (i.e. one added via
    * `git worktree add`) rather than the repository's main worktree. False for a
