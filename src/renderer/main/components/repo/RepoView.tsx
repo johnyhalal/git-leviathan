@@ -10,6 +10,7 @@ import type {
   RepoConfig,
   RepoInfo,
   RepoRefs,
+  ResetMode,
   UndoRedoState,
   WorkingStatus,
 } from '../../../../types/ipc';
@@ -466,6 +467,32 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
+  // Keyboard shortcuts for the toolbar's undo/redo: Cmd/Ctrl+Z undoes,
+  // Cmd/Ctrl+R (and the conventional Cmd/Ctrl+Shift+Z / Ctrl+Y) redoes. Typing
+  // in a field keeps its native text undo — git history is only touched when
+  // focus is outside an editor. The reload accelerator is dropped from the app
+  // menu in the main process so Cmd/Ctrl+R reaches the page at all.
+  useEffect(() => {
+    const isEditable = (node: EventTarget | null) => {
+      const el = node as HTMLElement | null;
+      if (!el || typeof el.closest !== 'function') return false;
+      return Boolean(el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]'));
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (event.repeat || isEditable(event.target)) return;
+      const key = event.key.toLowerCase();
+      const wantsUndo = key === 'z' && !event.shiftKey;
+      const wantsRedo = (key === 'z' && event.shiftKey) || key === 'r' || key === 'y';
+      if (!wantsUndo && !wantsRedo) return;
+      event.preventDefault();
+      if (wantsUndo && undoRedo.undo) void undo();
+      else if (wantsRedo && undoRedo.redo) void redo();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [undo, redo, undoRedo.undo, undoRedo.redo]);
+
   const stashPush = useCallback(
     () =>
       runMutation('Stash failed', () => window.api.repo.stashPush(repoPath)),
@@ -711,6 +738,30 @@ export function RepoView({
         window.api.repo.cherryPick(repoPath, hash),
       ),
     [repoPath, runMutation],
+  );
+
+  // Check out a commit itself (from a commit's context menu), which detaches HEAD
+  // from whatever branch it was on. Same mutation shape as a branch checkout.
+  const checkoutCommit = useCallback(
+    (hash: string) =>
+      runMutation('Checkout failed', () =>
+        window.api.repo.checkoutCommit(repoPath, hash),
+      ),
+    [repoPath, runMutation],
+  );
+
+  // Move the checked-out branch back to `hash`. The reset lands in the reflog, so
+  // the toolbar's Undo can take it back — the work a `hard` reset discards is gone
+  // for good, which is why the menu confirms that mode before calling in.
+  const resetTo = useCallback(
+    (hash: string, mode: ResetMode) =>
+      runMutation('Reset failed', () => window.api.repo.reset(repoPath, hash, mode)),
+    [repoPath, runMutation],
+  );
+
+  const resetPreview = useCallback(
+    (hash: string) => window.api.repo.resetPreview(repoPath, hash),
+    [repoPath],
   );
 
   // Push a local branch to a specific remote branch (dragging a local branch onto
@@ -974,6 +1025,9 @@ export function RepoView({
           onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
           onFastForward={(source, target) => void fastForward(source, target)}
           onCherryPick={(hash) => void cherryPick(hash)}
+          onCheckoutCommit={(hash) => void checkoutCommit(hash)}
+          onReset={(hash, mode) => void resetTo(hash, mode)}
+          onResetPreview={resetPreview}
           onPushBranch={pushBranch}
           onRenameBranch={(oldName, newName) => void renameBranch(oldName, newName)}
           onDeleteBranch={(branch) => void deleteBranch(branch)}

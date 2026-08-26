@@ -4,6 +4,8 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Menu,
+  type MenuItemConstructorOptions,
   nativeImage,
   nativeTheme,
   safeStorage,
@@ -104,6 +106,7 @@ import {
   type RepoInfo,
   type SshKeyInfo,
   type RepoRefs,
+  type ResetPreview,
   type TagInfo,
   type ThemeSource,
   type ThemeState,
@@ -3641,6 +3644,32 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.checkoutCommit,
+    async (_event, repoPath: unknown, hash: unknown): Promise<CheckoutResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted hash the same way cherry-pick does: a non-empty
+      // string that can't be read as an option and names a commit in this repo.
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+        return { status: 'error', message: 'No commit was specified.' };
+      }
+      if (!(await commitishExists(repoPath, hash))) {
+        return { status: 'error', message: `Commit “${hash}” doesn’t exist.` };
+      }
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
+      try {
+        // Checking out a commit rather than a branch leaves a detached HEAD;
+        // that's the intent here, so git's advice about it is silenced.
+        await spawnGit(repoPath, ['-c', 'advice.detachedHead=false', 'checkout', hash], 'checkout', env);
+      } catch (err) {
+        return { status: 'error', message: checkoutErrorMessage(err, hash.slice(0, 7)) };
+      }
+      return { status: 'ok', refs: await readRefs(repoPath) };
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.createBranch,
     async (
       _event,
@@ -4071,6 +4100,52 @@ function registerRepoIpc(): void {
       // place; the error surfaces the conflict resolver, and the merge banner
       // reads the in-progress state, letting the user continue or abort.
       return mutateRepo(repoPath, [['cherry-pick', '-x', hash]], 'Could not cherry-pick the commit.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.reset,
+    async (
+      _event,
+      repoPath: unknown,
+      hash: unknown,
+      mode: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+        return { status: 'error', message: 'No commit was specified.' };
+      }
+      // Match the mode against the three literals rather than interpolating it:
+      // that's what keeps an arbitrary string from reaching git as a flag.
+      if (mode !== 'soft' && mode !== 'mixed' && mode !== 'hard') {
+        return { status: 'error', message: 'Invalid reset mode.' };
+      }
+      if (!(await commitishExists(repoPath, hash))) {
+        return { status: 'error', message: `Commit “${hash}” doesn’t exist.` };
+      }
+      // The reset lands in the reflog, so `buildUndoStack` picks it up and the
+      // branch move is undoable — the changes a `--hard` destroys are not.
+      return mutateRepo(repoPath, [['reset', `--${mode}`, hash]], 'Could not reset the branch.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.resetPreview,
+    async (_event, repoPath: unknown, hash: unknown): Promise<ResetPreview> => {
+      const none: ResetPreview = { commits: 0, dirty: false };
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return none;
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) return none;
+      // Read-only, so `runGit` swallowing failures is the right degradation: the
+      // confirmation just drops its detail rather than failing to appear.
+      const out = await runGit(repoPath, ['rev-list', '--count', `${hash}..HEAD`]);
+      const commits = Number.parseInt(out.trim(), 10);
+      const status = await runGit(repoPath, ['status', '--porcelain']);
+      return {
+        commits: Number.isNaN(commits) ? 0 : commits,
+        dirty: status.trim().length > 0,
+      };
     },
   );
 
@@ -7367,6 +7442,37 @@ function registerUpdateIpc(): void {
   });
 }
 
+/**
+ * The application menu. It's the stock roles-based menu with one deliberate
+ * omission: the plain Reload item's `CmdOrCtrl+R` accelerator. That accelerator
+ * is swallowed by the menu before the page ever sees the key, and the repo view
+ * binds Cmd/Ctrl+R to "redo" — so reloading keeps only its Shift variant
+ * (`forceReload`), which nothing else wants.
+ */
+function installAppMenu(): void {
+  const isMac = process.platform === 'darwin';
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac ? ([{ role: 'appMenu' }] as MenuItemConstructorOptions[]) : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    { role: 'windowMenu' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.on('ready', () => {
   loadSettings();
   // Resolve the login-shell PATH in the background so git hooks (a pre-commit
@@ -7376,6 +7482,7 @@ app.on('ready', () => {
   loadGithubAvatars();
   applyDockIcon();
   nativeTheme.themeSource = settings.themeSource;
+  installAppMenu();
   registerThemeIpc();
   registerRepoIpc();
   registerIntegrationsIpc();

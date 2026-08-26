@@ -1,5 +1,12 @@
+import { useState } from 'react';
+import type { ResetMode, ResetPreview } from '../../../../types/ipc';
 import { useConfirm } from '../ConfirmBar';
-import { ContextMenu } from './ContextMenu';
+import {
+  ContextMenu,
+  MenuRow,
+  type ContextMenuEntry,
+  type ContextMenuItem,
+} from './ContextMenu';
 
 /** The branch a context menu was opened on, with enough state to pick its actions. */
 export interface BranchMenuTarget {
@@ -52,6 +59,21 @@ interface BranchContextMenuProps {
    */
   onCherryPick?: () => void;
   /**
+   * Check out this menu's commit itself, detaching HEAD from any branch. Offered
+   * for every commit but the checked-out one; omit to hide the row.
+   */
+  onCheckoutCommit?: () => void;
+  /**
+   * Reset the checked-out branch back to this menu's commit, dropping every
+   * commit after it. Offered as a submenu of the three modes; omit to hide it.
+   * Pairs with {@link onResetPreview}, which the hard-reset confirmation needs.
+   */
+  onReset?: (mode: ResetMode) => void;
+  /** How many commits a reset here would drop, and whether the tree is dirty. */
+  onResetPreview?: () => Promise<ResetPreview>;
+  /** Abbreviated hash of this menu's commit, named in the hard-reset confirmation. */
+  shortHash?: string;
+  /**
    * Start creating a lightweight tag at this menu's commit. When provided
    * together with {@link onCreateAnnotatedTagHere}, the two "Create tag here"
    * rows are appended below a separator; omit both to hide the tag section.
@@ -61,15 +83,11 @@ interface BranchContextMenuProps {
   onCreateAnnotatedTagHere?: () => void;
 }
 
-/** One row in the menu. */
-interface MenuItem {
-  label: string;
-  danger?: boolean;
-  onClick: () => void;
-}
+/** One row in the menu (a leaf action, or a parent opening a submenu). */
+type MenuItem = ContextMenuItem;
 
 /** A menu row or a divider between action groups. */
-type MenuEntry = MenuItem | 'separator';
+type MenuEntry = ContextMenuEntry;
 
 type Handlers = Pick<
   BranchContextMenuProps,
@@ -207,10 +225,16 @@ export function BranchContextMenu({
   onDeleteBranch,
   onDeleteRemoteBranch,
   onCherryPick,
+  onCheckoutCommit,
+  onReset,
+  onResetPreview,
+  shortHash,
   onCreateTagHere,
   onCreateAnnotatedTagHere,
 }: BranchContextMenuProps) {
   const requestConfirm = useConfirm();
+  // The row whose submenu is currently open (index into `entries`), if any.
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
   const handlers: Handlers = {
     onCheckout,
     onMerge,
@@ -228,6 +252,59 @@ export function BranchContextMenu({
     if (entries.length) entries.push('separator');
     entries.push(...group);
   }
+
+  // Checking out the commit itself detaches HEAD, so — like cherry-pick — it
+  // targets the commit rather than any branch above and gets its own group.
+  if (onCheckoutCommit) {
+    if (entries.length) entries.push('separator');
+    entries.push({ label: 'Checkout this commit', onClick: onCheckoutCommit });
+  }
+
+  // Reset moves the *branch* back to this commit (unlike checkout, which moves
+  // only HEAD), so it targets the checked-out branch and gets its own group. The
+  // three modes hang off a submenu because only one of them — hard — is
+  // destructive, and burying it there keeps it off the top level.
+  if (onReset) {
+    if (entries.length) entries.push('separator');
+    entries.push({
+      label: currentBranch
+        ? `Reset ${currentBranch} to this commit`
+        : 'Reset HEAD to this commit', // detached HEAD: there's no branch to name
+      submenu: [
+        { label: 'Soft — keep the changes staged', onClick: () => onReset('soft') },
+        { label: 'Mixed — keep the changes unstaged', onClick: () => onReset('mixed') },
+        {
+          label: 'Hard — discard the changes',
+          danger: true,
+          // The only mode that can destroy work, so it always confirms — and the
+          // preview lets the prompt say what's actually at stake.
+          onClick: async () => {
+            const preview = await onResetPreview?.();
+            const dropped = preview?.commits ?? 0;
+            const target = currentBranch ?? 'HEAD';
+            const at = shortHash ? ` to ${shortHash}` : '';
+            const commits =
+              dropped > 0 ? ` This drops ${dropped} commit${dropped === 1 ? '' : 's'}` : ' This drops no commits';
+            const dirty = preview?.dirty ? ' and discards your uncommitted changes' : '';
+            requestConfirm({
+              message:
+                `Hard reset ${target}${at}?${commits}${dirty}. ` +
+                'The commits stay recoverable with Undo; uncommitted changes don’t.',
+              actions: [
+                {
+                  label: 'Hard reset',
+                  tone: 'danger',
+                  busyLabel: 'Resetting…',
+                  onClick: () => onReset('hard'),
+                },
+              ],
+            });
+          },
+        },
+      ],
+    });
+  }
+
 
   // Cherry-pick targets the commit itself (applying it onto the checked-out
   // branch), so like the tag actions it's divided off from the branch groups.
@@ -255,18 +332,14 @@ export function BranchContextMenu({
         entry === 'separator' ? (
           <div key={`sep-${index}`} className="context-menu-sep" role="separator" />
         ) : (
-          <button
+          <MenuRow
             key={`${entry.label}-${index}`}
-            type="button"
-            role="menuitem"
-            className={'context-menu-item' + (entry.danger ? ' context-menu-item-danger' : '')}
-            onClick={() => {
-              onClose();
-              entry.onClick();
-            }}
-          >
-            {entry.label}
-          </button>
+            item={entry}
+            open={openIndex === index}
+            // Hovering a plain row closes any open submenu; a parent row opens its own.
+            onHover={() => setOpenIndex(entry.submenu?.length ? index : null)}
+            onClose={onClose}
+          />
         ),
       )}
     </ContextMenu>

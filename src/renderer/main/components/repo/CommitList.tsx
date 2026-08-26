@@ -12,6 +12,8 @@ import type {
   CommitRefDecoration,
   FileStatus,
   RemoteInfo,
+  ResetMode,
+  ResetPreview,
   WorkingStatus,
 } from '../../../../types/ipc';
 import { CheckIcon, LocalIcon, MinusIcon, PencilIcon, PlusIcon, TagIcon } from '../../../../../assets/icons';
@@ -489,8 +491,14 @@ interface CommitListProps {
   onMergeBranch?: (source: string, target: string) => void;
   /** Rebase the dragged branch into the one it was dropped on. */
   onRebaseBranch?: (source: string, target: string) => void;
+  /** Check out the commit itself, detaching HEAD (from a commit row's context menu). */
+  onCheckoutCommit?: (hash: string) => void;
   /** Cherry-pick the commit onto HEAD (from a commit row's context menu). */
   onCherryPick?: (hash: string) => void;
+  /** Reset the checked-out branch to the commit (from a commit row's context menu). */
+  onReset?: (hash: string, mode: ResetMode) => void;
+  /** What a reset to the commit would drop, read to word its confirmation. */
+  onResetPreview?: (hash: string) => Promise<ResetPreview>;
   /** Rename a local branch (`git branch -m`), from a badge's context menu. */
   onRenameBranch?: (oldName: string, newName: string) => void;
   /** Delete a local branch (`git branch -D`), from a badge's context menu. */
@@ -925,6 +933,9 @@ export function CommitList({
   onMergeBranch,
   onRebaseBranch,
   onCherryPick,
+  onCheckoutCommit,
+  onReset,
+  onResetPreview,
   onRenameBranch,
   onDeleteBranch,
   onDeleteRemoteBranch,
@@ -959,6 +970,8 @@ export function CommitList({
     targets: BranchMenuTarget[];
     /** The commit the menu was opened on, for the "Create tag here" actions. */
     hash: string;
+    /** Whether HEAD already points at that commit (hides "Checkout this commit"). */
+    isHead: boolean;
     x: number;
     y: number;
   } | null>(null);
@@ -1211,7 +1224,13 @@ export function CommitList({
                 if (commit.working || isStash) return;
                 const targets = branchTargets(commit.refs).filter(isDeletable);
                 event.preventDefault();
-                setContextMenu({ targets, hash: commit.hash, x: event.clientX, y: event.clientY });
+                setContextMenu({
+                  targets,
+                  hash: commit.hash,
+                  isHead: commit.refs.some((ref) => ref.kind === 'head'),
+                  x: event.clientX,
+                  y: event.clientY,
+                });
               }}
             >
               {order.map((key) => renderCell(key, ctx))}
@@ -1246,6 +1265,17 @@ export function CommitList({
         onCherryPick={
           onCherryPick ? () => onCherryPick(contextMenu.hash) : undefined
         }
+        onCheckoutCommit={
+          // Hidden on the commit HEAD already points at — there'd be nothing to switch to.
+          onCheckoutCommit && !contextMenu.isHead
+            ? () => onCheckoutCommit(contextMenu.hash)
+            : undefined
+        }
+        onReset={onReset ? (mode) => onReset(contextMenu.hash, mode) : undefined}
+        onResetPreview={
+          onResetPreview ? () => onResetPreview(contextMenu.hash) : undefined
+        }
+        shortHash={contextMenu.hash.slice(0, 7)}
         onRenameBranch={(oldName, newName) => onRenameBranch?.(oldName, newName)}
         onDeleteBranch={(name) => onDeleteBranch?.(name)}
         onDeleteRemoteBranch={(remote, name) => onDeleteRemoteBranch?.(remote, name)}

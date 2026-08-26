@@ -59,6 +59,8 @@ import {
   type UpdateCheckInterval,
   type RepoInfo,
   type RepoRefs,
+  type ResetMode,
+  type ResetPreview,
   type SshKeyInfo,
   type ThemeSource,
   type ThemeState,
@@ -177,6 +179,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.pull, path, mode) as Promise<CommitResult>,
     checkout: (path: string, branch: string, remote?: string) =>
       ipcRenderer.invoke(RepoChannels.checkout, path, branch, remote) as Promise<CheckoutResult>,
+    checkoutCommit: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.checkoutCommit, path, hash) as Promise<CheckoutResult>,
     createBranch: (path: string, name: string) =>
       ipcRenderer.invoke(RepoChannels.createBranch, path, name) as Promise<RefsMutationResult>,
     createTag: (path: string, name: string, ref: string, message: string | null) =>
@@ -231,6 +235,10 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.fastForward, path, source, target) as Promise<RefsMutationResult>,
     cherryPick: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.cherryPick, path, hash) as Promise<RefsMutationResult>,
+    reset: (path: string, hash: string, mode: ResetMode) =>
+      ipcRenderer.invoke(RepoChannels.reset, path, hash, mode) as Promise<RefsMutationResult>,
+    resetPreview: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.resetPreview, path, hash) as Promise<ResetPreview>,
     pushBranch: (path: string, remote: string, localBranch: string, remoteBranch: string) =>
       ipcRenderer.invoke(
         RepoChannels.pushBranch,

@@ -5,6 +5,8 @@ import type {
   GitflowConfig,
   GitflowKind,
   RepoRefs,
+  ResetMode,
+  ResetPreview,
   WorkingStatus,
 } from '../../../../types/ipc';
 import { RepoSidebar } from './RepoSidebar';
@@ -68,6 +70,12 @@ interface RepoColumnsProps {
   onFastForward: (source: string, target: string) => void;
   /** Cherry-pick the commit `hash` onto HEAD (from a commit's context menu). */
   onCherryPick: (hash: string) => void;
+  /** Check out the commit `hash` itself, detaching HEAD (from a commit's context menu). */
+  onCheckoutCommit: (hash: string) => void;
+  /** Reset the checked-out branch to `hash` (from a commit's context menu). */
+  onReset: (hash: string, mode: ResetMode) => void;
+  /** What a reset to `hash` would drop, read to word its confirmation. */
+  onResetPreview: (hash: string) => Promise<ResetPreview>;
   /** Push a local branch to a remote branch (sidebar branch drag); resolves success. */
   onPushBranch: (remote: string, localBranch: string, remoteBranch: string) => Promise<boolean>;
   /** Rename a local branch (`git branch -m`), from a branch's context menu. */
@@ -176,6 +184,9 @@ export function RepoColumns({
   onCancelCreateBranch,
   onMergeBranch,
   onCherryPick,
+  onCheckoutCommit,
+  onReset,
+  onResetPreview,
   onRebaseBranch,
   onFastForward,
   onPushBranch,
@@ -456,6 +467,9 @@ export function RepoColumns({
             onMergeBranch={onMergeBranch}
             onRebaseBranch={onRebaseBranch}
             onCherryPick={onCherryPick}
+            onCheckoutCommit={onCheckoutCommit}
+            onReset={onReset}
+            onResetPreview={onResetPreview}
             onRenameBranch={onRenameBranch}
             onDeleteBranch={onDeleteBranch}
             onDeleteRemoteBranch={onDeleteRemoteBranch}

@@ -318,6 +318,24 @@ export type RefsMutationResult =
 export type CheckoutResult = RefsMutationResult;
 
 /**
+ * How far a reset rewinds alongside the branch label. Every mode moves the
+ * branch to the target commit; they differ only in what happens to the dropped
+ * commits' changes:
+ * - `soft`  — keep them **staged**, ready to re-commit.
+ * - `mixed` — keep them **unstaged** (git's own default).
+ * - `hard`  — discard them, along with any uncommitted work. Destructive.
+ */
+export type ResetMode = 'soft' | 'mixed' | 'hard';
+
+/** What a reset to a given commit would cost, read before confirming a hard one. */
+export interface ResetPreview {
+  /** Commits between the target and HEAD that the reset would drop. */
+  commits: number;
+  /** Whether the working tree is dirty, so a hard reset would destroy real work. */
+  dirty: boolean;
+}
+
+/**
  * The next undoable/redoable HEAD-moving action, read from the reflog. Each is a
  * short human label for the toolbar button's tooltip (e.g. `commit: fix bug`,
  * `checkout: main → feature`), or null when there's nothing to undo/redo.
@@ -776,6 +794,8 @@ export const RepoChannels = {
   pull: 'repo:pull',
   /** Renderer -> main (invoke): check out a branch; returns fresh refs. */
   checkout: 'repo:checkout',
+  /** Renderer -> main (invoke): check out a commit (detached HEAD); returns fresh refs. */
+  checkoutCommit: 'repo:checkout-commit',
   /** Renderer -> main (invoke): create a branch at HEAD; returns fresh refs. */
   createBranch: 'repo:create-branch',
   /** Renderer -> main (invoke): create a tag at a commit; returns fresh refs. */
@@ -804,6 +824,10 @@ export const RepoChannels = {
   fastForward: 'repo:fast-forward',
   /** Renderer -> main (invoke): cherry-pick a commit onto HEAD; returns fresh refs. */
   cherryPick: 'repo:cherry-pick',
+  /** Renderer -> main (invoke): reset the current branch to a commit; returns fresh refs. */
+  reset: 'repo:reset',
+  /** Renderer -> main (invoke): what a reset to a commit would drop (for its confirmation). */
+  resetPreview: 'repo:reset-preview',
   /** Renderer -> main (invoke): push a local branch to a remote branch. */
   pushBranch: 'repo:push-branch',
   /** Renderer -> main (invoke): stash uncommitted changes (`git stash push`). */
@@ -1454,6 +1478,13 @@ export interface RepoApi {
    */
   checkout(path: string, branch: string, remote?: string): Promise<CheckoutResult>;
   /**
+   * Check out the commit `hash` in the repository at `path`
+   * (`git checkout <hash>`), leaving the repo on a detached HEAD. Resolves with
+   * the repo's fresh refs on success, or an error message (unknown commit,
+   * conflicting local changes…).
+   */
+  checkoutCommit(path: string, hash: string): Promise<CheckoutResult>;
+  /**
    * Create a new branch named `name` at HEAD and check it out
    * (`git checkout -b <name>`). Resolves with the repo's fresh refs on success,
    * or an error message (invalid name, a branch of that name already exists,
@@ -1545,6 +1576,19 @@ export interface RepoApi {
    * resolve and `mergeContinue`, or `mergeAbort`.
    */
   cherryPick(path: string, hash: string): Promise<RefsMutationResult>;
+  /**
+   * Move the checked-out branch back to the commit `hash` (`git reset --<mode>`),
+   * dropping every commit after it. `mode` decides what becomes of those commits'
+   * changes — see {@link ResetMode}; only `hard` can lose uncommitted work.
+   * Resolves with fresh refs on success, or an error message.
+   */
+  reset(path: string, hash: string, mode: ResetMode): Promise<RefsMutationResult>;
+  /**
+   * How many commits a reset to `hash` would drop, and whether the working tree
+   * is dirty. Read before raising the hard-reset confirmation so it can say what
+   * is actually at stake; degrades to zeroes when it can't be determined.
+   */
+  resetPreview(path: string, hash: string): Promise<ResetPreview>;
   /**
    * Push the local branch `localBranch` to `remoteBranch` on `remote`
    * (`git push --set-upstream <remote> <localBranch>:<remoteBranch>`), setting it
