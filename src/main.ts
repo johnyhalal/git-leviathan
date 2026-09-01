@@ -6425,6 +6425,12 @@ function registerClaudeIpc(): void {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
       }
+      // The very first commit of a repo has no history to describe and one
+      // conventional subject, so answer it locally instead of paying for a
+      // model round-trip (it also works with Claude not connected).
+      if (!(await commitishExists(repoPath, 'HEAD'))) {
+        return { status: 'ok', message: 'Initial commit' };
+      }
       // Use the saved path directly — no per-click detection. A stale path
       // (binary moved/uninstalled) drops back to "not connected" so the user
       // is nudged to reconnect rather than shown a cryptic spawn error.
