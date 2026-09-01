@@ -2178,6 +2178,10 @@ function fileDiffArgs(source: DiffSource, file: string): string[] {
         '--',
         file,
       ];
+    case 'range':
+      // The net change from `from` to `to` for this file — the aggregated diff
+      // spanning the selected commits. -M detects renames across the span.
+      return ['diff', '--no-color', '-M', source.from, source.to, '--', file];
     case 'staged':
       return ['diff', '--no-color', '-M', '--cached', '--', file];
     case 'unstaged':
@@ -2313,7 +2317,8 @@ async function readFileContent(
       return [];
     }
   }
-  const rev = source.kind === 'commit' ? source.hash : '';
+  const rev =
+    source.kind === 'commit' ? source.hash : source.kind === 'range' ? source.to : '';
   const out = await runGit(cwd, ['show', `${rev}:${file}`]);
   return splitContent(out);
 }
@@ -3596,6 +3601,16 @@ function registerRepoIpc(): void {
     }
     if (source.kind === 'commit' && typeof source.hash === 'string' && source.hash.length > 0) {
       return { kind: 'commit', hash: source.hash };
+    }
+    const range = value as { from?: unknown; to?: unknown };
+    if (
+      source.kind === 'range' &&
+      typeof range.from === 'string' &&
+      range.from.length > 0 &&
+      typeof range.to === 'string' &&
+      range.to.length > 0
+    ) {
+      return { kind: 'range', from: range.from, to: range.to };
     }
     return null;
   };

@@ -659,11 +659,15 @@ export interface WorkingStatus {
 /**
  * The revision a file's diff (or content) is taken against:
  * - `commit`   — the commit `hash`, diffed against its first parent.
+ * - `range`    — the net change from `from` (a revision, or the empty tree) to
+ *                `to`, used by the multi-commit view to aggregate a span of
+ *                selected commits into one diff per file.
  * - `staged`   — the index vs HEAD (a staged working-tree change).
  * - `unstaged` — the working tree vs the index (an unstaged change).
  */
 export type DiffSource =
   | { kind: 'commit'; hash: string }
+  | { kind: 'range'; from: string; to: string }
   | { kind: 'staged' }
   | { kind: 'unstaged' };
 
