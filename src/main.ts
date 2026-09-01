@@ -72,6 +72,7 @@ import {
   type CommitDetailData,
   type CommitResult,
   type RebaseInteractivePreview,
+  type CherryPickPreview,
   type RebaseCommitInfo,
   type RebaseTodoEntry,
   type DiffSource,
@@ -2578,6 +2579,133 @@ async function interactiveRebase(
 }
 
 /**
+ * Resolve the selected `hashes` into ordered {@link CherryPickPreview} commits
+ * for the multi-commit cherry-pick editor. Each must be a real, non-merge commit
+ * (a merge has no single change to replay); duplicates are dropped. The commits
+ * are returned oldest-first (by commit date) — the order they'll be replayed onto
+ * HEAD, and the order the editor lists them in.
+ */
+async function cherryPickPreview(
+  cwd: string,
+  hashes: string[],
+): Promise<CherryPickPreview> {
+  // De-dupe while preserving nothing — order comes from git below.
+  const unique = Array.from(new Set(hashes));
+  const infos: (RebaseCommitInfo & { order: number })[] = [];
+  for (const hash of unique) {
+    if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+      return { commits: [], error: 'A selected commit was invalid.' };
+    }
+    if (!(await commitishExists(cwd, hash))) {
+      return { commits: [], error: `Commit “${hash}” doesn’t exist.` };
+    }
+    // %ct sorts the list; a merge (2+ parents) can't be cherry-picked as one change.
+    const fmt = ['%H', '%h', '%s', '%an', '%P', '%ct', '%B'].join(REBASE_FIELD);
+    const raw = await runGit(cwd, ['show', '-s', `--format=${fmt}`, hash]);
+    const [full, short, subject, author, parents, ct, body] = raw.split(REBASE_FIELD);
+    if (!full) {
+      return { commits: [], error: `Commit “${hash}” couldn’t be read.` };
+    }
+    if (parents.trim().split(/\s+/).filter(Boolean).length > 1) {
+      return { commits: [], error: 'A merge commit can’t be cherry-picked — deselect it and try again.' };
+    }
+    infos.push({
+      hash: full,
+      shortHash: short,
+      subject,
+      author,
+      body: (body ?? '').replace(/\s+$/, ''),
+      order: Number.parseInt(ct, 10) || 0,
+    });
+  }
+  if (infos.length === 0) {
+    return { commits: [], error: 'No commits were selected.' };
+  }
+  infos.sort((a, b) => a.order - b.order);
+  return {
+    commits: infos.map((c) => ({
+      hash: c.hash,
+      shortHash: c.shortHash,
+      subject: c.subject,
+      author: c.author,
+      body: c.body,
+    })),
+  };
+}
+
+/**
+ * Apply an edited multi-commit cherry-pick plan onto the current HEAD. The `todo`
+ * is the same compiled shape the interactive-rebase editor emits (already
+ * oldest-first, drops removed, `squash` melded into the previous kept commit with
+ * the melded message on the last squash of each run):
+ * - `pick`   — `cherry-pick -x` the commit as its own new commit.
+ * - `reword` — cherry-pick it, then `commit --amend` its message from a file.
+ * - `squash` — `cherry-pick --no-commit` to stage the change onto the previous
+ *   commit, then (on the last of the run, which carries the melded message)
+ *   `commit --amend` to fold it in. Intermediate squashes only stage.
+ *
+ * A conflict on any step leaves the cherry-pick in progress (CHERRY_PICK_HEAD),
+ * like the single cherry-pick, so the merge banner / conflict resolver can drive
+ * that commit to completion; the remaining planned commits are not auto-resumed.
+ */
+async function cherryPickMulti(
+  cwd: string,
+  todo: RebaseTodoEntry[],
+): Promise<RefsMutationResult> {
+  const kept = todo.filter((e) => e.op !== 'drop');
+  if (kept.length === 0) {
+    return { status: 'error', message: 'A cherry-pick must keep at least one commit.' };
+  }
+  for (const entry of kept) {
+    if (typeof entry.hash !== 'string' || entry.hash.length === 0 || entry.hash.startsWith('-')) {
+      return { status: 'error', message: 'The commit list was malformed — reopen and try again.' };
+    }
+    if (!(await commitishExists(cwd, entry.hash))) {
+      return { status: 'error', message: `Commit “${entry.hash}” doesn’t exist.` };
+    }
+  }
+
+  // Message files (reword / melded squash) live under the git dir so they outlive
+  // a paused (conflicted) cherry-pick. Clear any stale run first.
+  const gitDir = path.resolve(cwd, (await runGit(cwd, ['rev-parse', '--git-dir'])).trim() || '.git');
+  const msgDir = path.join(gitDir, 'gl-cherry-pick');
+  fs.rmSync(msgDir, { recursive: true, force: true });
+  fs.mkdirSync(msgDir, { recursive: true });
+  let msgIndex = 0;
+  const writeMsg = (text: string): string => {
+    const file = path.join(msgDir, `msg-${msgIndex++}`);
+    fs.writeFileSync(file, text.endsWith('\n') ? text : `${text}\n`);
+    return file;
+  };
+
+  const steps: string[][] = [];
+  kept.forEach((entry, i) => {
+    // A leading squash has nothing above it to meld into — treat it as a pick.
+    const op = entry.op === 'squash' && i === 0 ? 'pick' : entry.op;
+    if (op === 'squash') {
+      steps.push(['cherry-pick', '--no-commit', entry.hash]);
+      // The last squash of a run carries the melded message; fold it into HEAD.
+      if (typeof entry.message === 'string') {
+        steps.push(['commit', '--amend', '--file', writeMsg(entry.message)]);
+      }
+    } else if (op === 'reword') {
+      steps.push(['cherry-pick', '-x', entry.hash]);
+      steps.push(['commit', '--amend', '--file', writeMsg(entry.message ?? '')]);
+    } else {
+      steps.push(['cherry-pick', '-x', entry.hash]);
+    }
+  });
+
+  // New commits are re-signed when signing is on.
+  await primeSigningIfNeeded(cwd);
+
+  const result = await mutateRepo(cwd, steps, 'Could not cherry-pick the commits.');
+  // Clean up only on a clean finish; a paused cherry-pick still needs the files.
+  if (result.status === 'ok') fs.rmSync(msgDir, { recursive: true, force: true });
+  return result;
+}
+
+/**
  * Turn a failed `git push`'s stderr into a single, actionable line. Several
  * failures share the same tail ("failed to push some refs") but have very
  * different fixes, so we detect the specific reason before the generic
@@ -4508,6 +4636,52 @@ function registerRepoIpc(): void {
       // place; the error surfaces the conflict resolver, and the merge banner
       // reads the in-progress state, letting the user continue or abort.
       return mutateRepo(repoPath, [['cherry-pick', '-x', hash]], 'Could not cherry-pick the commit.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.cherryPickPreview,
+    async (_event, repoPath: unknown, hashes: unknown): Promise<CherryPickPreview> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { commits: [], error: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted list: a non-empty array of non-empty strings.
+      if (
+        !Array.isArray(hashes) ||
+        hashes.length === 0 ||
+        !hashes.every((h) => typeof h === 'string' && h.length > 0 && !h.startsWith('-'))
+      ) {
+        return { commits: [], error: 'No commits were selected.' };
+      }
+      return cherryPickPreview(repoPath, hashes as string[]);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.cherryPickMulti,
+    async (_event, repoPath: unknown, todo: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted todo's shape before it drives history changes.
+      const ops = new Set(['pick', 'reword', 'squash', 'drop']);
+      if (
+        !Array.isArray(todo) ||
+        todo.length === 0 ||
+        !todo.every(
+          (e) =>
+            e &&
+            typeof e === 'object' &&
+            typeof (e as RebaseTodoEntry).hash === 'string' &&
+            !(e as RebaseTodoEntry).hash.startsWith('-') &&
+            ops.has((e as RebaseTodoEntry).op) &&
+            ((e as RebaseTodoEntry).message === undefined ||
+              typeof (e as RebaseTodoEntry).message === 'string'),
+        )
+      ) {
+        return { status: 'error', message: 'The cherry-pick plan was malformed.' };
+      }
+      return cherryPickMulti(repoPath, todo as RebaseTodoEntry[]);
     },
   );
 

@@ -520,7 +520,7 @@ interface CommitListProps {
   /** Check out the commit itself, detaching HEAD (from a commit row's context menu). */
   onCheckoutCommit?: (hash: string) => void;
   /** Cherry-pick the commit onto HEAD (from a commit row's context menu). */
-  onCherryPick?: (hash: string) => void;
+  onCherryPickSelection?: (hashes: string[]) => void;
   /** Revert the commit on HEAD (from a commit row's context menu). */
   onRevert?: (hash: string) => void;
   /** Rebase the checked-out branch onto the commit (from a commit row's context menu). */
@@ -964,7 +964,7 @@ export function CommitList({
   onDeleteTag,
   onMergeBranch,
   onRebaseBranch,
-  onCherryPick,
+  onCherryPickSelection,
   onRevert,
   onRebaseOnto,
   onInteractiveRebase,
@@ -1009,6 +1009,11 @@ export function CommitList({
     isHead: boolean;
     /** Commits on top of this one (its children up to HEAD), for the rebase label. */
     childCount: number;
+    /**
+     * The commits a cherry-pick from this menu targets: the multi-selection when
+     * the clicked row is part of one (in display order), else just this commit.
+     */
+    cherryPickHashes: string[];
     x: number;
     y: number;
   } | null>(null);
@@ -1261,11 +1266,21 @@ export function CommitList({
                 if (commit.working || isStash) return;
                 const targets = branchTargets(commit.refs).filter(isDeletable);
                 event.preventDefault();
+                // Cherry-pick targets the whole selection when the clicked row is
+                // part of a multi-select — listed in display (graph) order, which
+                // the preview then re-sorts oldest-first. Otherwise just this row.
+                const cherryPickHashes =
+                  selectedHashes.size > 1 && selectedHashes.has(commit.hash)
+                    ? (commits ?? [])
+                        .filter((c) => !c.working && c.stashIndex === undefined && selectedHashes.has(c.hash))
+                        .map((c) => c.hash)
+                    : [commit.hash];
                 setContextMenu({
                   targets,
                   hash: commit.hash,
                   isHead: commit.refs.some((ref) => ref.kind === 'head'),
                   childCount: countChildrenToHead(commits ?? [], commit.hash),
+                  cherryPickHashes,
                   x: event.clientX,
                   y: event.clientY,
                 });
@@ -1301,8 +1316,11 @@ export function CommitList({
         onMerge={(source, target) => onMergeBranch?.(source, target)}
         onRebase={(source, target) => onRebaseBranch?.(source, target)}
         onCherryPick={
-          onCherryPick ? () => onCherryPick(contextMenu.hash) : undefined
+          onCherryPickSelection
+            ? () => onCherryPickSelection(contextMenu.cherryPickHashes)
+            : undefined
         }
+        cherryPickCount={contextMenu.cherryPickHashes.length}
         onRevert={onRevert ? () => onRevert(contextMenu.hash) : undefined}
         onRebaseOnto={
           // Hidden on HEAD — rebasing the current branch onto its own tip is a no-op.

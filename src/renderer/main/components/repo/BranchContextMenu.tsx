@@ -59,6 +59,11 @@ interface BranchContextMenuProps {
    */
   onCherryPick?: () => void;
   /**
+   * How many commits the cherry-pick applies — the multi-selection count, or 1
+   * for a single commit. Drives the row's label ("Cherry-pick N commits …").
+   */
+  cherryPickCount?: number;
+  /**
    * Revert this menu's commit, recording a new commit on the checked-out branch
    * that undoes it. Conflicts surface the resolver, like cherry-pick.
    */
@@ -246,6 +251,7 @@ export function BranchContextMenu({
   onDeleteBranch,
   onDeleteRemoteBranch,
   onCherryPick,
+  cherryPickCount,
   onRevert,
   onRebaseOnto,
   onInteractiveRebase,
@@ -388,9 +394,14 @@ export function BranchContextMenu({
   // Cherry-pick targets the commit itself (applying it onto the checked-out
   // branch), so like the tag actions it's divided off from the branch groups.
   if (onCherryPick) {
+    const count = cherryPickCount ?? 1;
+    const what = count > 1 ? `${count} commits` : '';
+    const onto = currentBranch ? ` onto ${currentBranch}` : '';
     if (entries.length) entries.push('separator');
     entries.push({
-      label: currentBranch ? `Cherry-pick onto ${currentBranch}` : 'Cherry-pick',
+      // Multiple selected commits open the reorder/squash/reword/drop editor;
+      // a single one applies straight away (the editor would be overkill).
+      label: `Cherry-pick${what ? ` ${what}` : ''}${onto}${count > 1 ? '…' : ''}`,
       onClick: onCherryPick,
     });
   }

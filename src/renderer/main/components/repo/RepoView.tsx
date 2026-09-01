@@ -22,7 +22,7 @@ import { RepoSettingsDialog, type RepoSettingsTabId } from './RepoSettingsDialog
 import { RepoColumns } from './RepoColumns';
 import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
-import { InteractiveRebaseEditor } from './InteractiveRebaseEditor';
+import { CommitPlanEditor } from './CommitPlanEditor';
 import { ConfirmProvider } from '../ConfirmBar';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 import type { SubmoduleDeinitOutcome } from './SubmoduleContextMenu';
@@ -122,6 +122,11 @@ export function RepoView({
   // or null when it's closed.
   const [rebaseEditor, setRebaseEditor] = useState<{
     baseHash: string;
+    commits: RebaseCommitInfo[];
+  } | null>(null);
+  // The multi-commit cherry-pick editor's data (the selected commits, oldest
+  // first), or null when it's closed. Shares the editor UI with rebase above.
+  const [cherryPickEditor, setCherryPickEditor] = useState<{
     commits: RebaseCommitInfo[];
   } | null>(null);
   // True while a continue/abort/skip is in flight, to disable the banner buttons.
@@ -779,6 +784,36 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
+  // Open the multi-commit cherry-pick editor for a set of selected commits. The
+  // preview resolves them to full info (with messages), rejects merges, and
+  // orders them oldest-first; an error (e.g. a merge in the set) surfaces as a
+  // toast. A single selection falls back to the plain one-shot cherry-pick.
+  const openCherryPick = useCallback(
+    async (hashes: string[]) => {
+      if (hashes.length <= 1) {
+        if (hashes[0]) void cherryPick(hashes[0]);
+        return;
+      }
+      const preview = await window.api.repo.cherryPickPreview(repoPath, hashes);
+      if (preview.error || preview.commits.length === 0) {
+        onError?.('Cherry-pick', preview.error ?? 'Nothing to cherry-pick.');
+        return;
+      }
+      setCherryPickEditor({ commits: preview.commits });
+    },
+    [repoPath, cherryPick, onError],
+  );
+
+  // Run the editor's compiled cherry-pick plan onto HEAD. Same mutation shape as
+  // the single cherry-pick: conflicts leave it in progress and surface the resolver.
+  const runCherryPickMulti = useCallback(
+    (todo: RebaseTodoEntry[]) =>
+      runMutation('Cherry-pick failed', () =>
+        window.api.repo.cherryPickMulti(repoPath, todo),
+      ).then(() => undefined),
+    [repoPath, runMutation],
+  );
+
   // Rebase the checked-out branch onto a commit (from a commit's context menu),
   // replaying its commits on top. Conflicts surface the resolver, like a branch
   // rebase.
@@ -1111,6 +1146,7 @@ export function RepoView({
           onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
           onFastForward={(source, target) => void fastForward(source, target)}
           onCherryPick={(hash) => void cherryPick(hash)}
+          onCherryPickSelection={(hashes) => void openCherryPick(hashes)}
           onRevert={(hash) => void revert(hash)}
           onRebaseOnto={(hash) => void rebaseOnto(hash)}
           onInteractiveRebase={(hash) => void openInteractiveRebase(hash)}
@@ -1165,11 +1201,37 @@ export function RepoView({
           />
         )}
         {rebaseEditor && (
-          <InteractiveRebaseEditor
-            baseHash={rebaseEditor.baseHash}
+          <CommitPlanEditor
+            title="Interactive rebase"
+            intro={
+              <>
+                Reorder commits by dragging, and set each one’s action. The list
+                runs oldest&nbsp;→&nbsp;newest, the same order git replays them.
+              </>
+            }
             commits={rebaseEditor.commits}
-            onSubmit={runInteractiveRebase}
+            submitLabel="Start rebase"
+            busyLabel="Rebasing…"
+            requireChange
+            onSubmit={(todo) => runInteractiveRebase(rebaseEditor.baseHash, todo)}
             onClose={() => setRebaseEditor(null)}
+          />
+        )}
+        {cherryPickEditor && (
+          <CommitPlanEditor
+            title="Cherry-pick commits"
+            intro={
+              <>
+                Reorder the selected commits by dragging, and set each one’s
+                action. They’re applied onto the current branch
+                oldest&nbsp;→&nbsp;newest.
+              </>
+            }
+            commits={cherryPickEditor.commits}
+            submitLabel="Cherry-pick"
+            busyLabel="Cherry-picking…"
+            onSubmit={runCherryPickMulti}
+            onClose={() => setCherryPickEditor(null)}
           />
         )}
         {repoSettingsOpen && (

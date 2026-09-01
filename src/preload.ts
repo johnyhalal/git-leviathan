@@ -35,6 +35,7 @@ import {
   type CommitResult,
   type RebaseInteractivePreview,
   type RebaseTodoEntry,
+  type CherryPickPreview,
   type DeviceCodePrompt,
   type DiffSource,
   type ExposedApi,
@@ -258,6 +259,10 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.fastForward, path, source, target) as Promise<RefsMutationResult>,
     cherryPick: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.cherryPick, path, hash) as Promise<RefsMutationResult>,
+    cherryPickPreview: (path: string, hashes: string[]) =>
+      ipcRenderer.invoke(RepoChannels.cherryPickPreview, path, hashes) as Promise<CherryPickPreview>,
+    cherryPickMulti: (path: string, todo: RebaseTodoEntry[]) =>
+      ipcRenderer.invoke(RepoChannels.cherryPickMulti, path, todo) as Promise<RefsMutationResult>,
     revert: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.revert, path, hash) as Promise<RefsMutationResult>,
     reset: (path: string, hash: string, mode: ResetMode) =>

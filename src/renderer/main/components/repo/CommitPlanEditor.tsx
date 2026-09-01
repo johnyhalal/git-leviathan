@@ -1,23 +1,36 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { RebaseCommitInfo, RebaseTodoEntry, RebaseTodoOp } from '../../../../types/ipc';
 import { CloseIcon } from '../../../../../assets/icons';
 
 /**
- * The interactive-rebase editor — GitLeviathan's equivalent of GitKraken's
- * interactive rebase surface. It lists the commits stacked on top of the base
- * commit (its children up to HEAD, oldest first — git's todo order) and lets the
- * user drag rows to reorder them and set one of four operations per commit:
- * pick / reword / squash / drop. Rewording reveals an inline message field. On
- * "Start rebase" the ordered plan is compiled to a {@link RebaseTodoEntry} list
- * and handed up via `onSubmit`.
+ * The shared commit-plan editor — GitLeviathan's GitKraken-style surface for
+ * reordering a list of commits and setting one of four operations per commit
+ * (pick / reword / squash / drop). Two features drive it: interactive rebase
+ * (the base commit's children, replayed onto it) and multi-commit cherry-pick
+ * (the selected commits, replayed onto HEAD). Both list oldest→newest — the
+ * order git applies them — let the user drag to reorder, and reveal an inline
+ * message field for a reword. On submit the ordered plan is compiled to a
+ * {@link RebaseTodoEntry} list and handed up via `onSubmit`.
  */
-interface InteractiveRebaseEditorProps {
-  /** The base commit's hash — the immovable commit the children are replayed onto. */
-  baseHash: string;
-  /** The base commit's children, oldest first (as returned by the preview). */
+interface CommitPlanEditorProps {
+  /** Dialog heading and aria label, e.g. "Interactive rebase". */
+  title: string;
+  /** Intro copy under the header explaining the ordering. */
+  intro: ReactNode;
+  /** The commits to plan, oldest first (apply order). */
   commits: RebaseCommitInfo[];
-  /** Run the compiled rebase plan; resolves when it finishes (success or error). */
-  onSubmit: (baseHash: string, todo: RebaseTodoEntry[]) => Promise<void>;
+  /** Submit-button label when idle, e.g. "Start rebase". */
+  submitLabel: string;
+  /** Submit-button label while running, e.g. "Rebasing…". */
+  busyLabel: string;
+  /**
+   * When true (interactive rebase), a no-op plan — every commit picked in its
+   * original order — is disallowed, since it would rewrite history to no effect.
+   * When false (cherry-pick), any plan is a real action and submit stays enabled.
+   */
+  requireChange?: boolean;
+  /** Run the compiled plan; resolves when it finishes (success or error). */
+  onSubmit: (todo: RebaseTodoEntry[]) => Promise<void>;
   onClose: () => void;
 }
 
@@ -43,7 +56,7 @@ const OPS: { op: RebaseTodoOp; label: string; key: string; hint: string }[] = [
  * single trailing `commit --amend` sets it. A squash with no commit above it is
  * demoted to a pick (git can't squash the first line).
  */
-function compile(rows: Row[]): RebaseTodoEntry[] {
+export function compilePlan(rows: Row[]): RebaseTodoEntry[] {
   const entries: RebaseTodoEntry[] = [];
   const kept = rows.filter((r) => r.op !== 'drop');
   let leaderFinal: string | null = null;
@@ -75,12 +88,16 @@ function compile(rows: Row[]): RebaseTodoEntry[] {
   return entries;
 }
 
-export function InteractiveRebaseEditor({
-  baseHash,
+export function CommitPlanEditor({
+  title,
+  intro,
   commits,
+  submitLabel,
+  busyLabel,
+  requireChange = false,
   onSubmit,
   onClose,
-}: InteractiveRebaseEditorProps) {
+}: CommitPlanEditorProps) {
   const [rows, setRows] = useState<Row[]>(() =>
     commits.map((commit) => ({ commit, op: 'pick', message: commit.body })),
   );
@@ -97,16 +114,18 @@ export function InteractiveRebaseEditor({
   }, [onClose, busy]);
 
   const keptCount = useMemo(() => rows.filter((r) => r.op !== 'drop').length, [rows]);
-  // A reword with an empty message can't be committed — block the rebase on it.
+  // A reword with an empty message can't be committed — block the run on it.
   const emptyReword = useMemo(
     () => rows.some((r) => r.op === 'reword' && r.message.trim().length === 0),
     [rows],
   );
-  // A no-op plan (every commit picked, original order) isn't worth a rewrite.
+  // For rebase, a no-op plan (every commit picked, original order) isn't worth a
+  // rewrite; for cherry-pick every plan applies commits, so it's always "changed".
   const changed = useMemo(
     () =>
+      !requireChange ||
       rows.some((r, i) => r.op !== 'pick' || r.commit.hash !== commits[i]?.hash),
-    [rows, commits],
+    [rows, commits, requireChange],
   );
 
   const setOp = (index: number, op: RebaseTodoOp) =>
@@ -128,7 +147,7 @@ export function InteractiveRebaseEditor({
     if (busy || keptCount === 0 || !changed || emptyReword) return;
     setBusy(true);
     try {
-      await onSubmit(baseHash, compile(rows));
+      await onSubmit(compilePlan(rows));
       // On success the view reloads under us; on a handled error the caller keeps
       // this open only if it chooses to — here we simply close after the attempt.
       onClose();
@@ -143,20 +162,17 @@ export function InteractiveRebaseEditor({
         className="settings-panel rebase-editor"
         role="dialog"
         aria-modal="true"
-        aria-label="Interactive rebase"
+        aria-label={title}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="settings-header">
-          <h2>Interactive rebase</h2>
+          <h2>{title}</h2>
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}>
             <CloseIcon />
           </button>
         </header>
 
-        <p className="rebase-editor-intro">
-          Reorder commits by dragging, and set each one’s action. The list runs
-          oldest&nbsp;→&nbsp;newest, the same order git replays them.
-        </p>
+        <p className="rebase-editor-intro">{intro}</p>
 
         <div className="rebase-rows">
           {rows.map((row, index) => (
@@ -261,7 +277,7 @@ export function InteractiveRebaseEditor({
               disabled={busy || keptCount === 0 || !changed || emptyReword}
               onClick={() => void start()}
             >
-              {busy ? 'Rebasing…' : 'Start rebase'}
+              {busy ? busyLabel : submitLabel}
             </button>
           </div>
         </footer>

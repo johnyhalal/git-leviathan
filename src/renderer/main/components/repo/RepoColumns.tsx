@@ -70,6 +70,8 @@ interface RepoColumnsProps {
   onFastForward: (source: string, target: string) => void;
   /** Cherry-pick the commit `hash` onto HEAD (from a commit's context menu). */
   onCherryPick: (hash: string) => void;
+  /** Cherry-pick a selection of commits (opens the editor when more than one). */
+  onCherryPickSelection: (hashes: string[]) => void;
   onRevert: (hash: string) => void;
   /** Rebase the checked-out branch onto `hash` (from a commit's context menu). */
   onRebaseOnto: (hash: string) => void;
@@ -189,6 +191,7 @@ export function RepoColumns({
   onCancelCreateBranch,
   onMergeBranch,
   onCherryPick,
+  onCherryPickSelection,
   onRevert,
   onRebaseOnto,
   onInteractiveRebase,
@@ -475,7 +478,7 @@ export function RepoColumns({
             onDeleteTag={onDeleteTag}
             onMergeBranch={onMergeBranch}
             onRebaseBranch={onRebaseBranch}
-            onCherryPick={onCherryPick}
+            onCherryPickSelection={onCherryPickSelection}
             onRevert={onRevert}
             onRebaseOnto={onRebaseOnto}
             onInteractiveRebase={onInteractiveRebase}

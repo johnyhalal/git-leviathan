@@ -601,6 +601,19 @@ export interface RebaseInteractivePreview {
 }
 
 /**
+ * What a multi-commit cherry-pick would apply: the chosen commits, resolved to
+ * full info (with messages for rewording) and ordered oldest-first — the order
+ * they'll be replayed onto HEAD. Shares {@link RebaseCommitInfo} with the
+ * interactive-rebase editor, which drives the same reorder/squash/reword/drop UI.
+ */
+export interface CherryPickPreview {
+  /** The selected commits, oldest-first (apply order). */
+  commits: RebaseCommitInfo[];
+  /** Set instead of `commits` when the selection can't be cherry-picked. */
+  error?: string;
+}
+
+/**
  * One line of an edited interactive-rebase todo, sent from the editor to main in
  * final (oldest-first) order.
  * - `pick`   — keep the commit as-is.
@@ -891,6 +904,10 @@ export const RepoChannels = {
   fastForward: 'repo:fast-forward',
   /** Renderer -> main (invoke): cherry-pick a commit onto HEAD; returns fresh refs. */
   cherryPick: 'repo:cherry-pick',
+  /** Renderer -> main (invoke): resolve selected commits for the multi cherry-pick editor. */
+  cherryPickPreview: 'repo:cherry-pick-preview',
+  /** Renderer -> main (invoke): apply an edited multi cherry-pick plan onto HEAD; returns fresh refs. */
+  cherryPickMulti: 'repo:cherry-pick-multi',
   /** Renderer -> main (invoke): revert a commit onto HEAD; returns fresh refs. */
   revert: 'repo:revert',
   /** Renderer -> main (invoke): reset the current branch to a commit; returns fresh refs. */
@@ -1680,6 +1697,20 @@ export interface RepoApi {
    * resolve and `mergeContinue`, or `mergeAbort`.
    */
   cherryPick(path: string, hash: string): Promise<RefsMutationResult>;
+  /**
+   * Resolve the selected `hashes` into ordered {@link CherryPickPreview} commits
+   * for the multi-commit cherry-pick editor — validating each is a real, non-merge
+   * commit and sorting them oldest-first (the order they'll replay onto HEAD).
+   */
+  cherryPickPreview(path: string, hashes: string[]): Promise<CherryPickPreview>;
+  /**
+   * Apply an edited multi-commit cherry-pick plan (reorder / squash / reword / drop,
+   * as a compiled {@link RebaseTodoEntry} list) onto the current HEAD. Resolves with
+   * fresh refs on success, or an error message — a conflict on any commit leaves the
+   * cherry-pick in progress (surfaced through {@link mergeState}) so the user can
+   * resolve and `mergeContinue`, or `mergeAbort`.
+   */
+  cherryPickMulti(path: string, todo: RebaseTodoEntry[]): Promise<RefsMutationResult>;
   /**
    * Revert the commit `hash` (`git revert --no-edit hash`), recording a new commit
    * on the checked-out branch that undoes that commit's change. Resolves with fresh
