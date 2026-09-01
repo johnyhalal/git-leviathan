@@ -71,6 +71,9 @@ import {
   type CommitRefDecoration,
   type CommitDetailData,
   type CommitResult,
+  type RebaseInteractivePreview,
+  type RebaseCommitInfo,
+  type RebaseTodoEntry,
   type DiffSource,
   type DiffLine,
   type FileChange,
@@ -2405,6 +2408,175 @@ async function rewordCommit(
   }
 }
 
+/** Field/record separators for reading a commit range as one log run. */
+const REBASE_FIELD = '\x1f';
+const REBASE_RECORD = '\x1e';
+
+/**
+ * List the commits an interactive rebase onto `hash` would edit — the commits
+ * *on top of* `hash` (its children up to HEAD), oldest first. `hash` itself is
+ * the immovable base and is never in the list. Refuses a commit that isn't a
+ * linear, merge-free ancestor of HEAD, since a scripted `git rebase -i` can't
+ * sensibly flatten those. Returns `{ error }` in that case instead of a list.
+ */
+async function rebaseInteractivePreview(
+  cwd: string,
+  hash: string,
+): Promise<RebaseInteractivePreview> {
+  // The base must be reachable from HEAD (on the current branch); `hash..HEAD`
+  // is the set of its children we'd replay on top of it.
+  const isAncestor = await execFileAsync(
+    gitBin,
+    ['merge-base', '--is-ancestor', hash, 'HEAD'],
+    { cwd, env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }) },
+  )
+    .then(() => true)
+    .catch(() => false);
+  if (!isAncestor) {
+    return {
+      baseHash: hash,
+      commits: [],
+      error: 'Interactive rebase is only available for commits on the current branch.',
+    };
+  }
+
+  // `hash` is the base; its children (`hash..HEAD`) are what the editor works on.
+  const range = `${hash}..HEAD`;
+  const fmt = ['%H', '%h', '%s', '%an', '%P', '%B'].join(REBASE_FIELD) + REBASE_RECORD;
+  const out = await runGit(cwd, ['log', '--reverse', `--format=${fmt}`, range]);
+
+  const commits: RebaseCommitInfo[] = [];
+  for (const record of out.split(REBASE_RECORD)) {
+    const trimmed = record.replace(/^\n+/, '');
+    if (!trimmed) continue;
+    const [full, short, subject, author, parents, body] = trimmed.split(REBASE_FIELD);
+    // A merge (2+ parents) in the range can't be replayed by a flat todo.
+    if (parents.trim().split(/\s+/).filter(Boolean).length > 1) {
+      return {
+        baseHash: hash,
+        commits: [],
+        error: 'Interactive rebase isn’t supported across a merge commit.',
+      };
+    }
+    commits.push({
+      hash: full,
+      shortHash: short,
+      subject,
+      body: body.replace(/\s+$/, ''),
+      author,
+    });
+  }
+  if (commits.length === 0) {
+    return {
+      baseHash: hash,
+      commits: [],
+      error: 'This commit has no children to rebase.',
+    };
+  }
+  return { baseHash: hash, commits };
+}
+
+/**
+ * Run a scripted, non-interactive `git rebase -i` onto `baseHash`, applying the
+ * editor's `todo` (reorder + pick / reword / squash / drop) to `baseHash`'s
+ * children. Rather than juggle git's `reword`/`squash` editor stops, the
+ * generated todo only ever uses `pick`/`fixup` and appends `exec … commit
+ * --amend --file` lines that set a message from a file — so message edits are
+ * explicit and, being written into the repo's git dir, survive a `git rebase
+ * --continue` after a conflict.
+ *
+ * On conflict the rebase is left in progress (like {@link rebaseOnto}) so the
+ * merge banner / conflict resolver can drive it to completion.
+ */
+async function interactiveRebase(
+  cwd: string,
+  baseHash: string,
+  todo: RebaseTodoEntry[],
+): Promise<RefsMutationResult> {
+  if (!(await commitishExists(cwd, baseHash))) {
+    return { status: 'error', message: `Commit “${baseHash}” doesn’t exist.` };
+  }
+  // `baseHash` is the rebase base; the todo edits its children (`baseHash..HEAD`).
+  const base = baseHash;
+
+  // Re-derive the authoritative commit set so a tampered payload can't smuggle
+  // in commits outside the range; every todo hash must be one of these.
+  const rangeHashes = new Set(
+    (await runGit(cwd, ['rev-list', `${base}..HEAD`]))
+      .split('\n')
+      .map((h) => h.trim())
+      .filter(Boolean),
+  );
+  const kept = todo.filter((e) => e.op !== 'drop');
+  if (kept.length === 0) {
+    return { status: 'error', message: 'An interactive rebase must keep at least one commit.' };
+  }
+  for (const entry of todo) {
+    if (typeof entry.hash !== 'string' || !rangeHashes.has(entry.hash)) {
+      return { status: 'error', message: 'The commit list changed — reopen the rebase and try again.' };
+    }
+  }
+  if (kept[0].op === 'squash') {
+    return { status: 'error', message: 'The first commit can’t be squashed — nothing sits above it.' };
+  }
+
+  // Message files live under the git dir so they outlive a paused (conflicted)
+  // rebase, whose `exec` lines re-run on `--continue`. Clear any stale run first.
+  const gitDir = path.resolve(cwd, (await runGit(cwd, ['rev-parse', '--git-dir'])).trim() || '.git');
+  const msgDir = path.join(gitDir, 'gl-rebase');
+  fs.rmSync(msgDir, { recursive: true, force: true });
+  fs.mkdirSync(msgDir, { recursive: true });
+
+  const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const execAmend = (msgFile: string) =>
+    `exec ${shq(gitBin)} commit --amend --file ${shq(msgFile)}`;
+
+  const lines: string[] = [];
+  let msgIndex = 0;
+  const writeMsg = (text: string): string => {
+    const file = path.join(msgDir, `msg-${msgIndex++}`);
+    fs.writeFileSync(file, text.endsWith('\n') ? text : `${text}\n`);
+    return file;
+  };
+
+  for (const entry of todo) {
+    if (entry.op === 'drop') continue;
+    if (entry.op === 'squash') {
+      lines.push(`fixup ${entry.hash}`);
+      // The last squash of a run carries the melded message; set it on the
+      // just-melded HEAD. Earlier squashes in the run carry none.
+      if (typeof entry.message === 'string') lines.push(execAmend(writeMsg(entry.message)));
+    } else {
+      lines.push(`pick ${entry.hash}`);
+      if (entry.op === 'reword' && typeof entry.message === 'string') {
+        lines.push(execAmend(writeMsg(entry.message)));
+      }
+    }
+  }
+
+  const todoFile = path.join(msgDir, 'todo');
+  fs.writeFileSync(todoFile, lines.join('\n') + '\n');
+
+  // Rewriting commits re-signs them when signing is on.
+  await primeSigningIfNeeded(cwd);
+
+  const result = await mutateRepo(
+    cwd,
+    [['-c', 'rebase.abbreviateCommands=false', 'rebase', '-i', '--autostash', base]],
+    'Interactive rebase failed.',
+    {
+      GL_TODO: todoFile,
+      // Overwrite git's generated todo with ours; never open a message editor.
+      GIT_SEQUENCE_EDITOR: `sh -c 'cat "$GL_TODO" > "$1"' sh`,
+      GIT_EDITOR: 'true',
+    },
+  );
+
+  // Clean up only on a clean finish; a paused rebase still needs the msg files.
+  if (result.status === 'ok') fs.rmSync(msgDir, { recursive: true, force: true });
+  return result;
+}
+
 /**
  * Turn a failed `git push`'s stderr into a single, actionable line. Several
  * failures share the same tail ("failed to push some refs") but have very
@@ -4216,6 +4388,86 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.rebaseOnto,
+    async (_event, repoPath: unknown, hash: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted hash the same way cherry-pick/revert do: a
+      // non-empty string that isn't an option and resolves to a real commit here.
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+        return { status: 'error', message: 'No commit was specified.' };
+      }
+      if (!(await commitishExists(repoPath, hash))) {
+        return { status: 'error', message: `Commit “${hash}” doesn’t exist.` };
+      }
+      // Replay the checked-out branch's commits on top of `hash`. `--autostash`
+      // sets aside any uncommitted work so a dirty tree doesn't block the rebase,
+      // restoring it after. A conflicting rebase exits non-zero and leaves the
+      // rebase in progress; the error surfaces the conflict resolver, and the
+      // merge banner reads the state, letting the user continue/skip/abort.
+      return mutateRepo(repoPath, [['rebase', '--autostash', hash]], 'Could not rebase onto the commit.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.rebaseInteractivePreview,
+    async (_event, repoPath: unknown, hash: unknown): Promise<RebaseInteractivePreview> => {
+      const fallback = (message: string): RebaseInteractivePreview => ({
+        baseHash: typeof hash === 'string' ? hash : '',
+        commits: [],
+        error: message,
+      });
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return fallback('Not a git repository.');
+      }
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+        return fallback('No commit was specified.');
+      }
+      if (!(await commitishExists(repoPath, hash))) {
+        return fallback(`Commit “${hash}” doesn’t exist.`);
+      }
+      return rebaseInteractivePreview(repoPath, hash);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.rebaseInteractive,
+    async (
+      _event,
+      repoPath: unknown,
+      baseHash: unknown,
+      todo: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof baseHash !== 'string' || baseHash.length === 0 || baseHash.startsWith('-')) {
+        return { status: 'error', message: 'No commit was specified.' };
+      }
+      // Re-validate the untrusted todo's shape before it drives a history rewrite.
+      const ops = new Set(['pick', 'reword', 'squash', 'drop']);
+      if (
+        !Array.isArray(todo) ||
+        todo.length === 0 ||
+        !todo.every(
+          (e) =>
+            e &&
+            typeof e === 'object' &&
+            typeof (e as RebaseTodoEntry).hash === 'string' &&
+            !(e as RebaseTodoEntry).hash.startsWith('-') &&
+            ops.has((e as RebaseTodoEntry).op) &&
+            ((e as RebaseTodoEntry).message === undefined ||
+              typeof (e as RebaseTodoEntry).message === 'string'),
+        )
+      ) {
+        return { status: 'error', message: 'The rebase plan was malformed.' };
+      }
+      return interactiveRebase(repoPath, baseHash, todo as RebaseTodoEntry[]);
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.fastForward,
     async (
       _event,
@@ -4256,6 +4508,29 @@ function registerRepoIpc(): void {
       // place; the error surfaces the conflict resolver, and the merge banner
       // reads the in-progress state, letting the user continue or abort.
       return mutateRepo(repoPath, [['cherry-pick', '-x', hash]], 'Could not cherry-pick the commit.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.revert,
+    async (_event, repoPath: unknown, hash: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted hash the same way cherry-pick does: a non-empty
+      // string that isn't an option and resolves to a real commit here.
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+        return { status: 'error', message: 'No commit was specified.' };
+      }
+      if (!(await commitishExists(repoPath, hash))) {
+        return { status: 'error', message: `Commit “${hash}” doesn’t exist.` };
+      }
+      // `--no-edit` takes git's default "Revert …" message without opening an
+      // editor (which would hang under GIT_TERMINAL_PROMPT=0). A conflicting
+      // revert exits non-zero and leaves REVERT_HEAD in place; the error surfaces
+      // the conflict resolver, and the merge banner reads the in-progress state,
+      // letting the user continue or abort.
+      return mutateRepo(repoPath, [['revert', '--no-edit', hash]], 'Could not revert the commit.');
     },
   );
 

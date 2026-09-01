@@ -6,6 +6,8 @@ import type {
   GitflowKind,
   MergeState,
   PullMode,
+  RebaseCommitInfo,
+  RebaseTodoEntry,
   RefsMutationResult,
   RepoConfig,
   RepoInfo,
@@ -20,6 +22,7 @@ import { RepoSettingsDialog, type RepoSettingsTabId } from './RepoSettingsDialog
 import { RepoColumns } from './RepoColumns';
 import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
+import { InteractiveRebaseEditor } from './InteractiveRebaseEditor';
 import { ConfirmProvider } from '../ConfirmBar';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 import type { SubmoduleDeinitOutcome } from './SubmoduleContextMenu';
@@ -114,6 +117,13 @@ export function RepoView({
   const [resolverOpen, setResolverOpen] = useState(false);
   // The conflicted file to pre-select when the resolver opens (null = first).
   const [resolverFile, setResolverFile] = useState<string | null>(null);
+
+  // The interactive-rebase editor's data (base commit + the commits it edits),
+  // or null when it's closed.
+  const [rebaseEditor, setRebaseEditor] = useState<{
+    baseHash: string;
+    commits: RebaseCommitInfo[];
+  } | null>(null);
   // True while a continue/abort/skip is in flight, to disable the banner buttons.
   const [mergeBusy, setMergeBusy] = useState(false);
   // Whether the last read saw an in-progress operation, so we auto-open the
@@ -769,6 +779,53 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
+  // Rebase the checked-out branch onto a commit (from a commit's context menu),
+  // replaying its commits on top. Conflicts surface the resolver, like a branch
+  // rebase.
+  const rebaseOnto = useCallback(
+    (hash: string) =>
+      runMutation('Rebase failed', () =>
+        window.api.repo.rebaseOnto(repoPath, hash),
+      ),
+    [repoPath, runMutation],
+  );
+
+  // Open the interactive-rebase editor for `hash`'s children (the commits on top
+  // of it up to HEAD). The preview does the reachability/merge checks in main; an
+  // error (e.g. the commit isn't on the current branch) surfaces as a toast.
+  const openInteractiveRebase = useCallback(
+    async (hash: string) => {
+      const preview = await window.api.repo.rebaseInteractivePreview(repoPath, hash);
+      if (preview.error || preview.commits.length === 0) {
+        onError?.('Interactive rebase', preview.error ?? 'Nothing to rebase from this commit.');
+        return;
+      }
+      setRebaseEditor({ baseHash: preview.baseHash, commits: preview.commits });
+    },
+    [repoPath, onError],
+  );
+
+  // Run the editor's compiled plan. Same mutation shape as the other rebases:
+  // conflicts leave the rebase in progress and surface the resolver/banner.
+  const runInteractiveRebase = useCallback(
+    (baseHash: string, todo: RebaseTodoEntry[]) =>
+      runMutation('Interactive rebase failed', () =>
+        window.api.repo.rebaseInteractive(repoPath, baseHash, todo),
+      ).then(() => undefined),
+    [repoPath, runMutation],
+  );
+
+  // Revert a commit (from a commit's context menu), recording a new commit that
+  // undoes it on the checked-out branch. Conflicts surface the resolver, like
+  // cherry-pick.
+  const revert = useCallback(
+    (hash: string) =>
+      runMutation('Revert failed', () =>
+        window.api.repo.revert(repoPath, hash),
+      ),
+    [repoPath, runMutation],
+  );
+
   // Check out a commit itself (from a commit's context menu), which detaches HEAD
   // from whatever branch it was on. Same mutation shape as a branch checkout.
   const checkoutCommit = useCallback(
@@ -1054,6 +1111,9 @@ export function RepoView({
           onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
           onFastForward={(source, target) => void fastForward(source, target)}
           onCherryPick={(hash) => void cherryPick(hash)}
+          onRevert={(hash) => void revert(hash)}
+          onRebaseOnto={(hash) => void rebaseOnto(hash)}
+          onInteractiveRebase={(hash) => void openInteractiveRebase(hash)}
           onCheckoutCommit={(hash) => void checkoutCommit(hash)}
           onReset={(hash, mode) => void resetTo(hash, mode)}
           onResetPreview={resetPreview}
@@ -1102,6 +1162,14 @@ export function RepoView({
             initialFile={resolverFile}
             onResolved={(next) => applyMergeRef.current(next)}
             onClose={() => setResolverOpen(false)}
+          />
+        )}
+        {rebaseEditor && (
+          <InteractiveRebaseEditor
+            baseHash={rebaseEditor.baseHash}
+            commits={rebaseEditor.commits}
+            onSubmit={runInteractiveRebase}
+            onClose={() => setRebaseEditor(null)}
           />
         )}
         {repoSettingsOpen && (

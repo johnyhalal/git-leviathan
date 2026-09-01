@@ -255,6 +255,32 @@ function ownBranchName(refs: CommitRefDecoration[]): string | undefined {
  * own branch always overrides an inherited one. Newest-first order (children
  * before parents) makes this a single top-down pass.
  */
+/**
+ * Count the commits sitting on top of `target` up to HEAD — its children along
+ * the first-parent line, i.e. how many commits an interactive rebase onto it
+ * would replay. Walks HEAD → first-parent until it reaches `target`; returns 0
+ * when `target` is HEAD itself, or when it isn't on HEAD's first-parent lineage
+ * (off the current branch, or below the loaded page), which hides the action.
+ */
+function countChildrenToHead(commits: CommitLogEntry[], target: string): number {
+  const byHash = new Map<string, CommitLogEntry>();
+  let headHash: string | undefined;
+  for (const commit of commits) {
+    if (commit.working || commit.stashIndex !== undefined) continue;
+    byHash.set(commit.hash, commit);
+    if (commit.refs.some((ref) => ref.kind === 'head')) headHash = commit.hash;
+  }
+  let cur = headHash;
+  let count = 0;
+  while (cur && cur !== target) {
+    const entry = byHash.get(cur);
+    if (!entry) return 0; // ran off the loaded lineage — target isn't reachable
+    cur = entry.parents[0];
+    count++;
+  }
+  return cur === target ? count : 0;
+}
+
 function laneBranchByHash(commits: CommitLogEntry[]): Map<string, string> {
   const byHash = new Map<string, string>();
   for (const commit of commits) {
@@ -495,6 +521,12 @@ interface CommitListProps {
   onCheckoutCommit?: (hash: string) => void;
   /** Cherry-pick the commit onto HEAD (from a commit row's context menu). */
   onCherryPick?: (hash: string) => void;
+  /** Revert the commit on HEAD (from a commit row's context menu). */
+  onRevert?: (hash: string) => void;
+  /** Rebase the checked-out branch onto the commit (from a commit row's context menu). */
+  onRebaseOnto?: (hash: string) => void;
+  /** Open the interactive-rebase editor starting at the commit (context menu). */
+  onInteractiveRebase?: (hash: string) => void;
   /** Reset the checked-out branch to the commit (from a commit row's context menu). */
   onReset?: (hash: string, mode: ResetMode) => void;
   /** What a reset to the commit would drop, read to word its confirmation. */
@@ -933,6 +965,9 @@ export function CommitList({
   onMergeBranch,
   onRebaseBranch,
   onCherryPick,
+  onRevert,
+  onRebaseOnto,
+  onInteractiveRebase,
   onCheckoutCommit,
   onReset,
   onResetPreview,
@@ -972,6 +1007,8 @@ export function CommitList({
     hash: string;
     /** Whether HEAD already points at that commit (hides "Checkout this commit"). */
     isHead: boolean;
+    /** Commits on top of this one (its children up to HEAD), for the rebase label. */
+    childCount: number;
     x: number;
     y: number;
   } | null>(null);
@@ -1228,6 +1265,7 @@ export function CommitList({
                   targets,
                   hash: commit.hash,
                   isHead: commit.refs.some((ref) => ref.kind === 'head'),
+                  childCount: countChildrenToHead(commits ?? [], commit.hash),
                   x: event.clientX,
                   y: event.clientY,
                 });
@@ -1265,6 +1303,20 @@ export function CommitList({
         onCherryPick={
           onCherryPick ? () => onCherryPick(contextMenu.hash) : undefined
         }
+        onRevert={onRevert ? () => onRevert(contextMenu.hash) : undefined}
+        onRebaseOnto={
+          // Hidden on HEAD — rebasing the current branch onto its own tip is a no-op.
+          onRebaseOnto && !contextMenu.isHead
+            ? () => onRebaseOnto(contextMenu.hash)
+            : undefined
+        }
+        onInteractiveRebase={
+          // Offered only when the commit has children to replay on top of it.
+          onInteractiveRebase && contextMenu.childCount > 0
+            ? () => onInteractiveRebase(contextMenu.hash)
+            : undefined
+        }
+        rebaseChildCount={contextMenu.childCount}
         onCheckoutCommit={
           // Hidden on the commit HEAD already points at — there'd be nothing to switch to.
           onCheckoutCommit && !contextMenu.isHead

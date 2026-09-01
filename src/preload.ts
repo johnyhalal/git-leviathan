@@ -33,6 +33,8 @@ import {
   type CommitLogEntry,
   type CommitDetailData,
   type CommitResult,
+  type RebaseInteractivePreview,
+  type RebaseTodoEntry,
   type DeviceCodePrompt,
   type DiffSource,
   type ExposedApi,
@@ -237,10 +239,27 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.merge, path, source, target) as Promise<RefsMutationResult>,
     rebase: (path: string, source: string, target: string) =>
       ipcRenderer.invoke(RepoChannels.rebase, path, source, target) as Promise<RefsMutationResult>,
+    rebaseOnto: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.rebaseOnto, path, hash) as Promise<RefsMutationResult>,
+    rebaseInteractivePreview: (path: string, hash: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.rebaseInteractivePreview,
+        path,
+        hash,
+      ) as Promise<RebaseInteractivePreview>,
+    rebaseInteractive: (path: string, baseHash: string, todo: RebaseTodoEntry[]) =>
+      ipcRenderer.invoke(
+        RepoChannels.rebaseInteractive,
+        path,
+        baseHash,
+        todo,
+      ) as Promise<RefsMutationResult>,
     fastForward: (path: string, source: string, target: string) =>
       ipcRenderer.invoke(RepoChannels.fastForward, path, source, target) as Promise<RefsMutationResult>,
     cherryPick: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.cherryPick, path, hash) as Promise<RefsMutationResult>,
+    revert: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.revert, path, hash) as Promise<RefsMutationResult>,
     reset: (path: string, hash: string, mode: ResetMode) =>
       ipcRenderer.invoke(RepoChannels.reset, path, hash, mode) as Promise<RefsMutationResult>,
     resetPreview: (path: string, hash: string) =>

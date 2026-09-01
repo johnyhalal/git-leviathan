@@ -574,6 +574,49 @@ export interface CommitLogEntry {
 /** Sentinel hash for the synthetic working-tree ("uncommitted changes") row. */
 export const WORKING_TREE_HASH = '__working_tree__';
 
+/** The four operations the interactive-rebase editor offers for a commit. */
+export type RebaseTodoOp = 'pick' | 'reword' | 'squash' | 'drop';
+
+/** One commit in the interactive-rebase editor, with its full message for rewording. */
+export interface RebaseCommitInfo {
+  /** Full 40-char hash. */
+  hash: string;
+  /** Abbreviated hash for display. */
+  shortHash: string;
+  /** First line of the commit message. */
+  subject: string;
+  /** The full commit message (subject + body), used to seed the reword field. */
+  body: string;
+  author: string;
+}
+
+/** What an interactive rebase onto a commit would edit: its children and the base. */
+export interface RebaseInteractivePreview {
+  /** The clicked commit's hash — the immovable base its children are replayed onto. */
+  baseHash: string;
+  /** The base commit's children (`baseHash..HEAD`), OLDEST first (the git todo order). */
+  commits: RebaseCommitInfo[];
+  /** Set instead of `commits` when the range can't be interactively rebased. */
+  error?: string;
+}
+
+/**
+ * One line of an edited interactive-rebase todo, sent from the editor to main in
+ * final (oldest-first) order.
+ * - `pick`   — keep the commit as-is.
+ * - `reword` — keep the commit but replace its message with {@link message}.
+ * - `squash` — meld the commit into the previous kept commit; {@link message},
+ *   when present (set on the last squash of a run), becomes the melded message.
+ * - `drop`   — omit the commit entirely.
+ */
+export interface RebaseTodoEntry {
+  /** Full hash of the commit this line refers to. */
+  hash: string;
+  op: RebaseTodoOp;
+  /** New message for `reword`, or the final melded message for a `squash` run. */
+  message?: string;
+}
+
 /** Status of a file within a commit or the working tree. */
 export type FileStatus = 'modified' | 'added' | 'deleted' | 'renamed';
 
@@ -838,10 +881,18 @@ export const RepoChannels = {
   merge: 'repo:merge',
   /** Renderer -> main (invoke): rebase one branch onto another; returns fresh refs. */
   rebase: 'repo:rebase',
+  /** Renderer -> main (invoke): rebase the current branch onto a commit; returns fresh refs. */
+  rebaseOnto: 'repo:rebase-onto',
+  /** Renderer -> main (invoke): list the commits an interactive rebase from a commit would edit. */
+  rebaseInteractivePreview: 'repo:rebase-interactive-preview',
+  /** Renderer -> main (invoke): run an interactive rebase from an edited todo list; returns fresh refs. */
+  rebaseInteractive: 'repo:rebase-interactive',
   /** Renderer -> main (invoke): fast-forward one branch to another; returns fresh refs. */
   fastForward: 'repo:fast-forward',
   /** Renderer -> main (invoke): cherry-pick a commit onto HEAD; returns fresh refs. */
   cherryPick: 'repo:cherry-pick',
+  /** Renderer -> main (invoke): revert a commit onto HEAD; returns fresh refs. */
+  revert: 'repo:revert',
   /** Renderer -> main (invoke): reset the current branch to a commit; returns fresh refs. */
   reset: 'repo:reset',
   /** Renderer -> main (invoke): what a reset to a commit would drop (for its confirmation). */
@@ -1587,6 +1638,33 @@ export interface RepoApi {
    */
   rebase(path: string, source: string, target: string): Promise<RefsMutationResult>;
   /**
+   * Rebase the checked-out branch onto the commit `hash` (`git rebase hash`),
+   * replaying the branch's commits on top of it. Resolves with fresh refs on
+   * success, or an error message — conflicts leave the rebase in progress
+   * (surfaced through {@link mergeState}) so the user can resolve and
+   * `mergeContinue`, `rebaseSkip`, or `mergeAbort`.
+   */
+  rebaseOnto(path: string, hash: string): Promise<RefsMutationResult>;
+  /**
+   * List the commits an interactive rebase onto `hash` would edit: its children
+   * (`hash..HEAD`), oldest first, along with `hash` as the base. The range must
+   * be linear and reachable from HEAD — a commit off the current branch, one
+   * with no children, or one with a merge in the range, comes back as an `error`.
+   */
+  rebaseInteractivePreview(path: string, hash: string): Promise<RebaseInteractivePreview>;
+  /**
+   * Run a scripted (non-interactive) `git rebase -i` onto `baseHash`, applying
+   * the edited `todo` (reorder / pick / reword / squash / drop) to its children.
+   * Resolves with fresh refs on success, or an error message — conflicts leave the rebase
+   * in progress (surfaced through {@link mergeState}) so the user can resolve and
+   * `mergeContinue`, `rebaseSkip`, or `mergeAbort`.
+   */
+  rebaseInteractive(
+    path: string,
+    baseHash: string,
+    todo: RebaseTodoEntry[],
+  ): Promise<RefsMutationResult>;
+  /**
    * Fast-forward `target` to `source`: check out `target`, then
    * `git merge --ff-only source`. `target` must be an existing local branch;
    * `source` may be a local branch or a remote-tracking ref (`origin/main`).
@@ -1602,6 +1680,14 @@ export interface RepoApi {
    * resolve and `mergeContinue`, or `mergeAbort`.
    */
   cherryPick(path: string, hash: string): Promise<RefsMutationResult>;
+  /**
+   * Revert the commit `hash` (`git revert --no-edit hash`), recording a new commit
+   * on the checked-out branch that undoes that commit's change. Resolves with fresh
+   * refs on success, or an error message — conflicts leave the revert in progress
+   * (surfaced through {@link mergeState}) so the user can resolve and `mergeContinue`,
+   * or `mergeAbort`.
+   */
+  revert(path: string, hash: string): Promise<RefsMutationResult>;
   /**
    * Move the checked-out branch back to the commit `hash` (`git reset --<mode>`),
    * dropping every commit after it. `mode` decides what becomes of those commits'

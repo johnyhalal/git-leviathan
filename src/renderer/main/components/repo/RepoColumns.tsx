@@ -70,6 +70,11 @@ interface RepoColumnsProps {
   onFastForward: (source: string, target: string) => void;
   /** Cherry-pick the commit `hash` onto HEAD (from a commit's context menu). */
   onCherryPick: (hash: string) => void;
+  onRevert: (hash: string) => void;
+  /** Rebase the checked-out branch onto `hash` (from a commit's context menu). */
+  onRebaseOnto: (hash: string) => void;
+  /** Open the interactive-rebase editor starting at `hash` (from a commit's context menu). */
+  onInteractiveRebase: (hash: string) => void;
   /** Check out the commit `hash` itself, detaching HEAD (from a commit's context menu). */
   onCheckoutCommit: (hash: string) => void;
   /** Reset the checked-out branch to `hash` (from a commit's context menu). */
@@ -184,6 +189,9 @@ export function RepoColumns({
   onCancelCreateBranch,
   onMergeBranch,
   onCherryPick,
+  onRevert,
+  onRebaseOnto,
+  onInteractiveRebase,
   onCheckoutCommit,
   onReset,
   onResetPreview,
@@ -390,6 +398,7 @@ export function RepoColumns({
           onRebaseBranch={onRebaseBranch}
           onFastForward={onFastForward}
           onCherryPick={onCherryPick}
+          onRevert={onRevert}
           onPushBranch={onPushBranch}
           onRenameBranch={onRenameBranch}
           onDeleteBranch={onDeleteBranch}
@@ -467,6 +476,9 @@ export function RepoColumns({
             onMergeBranch={onMergeBranch}
             onRebaseBranch={onRebaseBranch}
             onCherryPick={onCherryPick}
+            onRevert={onRevert}
+            onRebaseOnto={onRebaseOnto}
+            onInteractiveRebase={onInteractiveRebase}
             onCheckoutCommit={onCheckoutCommit}
             onReset={onReset}
             onResetPreview={onResetPreview}
