@@ -95,6 +95,7 @@ import {
   type OpenRepoResult,
   type OpenTabsState,
   type PullMode,
+  type BackgroundFetchResult,
   type PushResult,
   type UpdateCheckInterval,
   UPDATE_CHECK_INTERVALS,
@@ -2642,10 +2643,68 @@ function checkoutErrorMessage(err: unknown, branch: string): string {
   return gitErrorMessage(err, `Could not check out “${branch}”.`);
 }
 
+/** Whether the working tree has any local change at all, untracked files included. */
+async function isWorkingTreeDirty(cwd: string): Promise<boolean> {
+  return (await runGit(cwd, ['status', '--porcelain'])).trim().length > 0;
+}
+
+/** The stash entry index holding `hash`, or -1 when it's no longer listed. */
+async function stashIndexOf(cwd: string, hash: string): Promise<number> {
+  const list = (await runGit(cwd, ['stash', 'list', '--format=%H']))
+    .split('\n')
+    .map((line) => line.trim());
+  return list.indexOf(hash);
+}
+
+/**
+ * Stash every local change (untracked files included) so an operation that git
+ * would otherwise refuse can run. Resolves with the stash commit's hash — the
+ * handle used to put it back — or null when git refused to stash.
+ */
+async function autoStashPush(cwd: string): Promise<string | null> {
+  const branch = await currentBranchName(cwd);
+  const message = branch ? `Auto-stash before pull on ${branch}` : 'Auto-stash before pull';
+  try {
+    await spawnGit(cwd, ['stash', 'push', '--include-untracked', '-m', message], 'stash');
+  } catch {
+    return null;
+  }
+  const hash = (await runGit(cwd, ['rev-parse', 'stash@{0}'])).trim();
+  return hash || null;
+}
+
+/**
+ * Put an auto-stash back. `--index` is tried first so staged files stay staged,
+ * then a plain pop (restoring the changes matters more than the index). The
+ * entry is looked up by hash rather than assumed to be `stash@{0}`, since a
+ * hook or another window may have pushed one meanwhile. Returns false when the
+ * changes couldn't be restored — the entry is then still in the stash list, so
+ * nothing is lost and the caller says so.
+ */
+async function autoStashPop(cwd: string, hash: string): Promise<boolean> {
+  for (const flags of [['--index'], []]) {
+    const index = await stashIndexOf(cwd, hash);
+    if (index < 0) return false;
+    try {
+      await spawnGit(cwd, ['stash', 'pop', ...flags, `stash@{${index}}`], 'stash');
+      return true;
+    } catch {
+      // `--index` refuses whenever the index can't be rebuilt exactly; fall
+      // through and retry without it. A second failure is a real conflict.
+    }
+  }
+  return false;
+}
+
 /**
  * Pull (or, for `fetch-all`, fetch) the current branch from its upstream. The
  * mode maps straight onto git's flags. GIT_TERMINAL_PROMPT=0 keeps an
  * auth-required remote from hanging the app.
+ *
+ * Local changes make git refuse the pull outright, so a dirty working tree is
+ * stashed first and popped afterwards — the stash/pull/pop dance done by hand
+ * otherwise. The pop runs whether the pull succeeded or failed, so a failed
+ * pull leaves the working tree exactly as it was found.
  */
 async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
   const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
@@ -2675,11 +2734,100 @@ async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
   const authArgs = await authArgsForRemotes(cwd, remotes);
   const sshEnv = await sshEnvForRemotes(cwd, remotes);
 
+  // `fetch-all` never touches the working tree, so it needs no stashing.
+  let stashed: string | null = null;
+  if (mode !== 'fetch-all' && (await isWorkingTreeDirty(cwd))) {
+    stashed = await autoStashPush(cwd);
+    if (!stashed) {
+      return {
+        status: 'error',
+        message: 'Could not stash your local changes before pulling. Commit or stash them, then pull.',
+      };
+    }
+  }
+
+  let failure: string | null = null;
   try {
     await spawnGit(cwd, [...authArgs, ...args], activityOp(args), { ...env, ...sshEnv });
-    return { status: 'ok' };
   } catch (err) {
-    return { status: 'error', message: pullErrorMessage(err) };
+    failure = pullErrorMessage(err);
+  }
+
+  if (stashed && !(await autoStashPop(cwd, stashed))) {
+    // The changes are still a stash entry either way, so name where they went.
+    const kept = 'Your local changes are still stashed as “Auto-stash before pull” — apply that stash to get them back.';
+    return {
+      status: 'error',
+      message: failure
+        ? `${failure} ${kept}`
+        : `Pulled, but your local changes couldn’t be restored automatically — they clash with the incoming commits. ${kept}`,
+    };
+  }
+  return failure ? { status: 'error', message: failure } : { status: 'ok' };
+}
+
+/**
+ * How long a background `git fetch --all` stays "fresh" for a repository. Focus
+ * events fire constantly (alt-tabbing, tab switching), and each fetch is a real
+ * network round trip to every remote, so a repo fetched within this window is
+ * left alone.
+ */
+const BACKGROUND_FETCH_INTERVAL_MS = 60_000;
+
+/** How long a background fetch may run before it's abandoned. */
+const BACKGROUND_FETCH_TIMEOUT_MS = 30_000;
+
+/** Last completed background fetch per repo path, for the throttle above. */
+const backgroundFetchedAt = new Map<string, number>();
+
+/** In-flight background fetches per repo path, so concurrent calls share one run. */
+const backgroundFetches = new Map<string, Promise<BackgroundFetchResult>>();
+
+/**
+ * Quietly update every remote's tracking refs (`git fetch --all`) so a focused
+ * repository shows current ahead/behind counts without the user asking. Unlike
+ * `pullCurrent` this never touches the working tree or the current branch, runs
+ * outside the activity log (it's not a user action and would drown it), and
+ * swallows failures — being offline or lacking credentials must not surface a
+ * toast for something nobody asked for.
+ */
+async function backgroundFetchAll(cwd: string): Promise<BackgroundFetchResult> {
+  const running = backgroundFetches.get(cwd);
+  if (running) return { status: 'skipped' };
+  const last = backgroundFetchedAt.get(cwd) ?? 0;
+  if (Date.now() - last < BACKGROUND_FETCH_INTERVAL_MS) return { status: 'skipped' };
+
+  const run = (async (): Promise<BackgroundFetchResult> => {
+    const remotes = (await runGit(cwd, ['remote']))
+      .split('\n')
+      .map((name) => name.trim())
+      .filter(Boolean);
+    if (remotes.length === 0) return { status: 'skipped' };
+
+    const authArgs = await authArgsForRemotes(cwd, remotes);
+    const sshEnv = await sshEnvForRemotes(cwd, remotes);
+    const env = gitEnv({ GIT_TERMINAL_PROMPT: '0', ...sshEnv });
+    try {
+      await execFileAsync(gitBin, [...authArgs, 'fetch', '--all'], {
+        cwd,
+        env,
+        timeout: BACKGROUND_FETCH_TIMEOUT_MS,
+      });
+      return { status: 'ok' };
+    } catch {
+      return { status: 'error' };
+    }
+  })();
+
+  backgroundFetches.set(cwd, run);
+  try {
+    const result = await run;
+    // Mark the attempt even when it failed: an unreachable remote shouldn't be
+    // retried on every focus event.
+    backgroundFetchedAt.set(cwd, Date.now());
+    return result;
+  } finally {
+    backgroundFetches.delete(cwd);
   }
 }
 
@@ -3600,6 +3748,14 @@ function registerRepoIpc(): void {
       }
       const chosen = PULL_MODES.includes(mode as PullMode) ? (mode as PullMode) : 'ff';
       return pullCurrent(repoPath, chosen);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.backgroundFetch,
+    async (_event, repoPath: unknown): Promise<BackgroundFetchResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return { status: 'error' };
+      return backgroundFetchAll(repoPath);
     },
   );
 

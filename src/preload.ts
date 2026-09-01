@@ -53,6 +53,7 @@ import {
   type OpenRepoResult,
   type OpenTabsState,
   type PullMode,
+  type BackgroundFetchResult,
   type PushResult,
   type RecentRepo,
   type RemoteRepo,
@@ -177,6 +178,11 @@ const api: ExposedApi = {
       ) as Promise<CommitResult>,
     pull: (path: string, mode: PullMode) =>
       ipcRenderer.invoke(RepoChannels.pull, path, mode) as Promise<CommitResult>,
+    backgroundFetch: (path: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.backgroundFetch,
+        path,
+      ) as Promise<BackgroundFetchResult>,
     checkout: (path: string, branch: string, remote?: string) =>
       ipcRenderer.invoke(RepoChannels.checkout, path, branch, remote) as Promise<CheckoutResult>,
     checkoutCommit: (path: string, hash: string) =>

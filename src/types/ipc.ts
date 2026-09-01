@@ -503,6 +503,22 @@ export type LfsResult =
 export type PullMode = 'ff' | 'ff-only' | 'rebase' | 'fetch-all';
 
 /**
+ * Outcome of the automatic background `git fetch --all` the renderer fires when
+ * a repository tab (or the window) gains focus:
+ * - `ok`      — the fetch ran, so remote-tracking refs may have moved and the
+ *               view is worth re-syncing.
+ * - `skipped` — throttled (a fetch for this repo ran very recently) or one is
+ *               already in flight; nothing changed on this call's account.
+ * - `error`   — the fetch failed (offline, auth, unreachable remote). Carries no
+ *               message on purpose: it's a background action the user didn't
+ *               ask for, so it must stay silent rather than raise a toast.
+ */
+export type BackgroundFetchResult =
+  | { status: 'ok' }
+  | { status: 'skipped' }
+  | { status: 'error' };
+
+/**
  * Allowed intervals (in minutes) for the periodic GitHub release check that
  * drives the status-bar update button. `0` means "never check automatically".
  * The renderer renders these as a preset dropdown.
@@ -792,6 +808,8 @@ export const RepoChannels = {
   pushSetUpstream: 'repo:push-set-upstream',
   /** Renderer -> main (invoke): pull/fetch the current branch from its upstream. */
   pull: 'repo:pull',
+  /** Renderer -> main (invoke): quietly `git fetch --all` in the background. */
+  backgroundFetch: 'repo:background-fetch',
   /** Renderer -> main (invoke): check out a branch; returns fresh refs. */
   checkout: 'repo:checkout',
   /** Renderer -> main (invoke): check out a commit (detached HEAD); returns fresh refs. */
@@ -1465,6 +1483,14 @@ export interface RepoApi {
    * error message (no upstream, diverged history, conflicts, auth failure…).
    */
   pull(path: string, mode: PullMode): Promise<CommitResult>;
+  /**
+   * Quietly run `git fetch --all` so the repository's remote-tracking refs stay
+   * current, without touching the working tree or the current branch. Meant to
+   * be fired on focus, not by an explicit user action: the main process
+   * throttles it per repository and collapses concurrent calls, and failures
+   * resolve as `error` with no message so nothing is surfaced to the user.
+   */
+  backgroundFetch(path: string): Promise<BackgroundFetchResult>;
   /**
    * Check out `branch` in the repository at `path` (`git checkout`). Resolves
    * with the repo's fresh refs on success, or an error message (e.g. when the

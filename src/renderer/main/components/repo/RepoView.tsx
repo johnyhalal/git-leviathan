@@ -271,12 +271,36 @@ export function RepoView({
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
+  // Bring the remote-tracking refs up to date in the background, then re-sync if
+  // the fetch actually ran — so ahead/behind counts and remote branches reflect
+  // the server without the user pressing anything. The main process throttles
+  // and dedupes the underlying `git fetch --all` and reports failures silently,
+  // so this is safe to fire on every focus event.
+  const backgroundFetch = useCallback(async () => {
+    const result = await window.api.repo.backgroundFetch(repoPath);
+    if (result.status === 'ok') void refreshRef.current();
+  }, [repoPath]);
+
+  const backgroundFetchRef = useRef(backgroundFetch);
+  backgroundFetchRef.current = backgroundFetch;
+
+  // Fetch when this repo becomes the tab on screen (RepoView renders only the
+  // active tab, so a new `repoPath` means the user just focused that repo).
+  useEffect(() => {
+    void backgroundFetch();
+  }, [backgroundFetch]);
+
   // Re-sync the view whenever the OS window regains focus, so edits made in an
-  // editor or commits made from a terminal show up without a manual action.
-  // The main process detects window focus and broadcasts it (renderer-side
-  // `window` focus events are unreliable in Electron).
+  // editor or commits made from a terminal show up without a manual action, and
+  // fetch so remote-side changes land too. The main process detects window focus
+  // and broadcasts it (renderer-side `window` focus events are unreliable in
+  // Electron).
   useEffect(
-    () => window.api.app.onWindowFocus(() => void refreshRef.current()),
+    () =>
+      window.api.app.onWindowFocus(() => {
+        void refreshRef.current();
+        void backgroundFetchRef.current();
+      }),
     [],
   );
 
@@ -361,7 +385,12 @@ export function RepoView({
               ? `“${head.name}” updated from “${head.upstream}”.`
               : 'Pulled from the remote.',
           );
-      } else await surfaceConflictsOrError('Pull failed', result.message);
+      } else {
+        // A failed pull can still have moved things — the auto-stash of local
+        // changes may have been left behind — so re-sync before reporting.
+        reload();
+        await surfaceConflictsOrError('Pull failed', result.message);
+      }
     },
     [pulling, repoPath, reload, closeDiff, surfaceConflictsOrError, onSuccess, refs],
   );
