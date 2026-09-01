@@ -1152,16 +1152,19 @@ body.is-row-resizing {
 }
 
 /* --- Multi-commit selection (2+ commits selected) --- */
-/* The body scrolls as one column; each commit is a box with its files beneath. */
-.commit-multi-body {
-  overflow-y: auto;
-  gap: 16px;
-}
-
-.commit-group {
+/* Mirrors the single-commit layout: a scrollable box of commit cards stands in
+   for the commit message, with the aggregated file list flexing below it. The
+   cards box takes the message's place — a fixed max-height that scrolls once the
+   selection has more cards than fit. */
+.commit-multi-cards {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  max-height: 220px;
+  margin: 0 0 16px;
+  padding-right: 2px;
+  overflow-y: auto;
 }
 
 /* The commit "box": a card carrying the hash, subject, author and change counts. */
@@ -1230,12 +1233,5 @@ body.is-row-resizing {
   margin-left: auto;
   font-size: 12px;
   color: var(--fg-muted);
-}
-
-/* The changed files listed under a commit's box. */
-.commit-group-files {
-  display: flex;
-  flex-direction: column;
-  padding-left: 4px;
 }
 

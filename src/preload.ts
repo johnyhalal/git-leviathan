@@ -33,6 +33,9 @@ import {
   type CommitLogEntry,
   type CommitDetailData,
   type CommitResult,
+  type RebaseInteractivePreview,
+  type RebaseTodoEntry,
+  type CherryPickPreview,
   type DeviceCodePrompt,
   type DiffSource,
   type ExposedApi,
@@ -53,6 +56,7 @@ import {
   type OpenRepoResult,
   type OpenTabsState,
   type PullMode,
+  type BackgroundFetchResult,
   type PushResult,
   type RecentRepo,
   type RemoteRepo,
@@ -177,6 +181,11 @@ const api: ExposedApi = {
       ) as Promise<CommitResult>,
     pull: (path: string, mode: PullMode) =>
       ipcRenderer.invoke(RepoChannels.pull, path, mode) as Promise<CommitResult>,
+    backgroundFetch: (path: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.backgroundFetch,
+        path,
+      ) as Promise<BackgroundFetchResult>,
     checkout: (path: string, branch: string, remote?: string) =>
       ipcRenderer.invoke(RepoChannels.checkout, path, branch, remote) as Promise<CheckoutResult>,
     checkoutCommit: (path: string, hash: string) =>
@@ -231,10 +240,31 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.merge, path, source, target) as Promise<RefsMutationResult>,
     rebase: (path: string, source: string, target: string) =>
       ipcRenderer.invoke(RepoChannels.rebase, path, source, target) as Promise<RefsMutationResult>,
+    rebaseOnto: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.rebaseOnto, path, hash) as Promise<RefsMutationResult>,
+    rebaseInteractivePreview: (path: string, hash: string) =>
+      ipcRenderer.invoke(
+        RepoChannels.rebaseInteractivePreview,
+        path,
+        hash,
+      ) as Promise<RebaseInteractivePreview>,
+    rebaseInteractive: (path: string, baseHash: string, todo: RebaseTodoEntry[]) =>
+      ipcRenderer.invoke(
+        RepoChannels.rebaseInteractive,
+        path,
+        baseHash,
+        todo,
+      ) as Promise<RefsMutationResult>,
     fastForward: (path: string, source: string, target: string) =>
       ipcRenderer.invoke(RepoChannels.fastForward, path, source, target) as Promise<RefsMutationResult>,
     cherryPick: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.cherryPick, path, hash) as Promise<RefsMutationResult>,
+    cherryPickPreview: (path: string, hashes: string[]) =>
+      ipcRenderer.invoke(RepoChannels.cherryPickPreview, path, hashes) as Promise<CherryPickPreview>,
+    cherryPickMulti: (path: string, todo: RebaseTodoEntry[]) =>
+      ipcRenderer.invoke(RepoChannels.cherryPickMulti, path, todo) as Promise<RefsMutationResult>,
+    revert: (path: string, hash: string) =>
+      ipcRenderer.invoke(RepoChannels.revert, path, hash) as Promise<RefsMutationResult>,
     reset: (path: string, hash: string, mode: ResetMode) =>
       ipcRenderer.invoke(RepoChannels.reset, path, hash, mode) as Promise<RefsMutationResult>,
     resetPreview: (path: string, hash: string) =>

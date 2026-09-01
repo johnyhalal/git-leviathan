@@ -71,6 +71,10 @@ import {
   type CommitRefDecoration,
   type CommitDetailData,
   type CommitResult,
+  type RebaseInteractivePreview,
+  type CherryPickPreview,
+  type RebaseCommitInfo,
+  type RebaseTodoEntry,
   type DiffSource,
   type DiffLine,
   type FileChange,
@@ -95,6 +99,7 @@ import {
   type OpenRepoResult,
   type OpenTabsState,
   type PullMode,
+  type BackgroundFetchResult,
   type PushResult,
   type UpdateCheckInterval,
   UPDATE_CHECK_INTERVALS,
@@ -2173,6 +2178,10 @@ function fileDiffArgs(source: DiffSource, file: string): string[] {
         '--',
         file,
       ];
+    case 'range':
+      // The net change from `from` to `to` for this file — the aggregated diff
+      // spanning the selected commits. -M detects renames across the span.
+      return ['diff', '--no-color', '-M', source.from, source.to, '--', file];
     case 'staged':
       return ['diff', '--no-color', '-M', '--cached', '--', file];
     case 'unstaged':
@@ -2308,7 +2317,8 @@ async function readFileContent(
       return [];
     }
   }
-  const rev = source.kind === 'commit' ? source.hash : '';
+  const rev =
+    source.kind === 'commit' ? source.hash : source.kind === 'range' ? source.to : '';
   const out = await runGit(cwd, ['show', `${rev}:${file}`]);
   return splitContent(out);
 }
@@ -2402,6 +2412,302 @@ async function rewordCommit(
   } finally {
     fs.rmSync(msgDir, { recursive: true, force: true });
   }
+}
+
+/** Field/record separators for reading a commit range as one log run. */
+const REBASE_FIELD = '\x1f';
+const REBASE_RECORD = '\x1e';
+
+/**
+ * List the commits an interactive rebase onto `hash` would edit — the commits
+ * *on top of* `hash` (its children up to HEAD), oldest first. `hash` itself is
+ * the immovable base and is never in the list. Refuses a commit that isn't a
+ * linear, merge-free ancestor of HEAD, since a scripted `git rebase -i` can't
+ * sensibly flatten those. Returns `{ error }` in that case instead of a list.
+ */
+async function rebaseInteractivePreview(
+  cwd: string,
+  hash: string,
+): Promise<RebaseInteractivePreview> {
+  // The base must be reachable from HEAD (on the current branch); `hash..HEAD`
+  // is the set of its children we'd replay on top of it.
+  const isAncestor = await execFileAsync(
+    gitBin,
+    ['merge-base', '--is-ancestor', hash, 'HEAD'],
+    { cwd, env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }) },
+  )
+    .then(() => true)
+    .catch(() => false);
+  if (!isAncestor) {
+    return {
+      baseHash: hash,
+      commits: [],
+      error: 'Interactive rebase is only available for commits on the current branch.',
+    };
+  }
+
+  // `hash` is the base; its children (`hash..HEAD`) are what the editor works on.
+  const range = `${hash}..HEAD`;
+  const fmt = ['%H', '%h', '%s', '%an', '%P', '%B'].join(REBASE_FIELD) + REBASE_RECORD;
+  const out = await runGit(cwd, ['log', '--reverse', `--format=${fmt}`, range]);
+
+  const commits: RebaseCommitInfo[] = [];
+  for (const record of out.split(REBASE_RECORD)) {
+    const trimmed = record.replace(/^\n+/, '');
+    if (!trimmed) continue;
+    const [full, short, subject, author, parents, body] = trimmed.split(REBASE_FIELD);
+    // A merge (2+ parents) in the range can't be replayed by a flat todo.
+    if (parents.trim().split(/\s+/).filter(Boolean).length > 1) {
+      return {
+        baseHash: hash,
+        commits: [],
+        error: 'Interactive rebase isn’t supported across a merge commit.',
+      };
+    }
+    commits.push({
+      hash: full,
+      shortHash: short,
+      subject,
+      body: body.replace(/\s+$/, ''),
+      author,
+    });
+  }
+  if (commits.length === 0) {
+    return {
+      baseHash: hash,
+      commits: [],
+      error: 'This commit has no children to rebase.',
+    };
+  }
+  return { baseHash: hash, commits };
+}
+
+/**
+ * Run a scripted, non-interactive `git rebase -i` onto `baseHash`, applying the
+ * editor's `todo` (reorder + pick / reword / squash / drop) to `baseHash`'s
+ * children. Rather than juggle git's `reword`/`squash` editor stops, the
+ * generated todo only ever uses `pick`/`fixup` and appends `exec … commit
+ * --amend --file` lines that set a message from a file — so message edits are
+ * explicit and, being written into the repo's git dir, survive a `git rebase
+ * --continue` after a conflict.
+ *
+ * On conflict the rebase is left in progress (like {@link rebaseOnto}) so the
+ * merge banner / conflict resolver can drive it to completion.
+ */
+async function interactiveRebase(
+  cwd: string,
+  baseHash: string,
+  todo: RebaseTodoEntry[],
+): Promise<RefsMutationResult> {
+  if (!(await commitishExists(cwd, baseHash))) {
+    return { status: 'error', message: `Commit “${baseHash}” doesn’t exist.` };
+  }
+  // `baseHash` is the rebase base; the todo edits its children (`baseHash..HEAD`).
+  const base = baseHash;
+
+  // Re-derive the authoritative commit set so a tampered payload can't smuggle
+  // in commits outside the range; every todo hash must be one of these.
+  const rangeHashes = new Set(
+    (await runGit(cwd, ['rev-list', `${base}..HEAD`]))
+      .split('\n')
+      .map((h) => h.trim())
+      .filter(Boolean),
+  );
+  const kept = todo.filter((e) => e.op !== 'drop');
+  if (kept.length === 0) {
+    return { status: 'error', message: 'An interactive rebase must keep at least one commit.' };
+  }
+  for (const entry of todo) {
+    if (typeof entry.hash !== 'string' || !rangeHashes.has(entry.hash)) {
+      return { status: 'error', message: 'The commit list changed — reopen the rebase and try again.' };
+    }
+  }
+  if (kept[0].op === 'squash') {
+    return { status: 'error', message: 'The first commit can’t be squashed — nothing sits above it.' };
+  }
+
+  // Message files live under the git dir so they outlive a paused (conflicted)
+  // rebase, whose `exec` lines re-run on `--continue`. Clear any stale run first.
+  const gitDir = path.resolve(cwd, (await runGit(cwd, ['rev-parse', '--git-dir'])).trim() || '.git');
+  const msgDir = path.join(gitDir, 'gl-rebase');
+  fs.rmSync(msgDir, { recursive: true, force: true });
+  fs.mkdirSync(msgDir, { recursive: true });
+
+  const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const execAmend = (msgFile: string) =>
+    `exec ${shq(gitBin)} commit --amend --file ${shq(msgFile)}`;
+
+  const lines: string[] = [];
+  let msgIndex = 0;
+  const writeMsg = (text: string): string => {
+    const file = path.join(msgDir, `msg-${msgIndex++}`);
+    fs.writeFileSync(file, text.endsWith('\n') ? text : `${text}\n`);
+    return file;
+  };
+
+  for (const entry of todo) {
+    if (entry.op === 'drop') continue;
+    if (entry.op === 'squash') {
+      lines.push(`fixup ${entry.hash}`);
+      // The last squash of a run carries the melded message; set it on the
+      // just-melded HEAD. Earlier squashes in the run carry none.
+      if (typeof entry.message === 'string') lines.push(execAmend(writeMsg(entry.message)));
+    } else {
+      lines.push(`pick ${entry.hash}`);
+      if (entry.op === 'reword' && typeof entry.message === 'string') {
+        lines.push(execAmend(writeMsg(entry.message)));
+      }
+    }
+  }
+
+  const todoFile = path.join(msgDir, 'todo');
+  fs.writeFileSync(todoFile, lines.join('\n') + '\n');
+
+  // Rewriting commits re-signs them when signing is on.
+  await primeSigningIfNeeded(cwd);
+
+  const result = await mutateRepo(
+    cwd,
+    [['-c', 'rebase.abbreviateCommands=false', 'rebase', '-i', '--autostash', base]],
+    'Interactive rebase failed.',
+    {
+      GL_TODO: todoFile,
+      // Overwrite git's generated todo with ours; never open a message editor.
+      GIT_SEQUENCE_EDITOR: `sh -c 'cat "$GL_TODO" > "$1"' sh`,
+      GIT_EDITOR: 'true',
+    },
+  );
+
+  // Clean up only on a clean finish; a paused rebase still needs the msg files.
+  if (result.status === 'ok') fs.rmSync(msgDir, { recursive: true, force: true });
+  return result;
+}
+
+/**
+ * Resolve the selected `hashes` into ordered {@link CherryPickPreview} commits
+ * for the multi-commit cherry-pick editor. Each must be a real, non-merge commit
+ * (a merge has no single change to replay); duplicates are dropped. The commits
+ * are returned oldest-first (by commit date) — the order they'll be replayed onto
+ * HEAD, and the order the editor lists them in.
+ */
+async function cherryPickPreview(
+  cwd: string,
+  hashes: string[],
+): Promise<CherryPickPreview> {
+  // De-dupe while preserving nothing — order comes from git below.
+  const unique = Array.from(new Set(hashes));
+  const infos: (RebaseCommitInfo & { order: number })[] = [];
+  for (const hash of unique) {
+    if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+      return { commits: [], error: 'A selected commit was invalid.' };
+    }
+    if (!(await commitishExists(cwd, hash))) {
+      return { commits: [], error: `Commit “${hash}” doesn’t exist.` };
+    }
+    // %ct sorts the list; a merge (2+ parents) can't be cherry-picked as one change.
+    const fmt = ['%H', '%h', '%s', '%an', '%P', '%ct', '%B'].join(REBASE_FIELD);
+    const raw = await runGit(cwd, ['show', '-s', `--format=${fmt}`, hash]);
+    const [full, short, subject, author, parents, ct, body] = raw.split(REBASE_FIELD);
+    if (!full) {
+      return { commits: [], error: `Commit “${hash}” couldn’t be read.` };
+    }
+    if (parents.trim().split(/\s+/).filter(Boolean).length > 1) {
+      return { commits: [], error: 'A merge commit can’t be cherry-picked — deselect it and try again.' };
+    }
+    infos.push({
+      hash: full,
+      shortHash: short,
+      subject,
+      author,
+      body: (body ?? '').replace(/\s+$/, ''),
+      order: Number.parseInt(ct, 10) || 0,
+    });
+  }
+  if (infos.length === 0) {
+    return { commits: [], error: 'No commits were selected.' };
+  }
+  infos.sort((a, b) => a.order - b.order);
+  return {
+    commits: infos.map((c) => ({
+      hash: c.hash,
+      shortHash: c.shortHash,
+      subject: c.subject,
+      author: c.author,
+      body: c.body,
+    })),
+  };
+}
+
+/**
+ * Apply an edited multi-commit cherry-pick plan onto the current HEAD. The `todo`
+ * is the same compiled shape the interactive-rebase editor emits (already
+ * oldest-first, drops removed, `squash` melded into the previous kept commit with
+ * the melded message on the last squash of each run):
+ * - `pick`   — `cherry-pick -x` the commit as its own new commit.
+ * - `reword` — cherry-pick it, then `commit --amend` its message from a file.
+ * - `squash` — `cherry-pick --no-commit` to stage the change onto the previous
+ *   commit, then (on the last of the run, which carries the melded message)
+ *   `commit --amend` to fold it in. Intermediate squashes only stage.
+ *
+ * A conflict on any step leaves the cherry-pick in progress (CHERRY_PICK_HEAD),
+ * like the single cherry-pick, so the merge banner / conflict resolver can drive
+ * that commit to completion; the remaining planned commits are not auto-resumed.
+ */
+async function cherryPickMulti(
+  cwd: string,
+  todo: RebaseTodoEntry[],
+): Promise<RefsMutationResult> {
+  const kept = todo.filter((e) => e.op !== 'drop');
+  if (kept.length === 0) {
+    return { status: 'error', message: 'A cherry-pick must keep at least one commit.' };
+  }
+  for (const entry of kept) {
+    if (typeof entry.hash !== 'string' || entry.hash.length === 0 || entry.hash.startsWith('-')) {
+      return { status: 'error', message: 'The commit list was malformed — reopen and try again.' };
+    }
+    if (!(await commitishExists(cwd, entry.hash))) {
+      return { status: 'error', message: `Commit “${entry.hash}” doesn’t exist.` };
+    }
+  }
+
+  // Message files (reword / melded squash) live under the git dir so they outlive
+  // a paused (conflicted) cherry-pick. Clear any stale run first.
+  const gitDir = path.resolve(cwd, (await runGit(cwd, ['rev-parse', '--git-dir'])).trim() || '.git');
+  const msgDir = path.join(gitDir, 'gl-cherry-pick');
+  fs.rmSync(msgDir, { recursive: true, force: true });
+  fs.mkdirSync(msgDir, { recursive: true });
+  let msgIndex = 0;
+  const writeMsg = (text: string): string => {
+    const file = path.join(msgDir, `msg-${msgIndex++}`);
+    fs.writeFileSync(file, text.endsWith('\n') ? text : `${text}\n`);
+    return file;
+  };
+
+  const steps: string[][] = [];
+  kept.forEach((entry, i) => {
+    // A leading squash has nothing above it to meld into — treat it as a pick.
+    const op = entry.op === 'squash' && i === 0 ? 'pick' : entry.op;
+    if (op === 'squash') {
+      steps.push(['cherry-pick', '--no-commit', entry.hash]);
+      // The last squash of a run carries the melded message; fold it into HEAD.
+      if (typeof entry.message === 'string') {
+        steps.push(['commit', '--amend', '--file', writeMsg(entry.message)]);
+      }
+    } else if (op === 'reword') {
+      steps.push(['cherry-pick', '-x', entry.hash]);
+      steps.push(['commit', '--amend', '--file', writeMsg(entry.message ?? '')]);
+    } else {
+      steps.push(['cherry-pick', '-x', entry.hash]);
+    }
+  });
+
+  // New commits are re-signed when signing is on.
+  await primeSigningIfNeeded(cwd);
+
+  const result = await mutateRepo(cwd, steps, 'Could not cherry-pick the commits.');
+  // Clean up only on a clean finish; a paused cherry-pick still needs the files.
+  if (result.status === 'ok') fs.rmSync(msgDir, { recursive: true, force: true });
+  return result;
 }
 
 /**
@@ -2642,10 +2948,68 @@ function checkoutErrorMessage(err: unknown, branch: string): string {
   return gitErrorMessage(err, `Could not check out “${branch}”.`);
 }
 
+/** Whether the working tree has any local change at all, untracked files included. */
+async function isWorkingTreeDirty(cwd: string): Promise<boolean> {
+  return (await runGit(cwd, ['status', '--porcelain'])).trim().length > 0;
+}
+
+/** The stash entry index holding `hash`, or -1 when it's no longer listed. */
+async function stashIndexOf(cwd: string, hash: string): Promise<number> {
+  const list = (await runGit(cwd, ['stash', 'list', '--format=%H']))
+    .split('\n')
+    .map((line) => line.trim());
+  return list.indexOf(hash);
+}
+
+/**
+ * Stash every local change (untracked files included) so an operation that git
+ * would otherwise refuse can run. Resolves with the stash commit's hash — the
+ * handle used to put it back — or null when git refused to stash.
+ */
+async function autoStashPush(cwd: string): Promise<string | null> {
+  const branch = await currentBranchName(cwd);
+  const message = branch ? `Auto-stash before pull on ${branch}` : 'Auto-stash before pull';
+  try {
+    await spawnGit(cwd, ['stash', 'push', '--include-untracked', '-m', message], 'stash');
+  } catch {
+    return null;
+  }
+  const hash = (await runGit(cwd, ['rev-parse', 'stash@{0}'])).trim();
+  return hash || null;
+}
+
+/**
+ * Put an auto-stash back. `--index` is tried first so staged files stay staged,
+ * then a plain pop (restoring the changes matters more than the index). The
+ * entry is looked up by hash rather than assumed to be `stash@{0}`, since a
+ * hook or another window may have pushed one meanwhile. Returns false when the
+ * changes couldn't be restored — the entry is then still in the stash list, so
+ * nothing is lost and the caller says so.
+ */
+async function autoStashPop(cwd: string, hash: string): Promise<boolean> {
+  for (const flags of [['--index'], []]) {
+    const index = await stashIndexOf(cwd, hash);
+    if (index < 0) return false;
+    try {
+      await spawnGit(cwd, ['stash', 'pop', ...flags, `stash@{${index}}`], 'stash');
+      return true;
+    } catch {
+      // `--index` refuses whenever the index can't be rebuilt exactly; fall
+      // through and retry without it. A second failure is a real conflict.
+    }
+  }
+  return false;
+}
+
 /**
  * Pull (or, for `fetch-all`, fetch) the current branch from its upstream. The
  * mode maps straight onto git's flags. GIT_TERMINAL_PROMPT=0 keeps an
  * auth-required remote from hanging the app.
+ *
+ * Local changes make git refuse the pull outright, so a dirty working tree is
+ * stashed first and popped afterwards — the stash/pull/pop dance done by hand
+ * otherwise. The pop runs whether the pull succeeded or failed, so a failed
+ * pull leaves the working tree exactly as it was found.
  */
 async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
   const env = gitEnv({ GIT_TERMINAL_PROMPT: '0' });
@@ -2675,11 +3039,100 @@ async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
   const authArgs = await authArgsForRemotes(cwd, remotes);
   const sshEnv = await sshEnvForRemotes(cwd, remotes);
 
+  // `fetch-all` never touches the working tree, so it needs no stashing.
+  let stashed: string | null = null;
+  if (mode !== 'fetch-all' && (await isWorkingTreeDirty(cwd))) {
+    stashed = await autoStashPush(cwd);
+    if (!stashed) {
+      return {
+        status: 'error',
+        message: 'Could not stash your local changes before pulling. Commit or stash them, then pull.',
+      };
+    }
+  }
+
+  let failure: string | null = null;
   try {
     await spawnGit(cwd, [...authArgs, ...args], activityOp(args), { ...env, ...sshEnv });
-    return { status: 'ok' };
   } catch (err) {
-    return { status: 'error', message: pullErrorMessage(err) };
+    failure = pullErrorMessage(err);
+  }
+
+  if (stashed && !(await autoStashPop(cwd, stashed))) {
+    // The changes are still a stash entry either way, so name where they went.
+    const kept = 'Your local changes are still stashed as “Auto-stash before pull” — apply that stash to get them back.';
+    return {
+      status: 'error',
+      message: failure
+        ? `${failure} ${kept}`
+        : `Pulled, but your local changes couldn’t be restored automatically — they clash with the incoming commits. ${kept}`,
+    };
+  }
+  return failure ? { status: 'error', message: failure } : { status: 'ok' };
+}
+
+/**
+ * How long a background `git fetch --all` stays "fresh" for a repository. Focus
+ * events fire constantly (alt-tabbing, tab switching), and each fetch is a real
+ * network round trip to every remote, so a repo fetched within this window is
+ * left alone.
+ */
+const BACKGROUND_FETCH_INTERVAL_MS = 60_000;
+
+/** How long a background fetch may run before it's abandoned. */
+const BACKGROUND_FETCH_TIMEOUT_MS = 30_000;
+
+/** Last completed background fetch per repo path, for the throttle above. */
+const backgroundFetchedAt = new Map<string, number>();
+
+/** In-flight background fetches per repo path, so concurrent calls share one run. */
+const backgroundFetches = new Map<string, Promise<BackgroundFetchResult>>();
+
+/**
+ * Quietly update every remote's tracking refs (`git fetch --all`) so a focused
+ * repository shows current ahead/behind counts without the user asking. Unlike
+ * `pullCurrent` this never touches the working tree or the current branch, runs
+ * outside the activity log (it's not a user action and would drown it), and
+ * swallows failures — being offline or lacking credentials must not surface a
+ * toast for something nobody asked for.
+ */
+async function backgroundFetchAll(cwd: string): Promise<BackgroundFetchResult> {
+  const running = backgroundFetches.get(cwd);
+  if (running) return { status: 'skipped' };
+  const last = backgroundFetchedAt.get(cwd) ?? 0;
+  if (Date.now() - last < BACKGROUND_FETCH_INTERVAL_MS) return { status: 'skipped' };
+
+  const run = (async (): Promise<BackgroundFetchResult> => {
+    const remotes = (await runGit(cwd, ['remote']))
+      .split('\n')
+      .map((name) => name.trim())
+      .filter(Boolean);
+    if (remotes.length === 0) return { status: 'skipped' };
+
+    const authArgs = await authArgsForRemotes(cwd, remotes);
+    const sshEnv = await sshEnvForRemotes(cwd, remotes);
+    const env = gitEnv({ GIT_TERMINAL_PROMPT: '0', ...sshEnv });
+    try {
+      await execFileAsync(gitBin, [...authArgs, 'fetch', '--all'], {
+        cwd,
+        env,
+        timeout: BACKGROUND_FETCH_TIMEOUT_MS,
+      });
+      return { status: 'ok' };
+    } catch {
+      return { status: 'error' };
+    }
+  })();
+
+  backgroundFetches.set(cwd, run);
+  try {
+    const result = await run;
+    // Mark the attempt even when it failed: an unreachable remote shouldn't be
+    // retried on every focus event.
+    backgroundFetchedAt.set(cwd, Date.now());
+    return result;
+  } finally {
+    backgroundFetches.delete(cwd);
   }
 }
 
@@ -3149,6 +3602,16 @@ function registerRepoIpc(): void {
     if (source.kind === 'commit' && typeof source.hash === 'string' && source.hash.length > 0) {
       return { kind: 'commit', hash: source.hash };
     }
+    const range = value as { from?: unknown; to?: unknown };
+    if (
+      source.kind === 'range' &&
+      typeof range.from === 'string' &&
+      range.from.length > 0 &&
+      typeof range.to === 'string' &&
+      range.to.length > 0
+    ) {
+      return { kind: 'range', from: range.from, to: range.to };
+    }
     return null;
   };
 
@@ -3600,6 +4063,14 @@ function registerRepoIpc(): void {
       }
       const chosen = PULL_MODES.includes(mode as PullMode) ? (mode as PullMode) : 'ff';
       return pullCurrent(repoPath, chosen);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.backgroundFetch,
+    async (_event, repoPath: unknown): Promise<BackgroundFetchResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return { status: 'error' };
+      return backgroundFetchAll(repoPath);
     },
   );
 
@@ -4060,6 +4531,86 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.rebaseOnto,
+    async (_event, repoPath: unknown, hash: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted hash the same way cherry-pick/revert do: a
+      // non-empty string that isn't an option and resolves to a real commit here.
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+        return { status: 'error', message: 'No commit was specified.' };
+      }
+      if (!(await commitishExists(repoPath, hash))) {
+        return { status: 'error', message: `Commit “${hash}” doesn’t exist.` };
+      }
+      // Replay the checked-out branch's commits on top of `hash`. `--autostash`
+      // sets aside any uncommitted work so a dirty tree doesn't block the rebase,
+      // restoring it after. A conflicting rebase exits non-zero and leaves the
+      // rebase in progress; the error surfaces the conflict resolver, and the
+      // merge banner reads the state, letting the user continue/skip/abort.
+      return mutateRepo(repoPath, [['rebase', '--autostash', hash]], 'Could not rebase onto the commit.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.rebaseInteractivePreview,
+    async (_event, repoPath: unknown, hash: unknown): Promise<RebaseInteractivePreview> => {
+      const fallback = (message: string): RebaseInteractivePreview => ({
+        baseHash: typeof hash === 'string' ? hash : '',
+        commits: [],
+        error: message,
+      });
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return fallback('Not a git repository.');
+      }
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+        return fallback('No commit was specified.');
+      }
+      if (!(await commitishExists(repoPath, hash))) {
+        return fallback(`Commit “${hash}” doesn’t exist.`);
+      }
+      return rebaseInteractivePreview(repoPath, hash);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.rebaseInteractive,
+    async (
+      _event,
+      repoPath: unknown,
+      baseHash: unknown,
+      todo: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof baseHash !== 'string' || baseHash.length === 0 || baseHash.startsWith('-')) {
+        return { status: 'error', message: 'No commit was specified.' };
+      }
+      // Re-validate the untrusted todo's shape before it drives a history rewrite.
+      const ops = new Set(['pick', 'reword', 'squash', 'drop']);
+      if (
+        !Array.isArray(todo) ||
+        todo.length === 0 ||
+        !todo.every(
+          (e) =>
+            e &&
+            typeof e === 'object' &&
+            typeof (e as RebaseTodoEntry).hash === 'string' &&
+            !(e as RebaseTodoEntry).hash.startsWith('-') &&
+            ops.has((e as RebaseTodoEntry).op) &&
+            ((e as RebaseTodoEntry).message === undefined ||
+              typeof (e as RebaseTodoEntry).message === 'string'),
+        )
+      ) {
+        return { status: 'error', message: 'The rebase plan was malformed.' };
+      }
+      return interactiveRebase(repoPath, baseHash, todo as RebaseTodoEntry[]);
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.fastForward,
     async (
       _event,
@@ -4100,6 +4651,75 @@ function registerRepoIpc(): void {
       // place; the error surfaces the conflict resolver, and the merge banner
       // reads the in-progress state, letting the user continue or abort.
       return mutateRepo(repoPath, [['cherry-pick', '-x', hash]], 'Could not cherry-pick the commit.');
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.cherryPickPreview,
+    async (_event, repoPath: unknown, hashes: unknown): Promise<CherryPickPreview> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { commits: [], error: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted list: a non-empty array of non-empty strings.
+      if (
+        !Array.isArray(hashes) ||
+        hashes.length === 0 ||
+        !hashes.every((h) => typeof h === 'string' && h.length > 0 && !h.startsWith('-'))
+      ) {
+        return { commits: [], error: 'No commits were selected.' };
+      }
+      return cherryPickPreview(repoPath, hashes as string[]);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.cherryPickMulti,
+    async (_event, repoPath: unknown, todo: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted todo's shape before it drives history changes.
+      const ops = new Set(['pick', 'reword', 'squash', 'drop']);
+      if (
+        !Array.isArray(todo) ||
+        todo.length === 0 ||
+        !todo.every(
+          (e) =>
+            e &&
+            typeof e === 'object' &&
+            typeof (e as RebaseTodoEntry).hash === 'string' &&
+            !(e as RebaseTodoEntry).hash.startsWith('-') &&
+            ops.has((e as RebaseTodoEntry).op) &&
+            ((e as RebaseTodoEntry).message === undefined ||
+              typeof (e as RebaseTodoEntry).message === 'string'),
+        )
+      ) {
+        return { status: 'error', message: 'The cherry-pick plan was malformed.' };
+      }
+      return cherryPickMulti(repoPath, todo as RebaseTodoEntry[]);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.revert,
+    async (_event, repoPath: unknown, hash: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      // Re-validate the untrusted hash the same way cherry-pick does: a non-empty
+      // string that isn't an option and resolves to a real commit here.
+      if (typeof hash !== 'string' || hash.length === 0 || hash.startsWith('-')) {
+        return { status: 'error', message: 'No commit was specified.' };
+      }
+      if (!(await commitishExists(repoPath, hash))) {
+        return { status: 'error', message: `Commit “${hash}” doesn’t exist.` };
+      }
+      // `--no-edit` takes git's default "Revert …" message without opening an
+      // editor (which would hang under GIT_TERMINAL_PROMPT=0). A conflicting
+      // revert exits non-zero and leaves REVERT_HEAD in place; the error surfaces
+      // the conflict resolver, and the merge banner reads the in-progress state,
+      // letting the user continue or abort.
+      return mutateRepo(repoPath, [['revert', '--no-edit', hash]], 'Could not revert the commit.');
     },
   );
 
@@ -6424,6 +7044,12 @@ function registerClaudeIpc(): void {
     async (_event, repoPath: unknown): Promise<GenerateCommitResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
+      }
+      // The very first commit of a repo has no history to describe and one
+      // conventional subject, so answer it locally instead of paying for a
+      // model round-trip (it also works with Claude not connected).
+      if (!(await commitishExists(repoPath, 'HEAD'))) {
+        return { status: 'ok', message: 'Initial commit' };
       }
       // Use the saved path directly — no per-click detection. A stale path
       // (binary moved/uninstalled) drops back to "not connected" so the user

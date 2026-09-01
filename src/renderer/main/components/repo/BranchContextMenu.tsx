@@ -59,6 +59,28 @@ interface BranchContextMenuProps {
    */
   onCherryPick?: () => void;
   /**
+   * How many commits the cherry-pick applies — the multi-selection count, or 1
+   * for a single commit. Drives the row's label ("Cherry-pick N commits …").
+   */
+  cherryPickCount?: number;
+  /**
+   * Revert this menu's commit, recording a new commit on the checked-out branch
+   * that undoes it. Conflicts surface the resolver, like cherry-pick.
+   */
+  onRevert?: () => void;
+  /**
+   * Rebase the checked-out branch onto this menu's commit, replaying its commits
+   * on top. Conflicts surface the resolver, like a branch rebase.
+   */
+  onRebaseOnto?: () => void;
+  /**
+   * Open the interactive-rebase editor starting at this menu's commit (reorder /
+   * pick / reword / squash / drop the commits from here up to HEAD). Omit to hide.
+   */
+  onInteractiveRebase?: () => void;
+  /** How many children sit on top of this commit — shown in the rebase row's label. */
+  rebaseChildCount?: number;
+  /**
    * Check out this menu's commit itself, detaching HEAD from any branch. Offered
    * for every commit but the checked-out one; omit to hide the row.
    */
@@ -118,15 +140,19 @@ function targetEntries(
   }
 
   // Merge / rebase are expressed relative to the checked-out branch, so they need
-  // one that differs from this (local) target.
-  if (currentBranch && target.local && target.name !== currentBranch) {
+  // one that differs from this target. A local target is addressed by its name; a
+  // remote-tracking one by its `remote/name` committish (so remote branches get
+  // the same actions cherry-pick offers). The current branch's own remote-tracking
+  // ref shares its name and is skipped — integrating a branch with itself is a no-op.
+  if (currentBranch && !target.isCurrent && target.name !== currentBranch) {
+    const committish = target.local ? target.name : `${target.remoteName}/${target.name}`;
     actions.push({
       label: `Merge into ${currentBranch}`,
-      onClick: () => h.onMerge(target.name, currentBranch),
+      onClick: () => h.onMerge(committish, currentBranch),
     });
     actions.push({
       label: `Rebase ${currentBranch} onto ${target.name}`,
-      onClick: () => h.onRebase(target.name, currentBranch),
+      onClick: () => h.onRebase(committish, currentBranch),
     });
   }
 
@@ -225,6 +251,11 @@ export function BranchContextMenu({
   onDeleteBranch,
   onDeleteRemoteBranch,
   onCherryPick,
+  cherryPickCount,
+  onRevert,
+  onRebaseOnto,
+  onInteractiveRebase,
+  rebaseChildCount,
   onCheckoutCommit,
   onReset,
   onResetPreview,
@@ -258,6 +289,42 @@ export function BranchContextMenu({
   if (onCheckoutCommit) {
     if (entries.length) entries.push('separator');
     entries.push({ label: 'Checkout this commit', onClick: onCheckoutCommit });
+  }
+
+  // Rebase replays the checked-out branch's commits on top of this commit, so it
+  // targets the commit and gets its own group — placed just above reset since
+  // both rewrite where the current branch's history sits. It confirms first
+  // because a rebase rewrites commits (new hashes) and can conflict.
+  if (onRebaseOnto) {
+    if (entries.length) entries.push('separator');
+    entries.push({
+      label: currentBranch
+        ? `Rebase ${currentBranch} onto this commit`
+        : 'Rebase onto this commit', // detached HEAD: there's no branch to name
+      onClick: () =>
+        requestConfirm({
+          message:
+            `Rebase ${currentBranch ?? 'HEAD'} onto ${shortHash ?? 'this commit'}? ` +
+            'This replays your commits on top of it, rewriting them with new hashes.',
+          actions: [
+            { label: 'Rebase', tone: 'primary', busyLabel: 'Rebasing…', onClick: onRebaseOnto },
+          ],
+        }),
+    });
+  }
+
+  // Interactive rebase opens the editor for this commit's children (the commits
+  // replayed on top of it), grouped with the other rebase rows. It doesn't
+  // confirm: the editor itself is the review step, and closing it backs out
+  // before anything is rewritten. The label names the count and the base commit,
+  // like GitKraken's "Interactive Rebase N children onto <hash>".
+  if (onInteractiveRebase) {
+    const count = rebaseChildCount ?? 0;
+    if (entries.length) entries.push('separator');
+    entries.push({
+      label: `Interactive Rebase ${count} ${count === 1 ? 'child' : 'children'} on ${shortHash ?? 'this commit'}`,
+      onClick: onInteractiveRebase,
+    });
   }
 
   // Reset moves the *branch* back to this commit (unlike checkout, which moves
@@ -306,12 +373,35 @@ export function BranchContextMenu({
   }
 
 
+  // Revert targets the commit — it records a new commit undoing it on the
+  // checked-out branch — so it sits with the other commit actions. It confirms
+  // first: unlike cherry-pick it's usually a deliberate "undo this change" and
+  // adds a commit to history, so a stray click shouldn't do it silently.
+  if (onRevert) {
+    if (entries.length) entries.push('separator');
+    entries.push({
+      label: 'Revert this commit',
+      onClick: () =>
+        requestConfirm({
+          message:
+            `Revert ${shortHash ?? 'this commit'}? This adds a new commit that ` +
+            'undoes its changes on the current branch.',
+          actions: [{ label: 'Revert', tone: 'primary', busyLabel: 'Reverting…', onClick: onRevert }],
+        }),
+    });
+  }
+
   // Cherry-pick targets the commit itself (applying it onto the checked-out
   // branch), so like the tag actions it's divided off from the branch groups.
   if (onCherryPick) {
+    const count = cherryPickCount ?? 1;
+    const what = count > 1 ? `${count} commits` : '';
+    const onto = currentBranch ? ` onto ${currentBranch}` : '';
     if (entries.length) entries.push('separator');
     entries.push({
-      label: currentBranch ? `Cherry-pick onto ${currentBranch}` : 'Cherry-pick',
+      // Multiple selected commits open the reorder/squash/reword/drop editor;
+      // a single one applies straight away (the editor would be overkill).
+      label: `Cherry-pick${what ? ` ${what}` : ''}${onto}${count > 1 ? '…' : ''}`,
       onClick: onCherryPick,
     });
   }

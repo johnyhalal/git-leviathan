@@ -112,8 +112,13 @@ const conflictStatus = (kind: ConflictKind): FileStatus =>
 function sameSource(a: DiffSource, b: DiffSource): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === 'commit' && b.kind === 'commit') return a.hash === b.hash;
+  if (a.kind === 'range' && b.kind === 'range') return a.from === b.from && a.to === b.to;
   return true;
 }
+
+/** Git's magic empty-tree hash, used as the `from` side of a range diff when the
+ * oldest selected commit is a root commit (it has no parent to diff against). */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 interface FileRowProps {
   file: DisplayFile;
@@ -799,100 +804,245 @@ function CommitDetail({
   );
 }
 
-interface CommitGroupProps {
-  repoPath: string;
+/** Net status of a file touched by several selected commits: an unambiguous
+ * single status (all-added / all-deleted) survives; anything mixed reads as a
+ * plain modification of the file across the span. */
+function mergeStatus(statuses: Set<FileStatus>): FileStatus {
+  if (statuses.size === 1) return [...statuses][0];
+  if ([...statuses].every((s) => s === 'added')) return 'added';
+  if ([...statuses].every((s) => s === 'deleted')) return 'deleted';
+  return 'modified';
+}
+
+/**
+ * Load each selected commit's changed files, keyed by hash. Entries are `null`
+ * while that commit's files are still in flight, so callers can show a loading
+ * state per commit and only aggregate once every commit has resolved.
+ */
+function useSelectedCommitFiles(
+  repoPath: string,
+  commits: CommitLogEntry[],
+): Map<string, FileChange[] | null> {
+  const [map, setMap] = useState<Map<string, FileChange[] | null>>(() => new Map());
+  // Re-fetch whenever the repo or the exact selection changes.
+  const key = commits.map((commit) => commit.hash).join(',');
+  useEffect(() => {
+    let live = true;
+    setMap(new Map(commits.map((commit) => [commit.hash, null])));
+    for (const commit of commits) {
+      void window.api.repo.commitFiles(repoPath, commit.hash).then((files) => {
+        if (!live) return;
+        setMap((prev) => new Map(prev).set(commit.hash, files));
+      });
+    }
+    return () => {
+      live = false;
+    };
+    // `key` captures the commit set; `commits` identity is intentionally omitted.
+  }, [repoPath, key]);
+  return map;
+}
+
+interface CommitCardProps {
   commit: CommitLogEntry;
-  /** Open one of the commit's files in the center diff viewer. */
+  /** This commit's changed files; null while loading (drives the count badges). */
+  files: FileChange[] | null;
+}
+
+/**
+ * One commit in the multi-select cards box: a compact card carrying the hash,
+ * change counts, subject, author and date. The files themselves are shown
+ * aggregated below the cards, not per-card.
+ */
+function CommitCard({ commit, files }: CommitCardProps) {
+  const counts = useMemo(() => fileCounts(files ?? []), [files]);
+  return (
+    <div className="commit-group-box">
+      <div className="commit-group-box-top">
+        <span className="commit-group-hash">{commit.shortHash}</span>
+        <span className="commit-group-counts" aria-hidden="true">
+          {counts.modified > 0 && (
+            <span className="commit-files-count commit-files-modified">
+              <PencilIcon size={12} />
+              {counts.modified}
+            </span>
+          )}
+          {counts.added > 0 && (
+            <span className="commit-files-count commit-files-added">
+              <PlusIcon size={12} />
+              {counts.added}
+            </span>
+          )}
+          {counts.deleted > 0 && (
+            <span className="commit-files-count commit-files-deleted">
+              <MinusIcon size={12} />
+              {counts.deleted}
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="commit-group-subject">{commit.subject}</div>
+      <div className="commit-group-meta">
+        <img
+          className="commit-group-avatar"
+          src={commit.authorAvatarUrl}
+          alt=""
+          width={18}
+          height={18}
+        />
+        <span className="commit-group-author">{commit.author}</span>
+        <span className="commit-group-date">{formatDate(commit.date)}</span>
+      </div>
+    </div>
+  );
+}
+
+interface AggregatedFilesProps {
+  /** The union of the selected commits' changed files, or null while loading. */
+  files: DisplayFile[] | null;
+  /** The diff source that opens a file's aggregated (range) diff. */
+  source: DiffSource;
+  /** Open a file in the center diff viewer. */
   onOpenDiff: (target: DiffTarget) => void;
-  /** The diff target currently shown, so the matching file row can be highlighted. */
+  /** The diff target currently shown, so its row can be highlighted. */
   activeDiff: DiffTarget | null;
 }
 
 /**
- * One commit in the multi-select view: a compact box (hash, subject, author,
- * change counts) with that commit's changed files listed underneath. Clicking a
- * file opens its diff against the commit's first parent — the same diff source
- * the single-commit detail uses, so the center viewer behaves identically.
+ * The aggregated file list for a multi-commit selection: the same counts +
+ * sort + Path/Tree toolbar as the single-commit view, over the union of every
+ * selected commit's changes. Clicking a file opens its net diff across the
+ * selected span (the shared `range` source).
  */
-function CommitGroup({ repoPath, commit, onOpenDiff, activeDiff }: CommitGroupProps) {
-  const [files, setFiles] = useState<FileChange[] | null>(null);
+function AggregatedFiles({ files, source, onOpenDiff, activeDiff }: AggregatedFilesProps) {
+  const [asc, setAsc] = useState(true);
+  const [mode, setMode] = useState<FileViewMode>(loadFileViewMode);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
+  // Share the Path/Tree preference with the single-commit list.
   useEffect(() => {
-    let live = true;
-    setFiles(null);
-    void window.api.repo.commitFiles(repoPath, commit.hash).then((result) => {
-      if (live) setFiles(result);
-    });
-    return () => {
-      live = false;
-    };
-  }, [repoPath, commit.hash]);
+    try {
+      localStorage.setItem(FILE_VIEW_MODE_KEY, mode);
+    } catch {
+      /* storage unavailable — keep the in-memory choice only */
+    }
+  }, [mode]);
 
-  const source: DiffSource = { kind: 'commit', hash: commit.hash };
+  const toggleDir = useCallback((path: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
   const activePath =
     activeDiff && sameSource(activeDiff.source, source) ? activeDiff.path : null;
-  const counts = useMemo(() => fileCounts(files ?? []), [files]);
-  const sorted = useMemo(
-    () => (files ? [...files].sort((a, b) => a.path.localeCompare(b.path)) : null),
+  const openFile = (file: DisplayFile) => {
+    onOpenDiff({ source, path: file.path, status: file.status ?? 'modified' });
+  };
+
+  const counts = useMemo(
+    () =>
+      fileCounts(
+        (files ?? []).map((file) => ({ path: file.path, status: file.status ?? 'modified' })),
+      ),
     [files],
   );
+  const sorted = useMemo(() => {
+    if (!files) return null;
+    const arr = [...files].sort((a, b) => a.path.localeCompare(b.path));
+    if (!asc) arr.reverse();
+    return arr;
+  }, [files, asc]);
 
   return (
-    <section className="commit-group">
-      <div className="commit-group-box">
-        <div className="commit-group-box-top">
-          <span className="commit-group-hash">{commit.shortHash}</span>
-          <span className="commit-group-counts" aria-hidden="true">
-            {counts.modified > 0 && (
-              <span className="commit-files-count commit-files-modified">
-                <PencilIcon size={12} />
-                {counts.modified}
-              </span>
-            )}
-            {counts.added > 0 && (
-              <span className="commit-files-count commit-files-added">
-                <PlusIcon size={12} />
-                {counts.added}
-              </span>
-            )}
-            {counts.deleted > 0 && (
-              <span className="commit-files-count commit-files-deleted">
-                <MinusIcon size={12} />
-                {counts.deleted}
-              </span>
-            )}
-          </span>
-        </div>
-        <div className="commit-group-subject">{commit.subject}</div>
-        <div className="commit-group-meta">
-          <img
-            className="commit-group-avatar"
-            src={commit.authorAvatarUrl}
-            alt=""
-            width={18}
-            height={18}
-          />
-          <span className="commit-group-author">{commit.author}</span>
-          <span className="commit-group-date">{formatDate(commit.date)}</span>
+    <div className="commit-files">
+      <div className="commit-files-header commit-files-header-toolbar">
+        <span className="commit-files-counts" aria-hidden="true">
+          {counts.modified > 0 && (
+            <span className="commit-files-count commit-files-modified tooltip-host" data-tooltip="Modified files">
+              <PencilIcon size={12} />
+              {counts.modified} modified
+            </span>
+          )}
+          {counts.added > 0 && (
+            <span className="commit-files-count commit-files-added tooltip-host" data-tooltip="Added files">
+              <PlusIcon size={12} />
+              {counts.added} added
+            </span>
+          )}
+          {counts.deleted > 0 && (
+            <span className="commit-files-count commit-files-deleted tooltip-host" data-tooltip="Deleted files">
+              <MinusIcon size={12} />
+              {counts.deleted} deleted
+            </span>
+          )}
+        </span>
+        <div className="commit-files-controls">
+          <button
+            type="button"
+            className="commit-files-sort tooltip-host"
+            data-tooltip={asc ? 'Sorted A→Z (click for Z→A)' : 'Sorted Z→A (click for A→Z)'}
+            aria-label="Toggle sort order"
+            onClick={() => setAsc((v) => !v)}
+          >
+            <span className={`commit-files-sort-icon${asc ? '' : ' desc'}`}>
+              <SortIcon size={14} />
+            </span>
+          </button>
+          <div className="commit-files-viewswitch" role="group" aria-label="File view mode">
+            <button
+              type="button"
+              className={`${mode === 'list' ? 'active' : ''}`}
+              aria-pressed={mode === 'list'}
+              onClick={() => setMode('list')}
+            >
+              <ListIcon size={14} />
+              Path
+            </button>
+            <button
+              type="button"
+              className={`${mode === 'tree' ? 'active' : ''}`}
+              aria-pressed={mode === 'tree'}
+              onClick={() => setMode('tree')}
+            >
+              <TreeIcon size={14} />
+              Tree
+            </button>
+          </div>
         </div>
       </div>
-      <div className="commit-group-files">
+      <div className="commit-files-list">
         {sorted === null ? (
           <p className="commit-files-empty">Loading…</p>
         ) : sorted.length === 0 ? (
           <p className="commit-files-empty">No file changes</p>
+        ) : mode === 'tree' ? (
+          <div className="commit-tree">
+            <DirNode
+              dir={buildTree(sorted)}
+              depth={0}
+              asc={asc}
+              collapsed={collapsed}
+              onToggle={toggleDir}
+              onOpenFile={openFile}
+              activePath={activePath}
+            />
+          </div>
         ) : (
           sorted.map((file) => (
             <FileRow
               key={file.path}
               file={file}
-              onOpen={() => onOpenDiff({ source, path: file.path, status: file.status })}
+              onOpen={() => openFile(file)}
               selected={file.path === activePath}
             />
           ))
         )}
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -910,9 +1060,12 @@ interface MultiCommitDetailProps {
 }
 
 /**
- * The right column when several commits are selected: each commit renders as a
- * box with its changed files grouped underneath. Diffs open exactly as in the
- * single-commit detail view.
+ * The right column when several commits are selected. It mirrors the
+ * single-commit detail layout: a header, then — in place of the commit message —
+ * a scrollable box of commit cards, then the same Path/Tree file list, but with
+ * every selected commit's changes aggregated. A file's diff opens as the net
+ * change across the selected span (a `range` source), so the center viewer
+ * behaves just like the single-commit view.
  */
 function MultiCommitDetail({
   commits,
@@ -923,6 +1076,32 @@ function MultiCommitDetail({
   activeDiff,
 }: MultiCommitDetailProps) {
   const workingCount = workingStatus ? countWorkingFiles(workingStatus) : 0;
+  const filesByHash = useSelectedCommitFiles(repoPath, commits);
+
+  // The selection is newest-first, so the span runs from the oldest commit's
+  // first parent (or the empty tree, for a root commit) to the newest commit.
+  const source = useMemo<DiffSource>(() => {
+    const newest = commits[0];
+    const oldest = commits[commits.length - 1];
+    return { kind: 'range', from: oldest.parents[0] ?? EMPTY_TREE, to: newest.hash };
+  }, [commits]);
+
+  // Union the selected commits' files into one list, merging each path's status.
+  // null until every commit's files have loaded (so counts/rows never flicker).
+  const aggregated = useMemo<DisplayFile[] | null>(() => {
+    const statuses = new Map<string, Set<FileStatus>>();
+    for (const commit of commits) {
+      const files = filesByHash.get(commit.hash);
+      if (!files) return null; // a commit is still loading
+      for (const file of files) {
+        const set = statuses.get(file.path) ?? new Set<FileStatus>();
+        set.add(file.status);
+        statuses.set(file.path, set);
+      }
+    }
+    return [...statuses].map(([path, set]) => ({ path, status: mergeStatus(set) }));
+  }, [commits, filesByHash]);
+
   return (
     <aside className="commit-panel" aria-label="Selected commits">
       <header className="commit-panel-header">{commits.length} commits selected</header>
@@ -936,16 +1115,22 @@ function MultiCommitDetail({
           </button>
         </div>
       )}
-      <div className="commit-panel-body commit-multi-body">
-        {commits.map((commit) => (
-          <CommitGroup
-            key={commit.hash}
-            repoPath={repoPath}
-            commit={commit}
-            onOpenDiff={onOpenDiff}
-            activeDiff={activeDiff}
-          />
-        ))}
+      <div className="commit-panel-body">
+        <div className="commit-multi-cards">
+          {commits.map((commit) => (
+            <CommitCard
+              key={commit.hash}
+              commit={commit}
+              files={filesByHash.get(commit.hash) ?? null}
+            />
+          ))}
+        </div>
+        <AggregatedFiles
+          files={aggregated}
+          source={source}
+          onOpenDiff={onOpenDiff}
+          activeDiff={activeDiff}
+        />
       </div>
     </aside>
   );

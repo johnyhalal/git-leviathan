@@ -6,6 +6,8 @@ import type {
   GitflowKind,
   MergeState,
   PullMode,
+  RebaseCommitInfo,
+  RebaseTodoEntry,
   RefsMutationResult,
   RepoConfig,
   RepoInfo,
@@ -20,6 +22,7 @@ import { RepoSettingsDialog, type RepoSettingsTabId } from './RepoSettingsDialog
 import { RepoColumns } from './RepoColumns';
 import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
+import { CommitPlanEditor } from './CommitPlanEditor';
 import { ConfirmProvider } from '../ConfirmBar';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 import type { SubmoduleDeinitOutcome } from './SubmoduleContextMenu';
@@ -114,6 +117,18 @@ export function RepoView({
   const [resolverOpen, setResolverOpen] = useState(false);
   // The conflicted file to pre-select when the resolver opens (null = first).
   const [resolverFile, setResolverFile] = useState<string | null>(null);
+
+  // The interactive-rebase editor's data (base commit + the commits it edits),
+  // or null when it's closed.
+  const [rebaseEditor, setRebaseEditor] = useState<{
+    baseHash: string;
+    commits: RebaseCommitInfo[];
+  } | null>(null);
+  // The multi-commit cherry-pick editor's data (the selected commits, oldest
+  // first), or null when it's closed. Shares the editor UI with rebase above.
+  const [cherryPickEditor, setCherryPickEditor] = useState<{
+    commits: RebaseCommitInfo[];
+  } | null>(null);
   // True while a continue/abort/skip is in flight, to disable the banner buttons.
   const [mergeBusy, setMergeBusy] = useState(false);
   // Whether the last read saw an in-progress operation, so we auto-open the
@@ -271,12 +286,36 @@ export function RepoView({
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
+  // Bring the remote-tracking refs up to date in the background, then re-sync if
+  // the fetch actually ran — so ahead/behind counts and remote branches reflect
+  // the server without the user pressing anything. The main process throttles
+  // and dedupes the underlying `git fetch --all` and reports failures silently,
+  // so this is safe to fire on every focus event.
+  const backgroundFetch = useCallback(async () => {
+    const result = await window.api.repo.backgroundFetch(repoPath);
+    if (result.status === 'ok') void refreshRef.current();
+  }, [repoPath]);
+
+  const backgroundFetchRef = useRef(backgroundFetch);
+  backgroundFetchRef.current = backgroundFetch;
+
+  // Fetch when this repo becomes the tab on screen (RepoView renders only the
+  // active tab, so a new `repoPath` means the user just focused that repo).
+  useEffect(() => {
+    void backgroundFetch();
+  }, [backgroundFetch]);
+
   // Re-sync the view whenever the OS window regains focus, so edits made in an
-  // editor or commits made from a terminal show up without a manual action.
-  // The main process detects window focus and broadcasts it (renderer-side
-  // `window` focus events are unreliable in Electron).
+  // editor or commits made from a terminal show up without a manual action, and
+  // fetch so remote-side changes land too. The main process detects window focus
+  // and broadcasts it (renderer-side `window` focus events are unreliable in
+  // Electron).
   useEffect(
-    () => window.api.app.onWindowFocus(() => void refreshRef.current()),
+    () =>
+      window.api.app.onWindowFocus(() => {
+        void refreshRef.current();
+        void backgroundFetchRef.current();
+      }),
     [],
   );
 
@@ -361,7 +400,12 @@ export function RepoView({
               ? `“${head.name}” updated from “${head.upstream}”.`
               : 'Pulled from the remote.',
           );
-      } else await surfaceConflictsOrError('Pull failed', result.message);
+      } else {
+        // A failed pull can still have moved things — the auto-stash of local
+        // changes may have been left behind — so re-sync before reporting.
+        reload();
+        await surfaceConflictsOrError('Pull failed', result.message);
+      }
     },
     [pulling, repoPath, reload, closeDiff, surfaceConflictsOrError, onSuccess, refs],
   );
@@ -740,6 +784,83 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
+  // Open the multi-commit cherry-pick editor for a set of selected commits. The
+  // preview resolves them to full info (with messages), rejects merges, and
+  // orders them oldest-first; an error (e.g. a merge in the set) surfaces as a
+  // toast. A single selection falls back to the plain one-shot cherry-pick.
+  const openCherryPick = useCallback(
+    async (hashes: string[]) => {
+      if (hashes.length <= 1) {
+        if (hashes[0]) void cherryPick(hashes[0]);
+        return;
+      }
+      const preview = await window.api.repo.cherryPickPreview(repoPath, hashes);
+      if (preview.error || preview.commits.length === 0) {
+        onError?.('Cherry-pick', preview.error ?? 'Nothing to cherry-pick.');
+        return;
+      }
+      setCherryPickEditor({ commits: preview.commits });
+    },
+    [repoPath, cherryPick, onError],
+  );
+
+  // Run the editor's compiled cherry-pick plan onto HEAD. Same mutation shape as
+  // the single cherry-pick: conflicts leave it in progress and surface the resolver.
+  const runCherryPickMulti = useCallback(
+    (todo: RebaseTodoEntry[]) =>
+      runMutation('Cherry-pick failed', () =>
+        window.api.repo.cherryPickMulti(repoPath, todo),
+      ).then(() => undefined),
+    [repoPath, runMutation],
+  );
+
+  // Rebase the checked-out branch onto a commit (from a commit's context menu),
+  // replaying its commits on top. Conflicts surface the resolver, like a branch
+  // rebase.
+  const rebaseOnto = useCallback(
+    (hash: string) =>
+      runMutation('Rebase failed', () =>
+        window.api.repo.rebaseOnto(repoPath, hash),
+      ),
+    [repoPath, runMutation],
+  );
+
+  // Open the interactive-rebase editor for `hash`'s children (the commits on top
+  // of it up to HEAD). The preview does the reachability/merge checks in main; an
+  // error (e.g. the commit isn't on the current branch) surfaces as a toast.
+  const openInteractiveRebase = useCallback(
+    async (hash: string) => {
+      const preview = await window.api.repo.rebaseInteractivePreview(repoPath, hash);
+      if (preview.error || preview.commits.length === 0) {
+        onError?.('Interactive rebase', preview.error ?? 'Nothing to rebase from this commit.');
+        return;
+      }
+      setRebaseEditor({ baseHash: preview.baseHash, commits: preview.commits });
+    },
+    [repoPath, onError],
+  );
+
+  // Run the editor's compiled plan. Same mutation shape as the other rebases:
+  // conflicts leave the rebase in progress and surface the resolver/banner.
+  const runInteractiveRebase = useCallback(
+    (baseHash: string, todo: RebaseTodoEntry[]) =>
+      runMutation('Interactive rebase failed', () =>
+        window.api.repo.rebaseInteractive(repoPath, baseHash, todo),
+      ).then(() => undefined),
+    [repoPath, runMutation],
+  );
+
+  // Revert a commit (from a commit's context menu), recording a new commit that
+  // undoes it on the checked-out branch. Conflicts surface the resolver, like
+  // cherry-pick.
+  const revert = useCallback(
+    (hash: string) =>
+      runMutation('Revert failed', () =>
+        window.api.repo.revert(repoPath, hash),
+      ),
+    [repoPath, runMutation],
+  );
+
   // Check out a commit itself (from a commit's context menu), which detaches HEAD
   // from whatever branch it was on. Same mutation shape as a branch checkout.
   const checkoutCommit = useCallback(
@@ -1025,6 +1146,10 @@ export function RepoView({
           onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
           onFastForward={(source, target) => void fastForward(source, target)}
           onCherryPick={(hash) => void cherryPick(hash)}
+          onCherryPickSelection={(hashes) => void openCherryPick(hashes)}
+          onRevert={(hash) => void revert(hash)}
+          onRebaseOnto={(hash) => void rebaseOnto(hash)}
+          onInteractiveRebase={(hash) => void openInteractiveRebase(hash)}
           onCheckoutCommit={(hash) => void checkoutCommit(hash)}
           onReset={(hash, mode) => void resetTo(hash, mode)}
           onResetPreview={resetPreview}
@@ -1073,6 +1198,40 @@ export function RepoView({
             initialFile={resolverFile}
             onResolved={(next) => applyMergeRef.current(next)}
             onClose={() => setResolverOpen(false)}
+          />
+        )}
+        {rebaseEditor && (
+          <CommitPlanEditor
+            title="Interactive rebase"
+            intro={
+              <>
+                Reorder commits by dragging, and set each one’s action. The list
+                runs oldest&nbsp;→&nbsp;newest, the same order git replays them.
+              </>
+            }
+            commits={rebaseEditor.commits}
+            submitLabel="Start rebase"
+            busyLabel="Rebasing…"
+            requireChange
+            onSubmit={(todo) => runInteractiveRebase(rebaseEditor.baseHash, todo)}
+            onClose={() => setRebaseEditor(null)}
+          />
+        )}
+        {cherryPickEditor && (
+          <CommitPlanEditor
+            title="Cherry-pick commits"
+            intro={
+              <>
+                Reorder the selected commits by dragging, and set each one’s
+                action. They’re applied onto the current branch
+                oldest&nbsp;→&nbsp;newest.
+              </>
+            }
+            commits={cherryPickEditor.commits}
+            submitLabel="Cherry-pick"
+            busyLabel="Cherry-picking…"
+            onSubmit={runCherryPickMulti}
+            onClose={() => setCherryPickEditor(null)}
           />
         )}
         {repoSettingsOpen && (

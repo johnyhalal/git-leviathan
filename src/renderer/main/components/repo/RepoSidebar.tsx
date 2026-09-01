@@ -807,6 +807,8 @@ interface RepoSidebarProps {
   onFastForward: (source: string, target: string) => void;
   /** Cherry-pick a branch's tip commit onto HEAD, from a branch row's context menu. */
   onCherryPick: (committish: string) => void;
+  /** Revert a branch's tip commit on HEAD, from a branch row's context menu. */
+  onRevert: (committish: string) => void;
   /**
    * Push the local branch `localBranch` to `remoteBranch` on `remote`, resolving
    * whether the push succeeded (so a follow-up "start a pull request" only opens
@@ -901,6 +903,7 @@ export function RepoSidebar({
   onRebaseBranch,
   onFastForward,
   onCherryPick,
+  onRevert,
   onPushBranch,
   onRenameBranch,
   onDeleteBranch,
@@ -1694,6 +1697,18 @@ export function RepoSidebar({
                       ? contextMenu.target.name
                       : `${contextMenu.target.remoteName}/${contextMenu.target.name}`,
                   )
+          }
+          onRevert={
+            // Revert this branch's tip on HEAD — offered for every branch,
+            // including the checked-out one (reverting HEAD is a real operation,
+            // not the no-op cherry-picking onto itself would be). A remote-only
+            // branch is addressed by its `remote/name` committish.
+            () =>
+              onRevert(
+                contextMenu.target.local
+                  ? contextMenu.target.name
+                  : `${contextMenu.target.remoteName}/${contextMenu.target.name}`,
+              )
           }
           onRenameBranch={onRenameBranch}
           onDeleteBranch={onDeleteBranch}
