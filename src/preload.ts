@@ -105,6 +105,21 @@ const api: ExposedApi = {
         AppChannels.setUpdateCheckInterval,
         minutes,
       ) as Promise<void>,
+    getTelemetryEnabled: () =>
+      ipcRenderer.invoke(AppChannels.getTelemetryEnabled) as Promise<boolean>,
+    setTelemetryEnabled: (enabled: boolean) =>
+      ipcRenderer.invoke(
+        AppChannels.setTelemetryEnabled,
+        enabled,
+      ) as Promise<void>,
+    getTelemetryNoticePending: () =>
+      ipcRenderer.invoke(
+        AppChannels.getTelemetryNoticePending,
+      ) as Promise<boolean>,
+    acknowledgeTelemetryNotice: () =>
+      ipcRenderer.invoke(
+        AppChannels.acknowledgeTelemetryNotice,
+      ) as Promise<void>,
     openExternal: (url: string) =>
       ipcRenderer.send(AppChannels.openExternal, url),
     onWindowFocus: (callback) => {

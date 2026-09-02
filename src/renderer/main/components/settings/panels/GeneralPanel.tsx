@@ -29,16 +29,25 @@ export function GeneralPanel() {
     DEFAULT_UPDATE_CHECK_INTERVAL,
   );
   const [check, setCheck] = useState<CheckState>({ kind: 'idle' });
+  const [telemetry, setTelemetry] = useState(true);
 
   useEffect(() => {
     let alive = true;
     void window.api.app.getUpdateCheckInterval().then((minutes) => {
       if (alive) setIntervalMin(minutes);
     });
+    void window.api.app.getTelemetryEnabled().then((enabled) => {
+      if (alive) setTelemetry(enabled);
+    });
     return () => {
       alive = false;
     };
   }, []);
+
+  const onToggleTelemetry = (enabled: boolean) => {
+    setTelemetry(enabled);
+    void window.api.app.setTelemetryEnabled(enabled);
+  };
 
   const onChange = (value: UpdateCheckInterval) => {
     setIntervalMin(value);
@@ -102,6 +111,16 @@ export function GeneralPanel() {
             {check.kind === 'checking' ? 'Checking…' : 'Check now'}
           </button>
         )}
+      </SettingsRow>
+      <SettingsRow
+        label="Usage analytics"
+        description="Send anonymous usage data (app opens, commits, update checks) to help improve GitLeviathan. No repository contents or personal data are collected."
+      >
+        <input
+          type="checkbox"
+          checked={telemetry}
+          onChange={(e) => onToggleTelemetry(e.target.checked)}
+        />
       </SettingsRow>
     </SettingsSection>
   );

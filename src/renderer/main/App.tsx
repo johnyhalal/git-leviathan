@@ -10,6 +10,7 @@ import {
 import { Settings } from './components/Settings';
 import { CloneDialog } from './components/CloneDialog';
 import { FeedbackDialog } from './components/FeedbackDialog';
+import { TelemetryNotice } from './components/TelemetryNotice';
 import { TooltipLayer } from './components/TooltipLayer';
 import { RepoView } from './components/repo/RepoView';
 import { ActivityLog } from './components/repo/ActivityLog';
@@ -92,6 +93,7 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<string | undefined>();
   const [cloneOpen, setCloneOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [telemetryNoticeOpen, setTelemetryNoticeOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastData[]>([]);
   // Bumped to ask the status-bar ActivityLog to open (e.g. from a hook-failure toast).
   const [activityLogSignal, setActivityLogSignal] = useState(0);
@@ -204,6 +206,25 @@ export function App() {
       }),
     [],
   );
+
+  // One-time notice that anonymous usage analytics is on and can be turned off.
+  // Shown once per install (including existing installs updating to this
+  // version, which have no saved acknowledgement). Both of the dialog's buttons
+  // acknowledge it, so it never repeats.
+  useEffect(() => {
+    let active = true;
+    void window.api.app.getTelemetryNoticePending().then((pending) => {
+      if (active && pending) setTelemetryNoticeOpen(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const acknowledgeTelemetryNotice = () => {
+    setTelemetryNoticeOpen(false);
+    void window.api.app.acknowledgeTelemetryNotice();
+  };
 
   // Restore the repositories that were open as tabs last session (paths only;
   // titles are derived from the folder name).
@@ -538,6 +559,17 @@ export function App() {
                 },
               },
             );
+          }}
+        />
+      )}
+
+      {telemetryNoticeOpen && (
+        <TelemetryNotice
+          onAcknowledge={acknowledgeTelemetryNotice}
+          onOpenSettings={() => {
+            acknowledgeTelemetryNotice();
+            setSettingsSection('general');
+            setSettingsOpen(true);
           }}
         />
       )}
