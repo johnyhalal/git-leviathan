@@ -17,7 +17,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import started from 'electron-squirrel-startup';
 import { gitBin, gitEnv, initShellPath } from './git';
 import {
@@ -131,6 +131,7 @@ import {
   generateGpgKey,
   primeGpgPassphrase,
 } from './signing';
+import { configureTelemetry, trackEvent } from './telemetry';
 
 // Name the app before anything reads it, so app.getName(), the userData path,
 // notifications and the About panel all say "GitLeviathan" rather than
@@ -269,6 +270,21 @@ interface Settings {
   sshKeys?: Partial<Record<IntegrationProvider, SshKeyInfo[]>>;
   /** Saved Claude Code connection (detected `claude` binary), when connected. */
   claudeConnection?: ClaudeConnection;
+  /**
+   * Whether anonymous usage analytics are sent to Aptabase. On by default
+   * (absent means enabled); toggled from General settings.
+   */
+  telemetryEnabled?: boolean;
+  /**
+   * Stable anonymous id for this install, minted once and sent with each usage
+   * event so active users can be counted without any PII. Not tied to identity.
+   */
+  telemetryId?: string;
+  /**
+   * Whether the one-time analytics notice has been shown. Absent on installs
+   * that predate the notice, so they surface it once after updating.
+   */
+  telemetryNoticeAcknowledged?: boolean;
 }
 
 /** The persisted Claude Code connection: the binary we detected on connect. */
@@ -468,6 +484,15 @@ function loadSettings(): void {
     if (isClaudeConnection(parsed.claudeConnection)) {
       settings.claudeConnection = parsed.claudeConnection;
     }
+    if (typeof parsed.telemetryEnabled === 'boolean') {
+      settings.telemetryEnabled = parsed.telemetryEnabled;
+    }
+    if (typeof parsed.telemetryId === 'string' && parsed.telemetryId) {
+      settings.telemetryId = parsed.telemetryId;
+    }
+    if (typeof parsed.telemetryNoticeAcknowledged === 'boolean') {
+      settings.telemetryNoticeAcknowledged = parsed.telemetryNoticeAcknowledged;
+    }
   } catch {
     // No settings file yet or it is unreadable — fall back to defaults.
   }
@@ -483,6 +508,25 @@ function saveSettings(): void {
   } catch (err) {
     console.error('Failed to persist settings:', err);
   }
+}
+
+// ---- Telemetry ------------------------------------------------------------
+
+/** Analytics are on unless the user explicitly turned them off. */
+function telemetryEnabled(): boolean {
+  return settings.telemetryEnabled !== false;
+}
+
+/**
+ * Return the install's stable anonymous id, minting and persisting one on first
+ * use so counting active users never depends on any identifying data.
+ */
+function ensureTelemetryId(): string {
+  if (!settings.telemetryId) {
+    settings.telemetryId = randomUUID();
+    saveSettings();
+  }
+  return settings.telemetryId;
 }
 
 /**
@@ -3875,6 +3919,7 @@ function registerRepoIpc(): void {
         }
         return { status: 'error', message: gitErrorMessage(err, 'Commit failed.') };
       }
+      trackEvent('commit_created', { amend: amend === true });
       return { status: 'ok' };
     },
   );
@@ -7839,6 +7884,26 @@ function registerAppIpc(): void {
     },
   );
 
+  ipcMain.handle(AppChannels.getTelemetryEnabled, (): boolean => telemetryEnabled());
+
+  ipcMain.handle(AppChannels.setTelemetryEnabled, (_event, enabled: unknown): void => {
+    if (typeof enabled !== 'boolean') {
+      throw new Error('Invalid telemetry preference');
+    }
+    settings.telemetryEnabled = enabled;
+    saveSettings();
+  });
+
+  ipcMain.handle(
+    AppChannels.getTelemetryNoticePending,
+    (): boolean => !settings.telemetryNoticeAcknowledged && telemetryEnabled(),
+  );
+
+  ipcMain.handle(AppChannels.acknowledgeTelemetryNotice, (): void => {
+    settings.telemetryNoticeAcknowledged = true;
+    saveSettings();
+  });
+
   ipcMain.on(AppChannels.openExternal, (_event, url: unknown): void => {
     if (typeof url !== 'string') return;
     let parsed: URL;
@@ -8012,6 +8077,7 @@ function registerUpdateIpc(): void {
   ipcMain.handle(UpdateChannels.status, (): UpdateStatus => updateStatus);
 
   ipcMain.handle(UpdateChannels.check, async (): Promise<UpdateInfo | null> => {
+    trackEvent('update_checked');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
@@ -8116,6 +8182,9 @@ app.on('ready', () => {
   registerSigningIpc();
   registerAppIpc();
   registerUpdateIpc();
+  // Configure anonymous usage analytics (on by default) and record the launch.
+  configureTelemetry({ isEnabled: telemetryEnabled, userId: ensureTelemetryId() });
+  trackEvent('app_opened');
   boot();
 });
 

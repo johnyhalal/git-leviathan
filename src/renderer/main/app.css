@@ -11,6 +11,7 @@
 @import './styles/integrations.css';
 @import './styles/clone.css';
 @import './styles/feedback.css';
+@import './styles/telemetry.css';
 @import './styles/clone-extras.css';
 @import './styles/theme-switch.css';
 @import './styles/toolbar.css';

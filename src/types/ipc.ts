@@ -42,6 +42,17 @@ export const AppChannels = {
   getUpdateCheckInterval: 'app:get-update-check-interval',
   /** Renderer -> main (invoke): persist the auto-update check interval. */
   setUpdateCheckInterval: 'app:set-update-check-interval',
+  /** Renderer -> main (invoke): read whether anonymous usage analytics are on. */
+  getTelemetryEnabled: 'app:get-telemetry-enabled',
+  /** Renderer -> main (invoke): turn anonymous usage analytics on/off. */
+  setTelemetryEnabled: 'app:set-telemetry-enabled',
+  /**
+   * Renderer -> main (invoke): whether the one-time analytics notice still
+   * needs to be shown to this install (never acknowledged, analytics still on).
+   */
+  getTelemetryNoticePending: 'app:get-telemetry-notice-pending',
+  /** Renderer -> main (invoke): mark the one-time analytics notice as shown. */
+  acknowledgeTelemetryNotice: 'app:acknowledge-telemetry-notice',
   /** Renderer -> main (send): open a github.com/gitlab.com URL in the browser. */
   openExternal: 'app:open-external',
   /** Main -> renderer (send): the main window regained OS focus. */
@@ -1384,6 +1395,23 @@ export interface AppApi {
   getUpdateCheckInterval(): Promise<UpdateCheckInterval>;
   /** Persist the auto-update check interval (global). */
   setUpdateCheckInterval(minutes: UpdateCheckInterval): Promise<void>;
+  /**
+   * Read whether anonymous usage analytics are enabled. On by default, so a
+   * fresh install with no saved preference resolves to `true`.
+   */
+  getTelemetryEnabled(): Promise<boolean>;
+  /** Turn anonymous usage analytics on/off (global). */
+  setTelemetryEnabled(enabled: boolean): Promise<void>;
+  /**
+   * Whether the one-time "usage analytics is on — you can turn it off in
+   * Settings" notice should still be shown. True until acknowledged, and only
+   * while analytics is actually enabled (a user who already opted out is told
+   * nothing). Existing installs updating to this version have no saved
+   * acknowledgement, so they see it once too.
+   */
+  getTelemetryNoticePending(): Promise<boolean>;
+  /** Record that the one-time analytics notice has been shown. */
+  acknowledgeTelemetryNotice(): Promise<void>;
   /**
    * Open an external URL in the default browser. Only github.com / gitlab.com
    * HTTPS URLs are honoured (e.g. a pull request's web page); anything else is

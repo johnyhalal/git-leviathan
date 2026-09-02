@@ -1,0 +1,66 @@
+/* ---- Telemetry notice (one-time analytics acknowledgement) -------------- */
+
+/* Content-sized and narrow, overriding the fixed-height settings panel. It's
+   centered by the shared `.settings-overlay` (flex, centered both axes). */
+.telemetry-notice-panel {
+  width: min(460px, 100%);
+  height: auto;
+}
+
+.telemetry-notice-body {
+  padding: 22px 22px 20px;
+}
+
+.telemetry-notice-title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.telemetry-notice-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+
+/* Primary "OK" sits first (left); secondary "Open Settings" to its right. */
+.telemetry-notice-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.telemetry-notice-ok,
+.telemetry-notice-settings {
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    filter 0.15s ease;
+}
+
+.telemetry-notice-ok {
+  border: none;
+  background: var(--primary);
+  color: #06251f;
+}
+
+.telemetry-notice-ok:hover {
+  filter: brightness(1.05);
+}
+
+.telemetry-notice-settings {
+  border: 1px solid var(--border);
+  background: var(--control-bg);
+  color: var(--fg);
+}
+
+.telemetry-notice-settings:hover {
+  border-color: var(--fg-muted);
+}
