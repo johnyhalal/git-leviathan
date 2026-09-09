@@ -966,6 +966,164 @@ body.is-row-resizing {
   width: 56px;
 }
 
+/* The viewed-revision label sits in the subnav's left cell. */
+.diff-revlabel {
+  grid-column: 1;
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-step:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.diff-step:disabled:hover {
+  color: var(--fg-muted);
+  border-color: var(--border);
+}
+
+/* --- Blame view --- */
+.blame-lines {
+  width: max-content;
+  min-width: 100%;
+}
+
+.blame-line {
+  display: flex;
+  align-items: flex-start;
+  width: max-content;
+  min-width: 100%;
+}
+
+/* The color-coded author column: a fixed-width, left-bordered strip carrying the
+   commit annotation on the first line of each run (blank on continuation lines).
+   The run's background tint and accent border are set inline per author. */
+.blame-info {
+  flex: 0 0 auto;
+  width: 220px;
+  padding: 0 8px;
+  border-left: 3px solid transparent;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.blame-commit {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.blame-commit:hover .blame-author {
+  text-decoration: underline;
+}
+
+.blame-hash {
+  flex: 0 0 auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.blame-author {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.blame-date {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.blame-uncommitted {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* Blame reuses the diff gutter's look but drops its sticky positioning (the
+   blame-info strip already anchors the row's left edge). */
+.blame-gutter {
+  position: static;
+}
+
+/* --- File history timeline --- */
+.file-history {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 13px;
+}
+
+.file-history-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 14px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-history-row:hover {
+  background: var(--control-bg);
+}
+
+.file-history-row.active {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  border-left-color: var(--primary);
+}
+
+.file-history-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 50%;
+}
+
+.file-history-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.file-history-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-history-meta {
+  color: var(--fg-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* --- Commit message box (working-tree view) --- */
 .commit-message-box {
   position: relative;

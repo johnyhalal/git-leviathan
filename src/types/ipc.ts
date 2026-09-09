@@ -703,6 +703,48 @@ export interface FileDiff {
   lines: DiffLine[];
 }
 
+// ---- Blame & file history -------------------------------------------------
+
+/**
+ * One line of a file's `git blame`, attributed to the commit that last touched
+ * it. Consecutive lines sharing a `hash` form a "hunk" the renderer collapses
+ * into a single annotated block; the per-author color the blame gutter is
+ * tinted with is derived in the renderer from `authorEmail`.
+ */
+export interface BlameLine {
+  /** 1-based line number in the blamed revision of the file. */
+  lineNo: number;
+  /** The line's text content (without its trailing newline). */
+  content: string;
+  /** Full 40-char hash of the commit that last modified this line. */
+  hash: string;
+  /** Abbreviated hash for display. */
+  shortHash: string;
+  /** Author name. */
+  author: string;
+  /** Author email — the identity the line's color is keyed on. */
+  authorEmail: string;
+  /** ISO 8601 author date. */
+  date: string;
+  /** First line of that commit's message. */
+  summary: string;
+  /**
+   * True for a line not yet committed (git's all-zero blame hash) — an uncommitted
+   * working-tree edit. Such lines are shown uncolored and unlinked.
+   */
+  uncommitted: boolean;
+}
+
+/** A file's line-by-line blame at a revision. */
+export interface FileBlame {
+  path: string;
+  /**
+   * One entry per line of the file, in file order. Empty when the file is
+   * binary, absent at that revision, or blame otherwise failed.
+   */
+  lines: BlameLine[];
+}
+
 // ---- Merge conflicts ------------------------------------------------------
 
 /**
@@ -831,6 +873,10 @@ export const RepoChannels = {
   fileDiff: 'repo:file-diff',
   /** Renderer -> main (invoke): read a single file's full content at a revision. */
   fileContent: 'repo:file-content',
+  /** Renderer -> main (invoke): read a file's line-by-line blame at a revision. */
+  fileBlame: 'repo:file-blame',
+  /** Renderer -> main (invoke): read the commits that touched a file (history). */
+  fileLog: 'repo:file-log',
   /** Renderer -> main (invoke): read a single commit's full message + signature. */
   commitDetail: 'repo:commit-detail',
   /** Renderer -> main (invoke): read the working-tree status (staged/unstaged). */
@@ -1460,6 +1506,19 @@ export interface RepoApi {
    * copy; otherwise it's the blob at that revision. Empty when absent/binary.
    */
   fileContent(path: string, source: DiffSource, file: string): Promise<string[]>;
+  /**
+   * Read `file`'s line-by-line blame as of the revision `rev` (a commit hash, or
+   * `HEAD`/'' for the working tree). Each line carries the commit that last
+   * touched it, for the color-coded blame view. Empty when the file is binary,
+   * absent at that revision, or blame otherwise failed.
+   */
+  fileBlame(path: string, rev: string, file: string): Promise<FileBlame>;
+  /**
+   * Read the commits that touched `file`, newest first, following it across
+   * renames (`git log --follow`), capped at `limit` (default applied by main).
+   * Drives the file-history timeline and its revision stepper.
+   */
+  fileLog(path: string, file: string, limit?: number): Promise<CommitLogEntry[]>;
   /** Read the commit `hash`'s full message and GPG signature status. */
   commitDetail(path: string, hash: string): Promise<CommitDetailData>;
   /** Read the working-tree status (staged + unstaged changes). */

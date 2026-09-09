@@ -1853,6 +1853,28 @@ function WorkingChanges({
             fileMenu.section === 'unstaged'
               ? { label: 'Stage file', onClick: () => void stageFile(fileMenu.file) }
               : { label: 'Unstage file', onClick: () => void unstage(fileMenu.file.path) },
+            'separator',
+            {
+              label: 'Blame',
+              onClick: () =>
+                onOpenDiff({
+                  source: fileMenu.section === 'staged' ? stagedSource : unstagedSource,
+                  path: fileMenu.file.path,
+                  status: fileMenu.file.status ?? 'modified',
+                  view: 'blame',
+                }),
+            },
+            {
+              label: 'View history',
+              onClick: () =>
+                onOpenDiff({
+                  source: fileMenu.section === 'staged' ? stagedSource : unstagedSource,
+                  path: fileMenu.file.path,
+                  status: fileMenu.file.status ?? 'modified',
+                  view: 'history',
+                }),
+            },
+            'separator',
             { label: 'Ignore', submenu: ignoreSubmenu(fileMenu.file) },
             { label: 'Discard changes', danger: true, onClick: () => discardFile(fileMenu.file) },
             'separator',
