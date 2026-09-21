@@ -3,6 +3,7 @@ import {
   DEFAULT_UPDATE_CHECK_INTERVAL,
   type UpdateCheckInterval,
   type UpdateInfo,
+  type UpdateStatus,
 } from '../../../../../types/ipc';
 import { SettingsSection } from '../SettingsSection';
 import { SettingsRow } from '../SettingsRow';
@@ -23,13 +24,101 @@ type CheckState =
   | { kind: 'up-to-date' }
   | { kind: 'available'; update: UpdateInfo };
 
+/**
+ * The "Updates" row action. Mirrors the status-bar update control: where the
+ * build can auto-update itself, "Get" downloads in the background, then
+ * becomes "Restart to update" once staged; otherwise (or after a download
+ * error) it falls back to opening the release page.
+ */
+function renderUpdateAction(
+  check: CheckState,
+  status: UpdateStatus,
+  onCheckNow: () => void,
+) {
+  const api = window.api.update;
+
+  if (status.state === 'ready') {
+    return (
+      <button
+        type="button"
+        className="pill-btn pill-btn-green"
+        onClick={() => api.install()}
+      >
+        Restart to update
+      </button>
+    );
+  }
+
+  if (status.state === 'downloading') {
+    return (
+      <button type="button" className="pill-btn pill-btn-gray" disabled>
+        Downloading…
+      </button>
+    );
+  }
+
+  if (check.kind === 'available') {
+    const canAutoUpdate = status.supported && status.state !== 'error';
+    return (
+      <button
+        type="button"
+        className="pill-btn pill-btn-green"
+        onClick={() =>
+          canAutoUpdate ? api.download() : api.openRelease(check.update.releaseUrl)
+        }
+      >
+        Get v{check.update.version}
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="pill-btn pill-btn-gray"
+      onClick={onCheckNow}
+      disabled={check.kind === 'checking'}
+    >
+      {check.kind === 'checking' ? 'Checking…' : 'Check now'}
+    </button>
+  );
+}
+
+/** Description text for the "Updates" row, following the same state order. */
+function updateDescription(check: CheckState, status: UpdateStatus): string {
+  const version =
+    status.version ?? (check.kind === 'available' ? check.update.version : undefined);
+  const v = version ? `Version ${version}` : 'A new version';
+  switch (status.state) {
+    case 'ready':
+      return `${v} is downloaded. Restart to finish updating.`;
+    case 'downloading':
+      return `Downloading ${version ? `version ${version}` : 'the update'}…`;
+    case 'error':
+      return `Automatic update failed: ${status.message ?? 'unknown error'}. Get it from the release page instead.`;
+    default:
+      break;
+  }
+  if (check.kind === 'up-to-date') return "You're on the latest version.";
+  if (check.kind === 'available') return `${v} is available.`;
+  return 'Look for a newer release right now.';
+}
+
 /** General settings — the automatic update-check cadence + a manual check. */
 export function GeneralPanel() {
   const [interval, setIntervalMin] = useState<UpdateCheckInterval>(
     DEFAULT_UPDATE_CHECK_INTERVAL,
   );
   const [check, setCheck] = useState<CheckState>({ kind: 'idle' });
+  // The in-app auto-updater snapshot, so the "Get" button can walk the same
+  // download → ready → install flow as the status-bar control.
+  const [status, setStatus] = useState<UpdateStatus>({
+    state: 'idle',
+    supported: false,
+  });
   const [telemetry, setTelemetry] = useState(true);
+
+  useEffect(() => window.api.update.onStatus(setStatus), []);
 
   useEffect(() => {
     let alive = true;
@@ -83,34 +172,9 @@ export function GeneralPanel() {
       </SettingsRow>
       <SettingsRow
         label="Updates"
-        description={
-          check.kind === 'up-to-date'
-            ? "You're on the latest version."
-            : check.kind === 'available'
-              ? `Version ${check.update.version} is available.`
-              : 'Look for a newer release right now.'
-        }
+        description={updateDescription(check, status)}
       >
-        {check.kind === 'available' ? (
-          <button
-            type="button"
-            className="pill-btn pill-btn-green"
-            onClick={() =>
-              window.api.update.openRelease(check.update.releaseUrl)
-            }
-          >
-            Get v{check.update.version}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="pill-btn pill-btn-gray"
-            onClick={onCheckNow}
-            disabled={check.kind === 'checking'}
-          >
-            {check.kind === 'checking' ? 'Checking…' : 'Check now'}
-          </button>
-        )}
+        {renderUpdateAction(check, status, onCheckNow)}
       </SettingsRow>
       <SettingsRow
         label="Usage analytics"
