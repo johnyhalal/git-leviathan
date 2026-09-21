@@ -298,7 +298,8 @@
   font-size: 12px;
   font-weight: 500;
   line-height: 1.3;
-  white-space: normal;
+  /* Wraps normally, but honors an explicit newline (multi-line tooltips). */
+  white-space: pre-line;
   overflow-wrap: anywhere;
   pointer-events: none;
   animation: tooltip-fade-in 0.12s ease;

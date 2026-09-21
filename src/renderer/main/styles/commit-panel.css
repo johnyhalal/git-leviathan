@@ -330,32 +330,6 @@ body.is-row-resizing {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* Copy-hash affordance: hidden until the hash line is hovered (or the button
-   itself is focused for keyboard users), then reveals a subtle icon button. */
-.commit-detail-hash-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px;
-  border: none;
-  border-radius: 4px;
-  background: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
-}
-
-.commit-detail-hashline:hover .commit-detail-hash-copy,
-.commit-detail-hash-copy:focus-visible {
-  opacity: 1;
-}
-
-.commit-detail-hash-copy:hover {
-  color: var(--fg);
-  background: color-mix(in srgb, var(--fg) 8%, transparent);
-}
-
 /* --- File lists (shared by detail + staging) --- */
 .commit-files {
   flex: 1 1 auto;
@@ -713,7 +687,8 @@ body.is-row-resizing {
   background: var(--control-bg);
 }
 
-/* Secondary nav: a centered file/diff switch with prev/next steppers at the end. */
+/* Secondary nav: a centered file/diff switch, with the blame/history toggles and
+   the prev/next steppers grouped at the end. */
 .diff-subnav {
   flex: 0 0 auto;
   display: grid;
@@ -755,9 +730,15 @@ body.is-row-resizing {
   background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
-.diff-steppers {
+.diff-subnav-end {
   grid-column: 3;
   justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.diff-steppers {
   display: inline-flex;
   gap: 4px;
 }
@@ -785,14 +766,35 @@ body.is-row-resizing {
   transform: rotate(180deg);
 }
 
-/* Body: line-numbered, monospaced diff / file content that scrolls both ways. */
-.diff-body {
+/* Below the subnav: the optional history sidebar beside the scrolling body. */
+.diff-main {
   flex: 1 1 auto;
+  display: flex;
   min-height: 0;
-  overflow: auto;
+}
+
+/* Body: the optional blame column beside the code pane. Every row in both is
+   a fixed height (taller for hunk headers) so the two stay aligned; the code
+   pane is the only scroller, and the column follows its vertical scroll. */
+.diff-body {
+  --diff-row-h: 20px;
+  --diff-hunk-h: 28px;
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 12px;
-  line-height: 1.6;
+  line-height: var(--diff-row-h);
+}
+
+/* Line-numbered, monospaced diff / file content that scrolls both ways. */
+.diff-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
 }
 
 .diff-empty {
@@ -803,22 +805,27 @@ body.is-row-resizing {
 }
 
 /* Rows size to their content (so long lines scroll) but never below the
-   viewport width (so row backgrounds fill it). */
+   viewport width (so row backgrounds fill it). The line-number gutters are
+   sticky, stacked left to right, so the code scrolls under them. */
 .diff-lines {
+  --gutter-w: 48px;
   width: max-content;
   min-width: 100%;
 }
 
 .diff-line {
   display: flex;
-  align-items: flex-start;
+  /* Cells stretch to the row height so an empty gutter (an added/deleted
+     line's missing side) still paints its full background. */
+  align-items: stretch;
   width: max-content;
   min-width: 100%;
+  height: var(--diff-row-h);
 }
 
 .diff-gutter {
   flex: 0 0 auto;
-  width: 48px;
+  width: var(--gutter-w);
   padding: 0 8px;
   text-align: right;
   color: var(--fg-muted);
@@ -829,6 +836,12 @@ body.is-row-resizing {
   font-variant-numeric: tabular-nums;
   position: sticky;
   left: 0;
+  z-index: 1;
+}
+
+/* The diff's second (new-side) gutter sits right after the first. */
+.diff-gutter + .diff-gutter {
+  left: var(--gutter-w);
 }
 
 .diff-sign {
@@ -841,6 +854,8 @@ body.is-row-resizing {
 }
 
 .diff-code {
+  /* Fills the rest of the row so a line's tint runs to the row's edge. */
+  flex: 1 1 auto;
   padding-right: 12px;
   white-space: pre;
   tab-size: 2;
@@ -910,7 +925,10 @@ body.is-row-resizing {
   font-weight: 600;
 }
 
-.diff-line-add {
+/* Add/delete tints color the sign + code cells only, not the whole row, so the
+   sticky line-number gutters keep their own ground. */
+.diff-line-add .diff-sign,
+.diff-line-add .diff-code {
   background: color-mix(in srgb, #2ea043 14%, transparent);
 }
 
@@ -918,7 +936,8 @@ body.is-row-resizing {
   color: #2ea043;
 }
 
-.diff-line-delete {
+.diff-line-delete .diff-sign,
+.diff-line-delete .diff-code {
   background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 
@@ -933,13 +952,14 @@ body.is-row-resizing {
 
 .diff-line-hunk {
   align-items: center;
+  height: var(--diff-hunk-h);
 }
 
 .diff-hunk-text {
   flex: 1 1 auto;
-  padding: 2px 12px;
+  padding: 0 12px;
   color: var(--primary);
-  white-space: pre-wrap;
+  white-space: nowrap;
 }
 
 /* Stage/discard pills pinned to the right edge of the hunk row, staying put
@@ -962,8 +982,221 @@ body.is-row-resizing {
 }
 
 /* File view uses a single, slightly wider line-number gutter. */
-.diff-lines-file .diff-gutter {
-  width: 56px;
+.diff-lines-file {
+  --gutter-w: 56px;
+}
+
+/* The viewed-revision label sits in the subnav's left cell. */
+.diff-revlabel {
+  grid-column: 1;
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-step:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.diff-step:disabled:hover {
+  color: var(--fg-muted);
+  border-color: var(--border);
+}
+
+/* --- Blame column --- */
+/* A fixed-width column to the left of the code pane, outside its scroller: it
+   never scrolls horizontally, and its inner list is translated to follow the
+   pane's vertical scroll (see useBlameSync). */
+.blame-column {
+  flex: 0 0 300px;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.blame-column-inner {
+  will-change: transform;
+}
+
+/* One cell per code row: a left-bordered strip carrying the commit annotation
+   on the first line of each run (blank on continuation lines and on rows with
+   no blame). The run's tint and accent border are set inline per author. */
+.blame-info {
+  display: flex;
+  align-items: center;
+  height: var(--diff-row-h);
+  padding: 0 8px;
+  border-left: 3px solid transparent;
+  overflow: hidden;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Mirrors a hunk-header row's height and ground. */
+.blame-info-hunk {
+  height: var(--diff-hunk-h);
+  background: var(--control-bg);
+}
+
+.blame-commit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.blame-commit:hover .blame-summary {
+  text-decoration: underline;
+}
+
+.blame-avatar {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--control-bg);
+}
+
+.blame-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-ui, system-ui, sans-serif);
+}
+
+.blame-date {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.blame-uncommitted {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* --- File history sidebar --- */
+.diff-history {
+  flex: 0 0 auto; /* width set inline; dragged via the resize handle beside it */
+  min-width: 250px;
+  min-height: 0;
+  overflow: auto;
+  background: var(--panel-bg);
+}
+
+.file-history {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 13px;
+}
+
+.file-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-history-row:hover {
+  background: var(--control-bg);
+}
+
+.file-history-row.active {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  border-left-color: var(--primary);
+}
+
+/* The author's avatar, square and as tall as the two text lines, edged in the
+   author's blame color (set inline) so it ties to the blame column's runs. */
+.file-history-avatar {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 34px;
+  height: 34px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--control-bg);
+}
+
+.file-history-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.file-history-hash {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The hash itself is a link into the graph, styled like the parent hashes in
+   the commit details. */
+.file-history-hash-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.file-history-hash-link:hover {
+  text-decoration: underline;
+}
+
+.file-history-hash-link:disabled {
+  color: var(--fg-muted);
+  cursor: default;
+  text-decoration: none;
+}
+
+.file-history-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-history-meta {
+  color: var(--fg-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* --- Commit message box (working-tree view) --- */

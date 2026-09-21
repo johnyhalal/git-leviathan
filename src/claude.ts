@@ -292,6 +292,7 @@ const COMMIT_INSTRUCTION = [
   'Prefer a type/scope consistent with the recent commit subjects listed on stdin when they already follow this convention.',
   'The stdin lists every changed file; some are marked "(diff omitted)" (e.g. lockfiles, generated or binary files) and their patch is intentionally not shown — still account for them in the message when relevant, but base the wording on the files whose diff you can see.',
   'Make the commit description short and compact as possible or if it is just contain not major changes then you can leave it.',
+  'Do NOT add any AI attribution or signature: no "Co-Authored-By: Claude ..." trailer, no "Generated with Claude Code" line, nothing mentioning Claude or Anthropic.',
 ].join(' ');
 
 /**
@@ -361,6 +362,24 @@ function stripCommitPreamble(message: string): string {
 }
 
 /**
+ * Drop the AI-attribution trailers the CLI may append despite the prompt
+ * (a user's own Claude Code config can inject them), e.g.
+ * "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" or
+ * "🤖 Generated with [Claude Code](...)". Only whole lines are removed, and a
+ * blank line left dangling at the end is trimmed with them.
+ */
+const AI_ATTRIBUTION_LINE_RE =
+  /^(?:co-authored-by:\s*claude\b.*|.*generated with \[?claude code\b.*)$/i;
+
+function stripAiAttribution(message: string): string {
+  return message
+    .split(/\r?\n/)
+    .filter((line) => !AI_ATTRIBUTION_LINE_RE.test(line.trim()))
+    .join('\n')
+    .trim();
+}
+
+/**
  * Parse the `--output-format json` envelope into the message plus its token
  * usage. Falls back to treating the raw stdout as the message (with no usage)
  * if the payload isn't the JSON we expect, so a format change degrades
@@ -375,12 +394,12 @@ function parseCommitResult(stdout: string): CommitMessageResult {
     parsed = null;
   }
   if (!parsed || typeof parsed.result !== 'string') {
-    return { message: stripCommitPreamble(trimmed) };
+    return { message: stripAiAttribution(stripCommitPreamble(trimmed)) };
   }
 
   const u = parsed.usage ?? {};
   return {
-    message: stripCommitPreamble(parsed.result.trim()),
+    message: stripAiAttribution(stripCommitPreamble(parsed.result.trim())),
     usage: {
       inputTokens: u.input_tokens ?? 0,
       outputTokens: u.output_tokens ?? 0,

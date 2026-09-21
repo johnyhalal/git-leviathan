@@ -39,6 +39,7 @@ import {
   type DeviceCodePrompt,
   type DiffSource,
   type ExposedApi,
+  type FileBlame,
   type FileChange,
   type FileDiff,
   type WorkingStatus,
@@ -142,6 +143,10 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.fileDiff, path, source, file) as Promise<FileDiff>,
     fileContent: (path: string, source: DiffSource, file: string) =>
       ipcRenderer.invoke(RepoChannels.fileContent, path, source, file) as Promise<string[]>,
+    fileBlame: (path: string, rev: string, file: string) =>
+      ipcRenderer.invoke(RepoChannels.fileBlame, path, rev, file) as Promise<FileBlame>,
+    fileLog: (path: string, file: string, limit?: number) =>
+      ipcRenderer.invoke(RepoChannels.fileLog, path, file, limit) as Promise<CommitLogEntry[]>,
     commitDetail: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.commitDetail, path, hash) as Promise<CommitDetailData>,
     status: (path: string) =>

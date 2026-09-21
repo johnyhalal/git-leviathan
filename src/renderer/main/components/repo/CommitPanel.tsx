@@ -12,11 +12,10 @@ import type {
 import type { DiffTarget } from './DiffView';
 import { FileContextMenu, type FileMenuItem } from './FileContextMenu';
 import { useConfirm, type ConfirmAction } from '../ConfirmBar';
+import { CopyButton } from '../CopyButton';
 import {
   CertificateIcon,
-  CheckIcon,
   ChevronDownIcon,
-  CopyIcon,
   FolderIcon,
   LayersIcon,
   ListIcon,
@@ -580,16 +579,6 @@ function CommitDetail({
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [saving, setSaving] = useState(false);
-  // Brief "copied" confirmation after the hash is written to the clipboard.
-  const [hashCopied, setHashCopied] = useState(false);
-
-  const copyHash = useCallback(() => {
-    void navigator.clipboard?.writeText(commit.hash).then(() => {
-      setHashCopied(true);
-      setTimeout(() => setHashCopied(false), 1500);
-    });
-  }, [commit.hash]);
-
   useEffect(() => {
     let live = true;
     setFiles(null);
@@ -665,7 +654,7 @@ function CommitDetail({
         </div>
       )}
       <div className="commit-panel-body">
-        <div className="commit-detail-hashline">
+        <div className="commit-detail-hashline copy-host">
           {signed && (
             <span
               className="commit-detail-signed tooltip-host"
@@ -675,15 +664,7 @@ function CommitDetail({
             </span>
           )}
           <span className="commit-detail-hash">commit: {commit.shortHash}</span>
-          <button
-            type="button"
-            className="commit-detail-hash-copy tooltip-host"
-            onClick={copyHash}
-            data-tooltip={hashCopied ? 'Copied' : 'Copy commit hash'}
-            aria-label="Copy commit hash"
-          >
-            {hashCopied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
-          </button>
+          <CopyButton text={commit.hash} what="commit hash" />
         </div>
         {editing ? (
           <div className="commit-amend">
@@ -1853,6 +1834,29 @@ function WorkingChanges({
             fileMenu.section === 'unstaged'
               ? { label: 'Stage file', onClick: () => void stageFile(fileMenu.file) }
               : { label: 'Unstage file', onClick: () => void unstage(fileMenu.file.path) },
+            'separator',
+            {
+              label: 'Blame',
+              onClick: () =>
+                onOpenDiff({
+                  source: fileMenu.section === 'staged' ? stagedSource : unstagedSource,
+                  path: fileMenu.file.path,
+                  status: fileMenu.file.status ?? 'modified',
+                  view: 'file',
+                  blame: true,
+                }),
+            },
+            {
+              label: 'View history',
+              onClick: () =>
+                onOpenDiff({
+                  source: fileMenu.section === 'staged' ? stagedSource : unstagedSource,
+                  path: fileMenu.file.path,
+                  status: fileMenu.file.status ?? 'modified',
+                  history: true,
+                }),
+            },
+            'separator',
             { label: 'Ignore', submenu: ignoreSubmenu(fileMenu.file) },
             { label: 'Discard changes', danger: true, onClick: () => discardFile(fileMenu.file) },
             'separator',

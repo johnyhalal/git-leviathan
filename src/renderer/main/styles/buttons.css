@@ -75,3 +75,36 @@
     linear-gradient(135deg, var(--rainbow-from), var(--rainbow-to)) border-box;
 }
 
+
+/* --- Copy button (components/CopyButton.tsx) --- */
+/* A subtle icon button, hidden until its `.copy-host` ancestor is hovered (or
+   the button itself is focused for keyboard users). Turns green once copied. */
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.copy-host:hover .copy-btn,
+.copy-btn:focus-visible,
+.copy-btn.is-copied {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.copy-btn.is-copied,
+.copy-btn.is-copied:hover {
+  color: var(--current);
+}

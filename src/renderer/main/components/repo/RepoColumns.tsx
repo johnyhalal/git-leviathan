@@ -390,6 +390,9 @@ export function RepoColumns({
 
   return (
     <div className="repo-columns">
+      {/* The sidebar gives way to the file viewer (which needs the room for its
+          history/blame panels) and comes back at its width when it closes. */}
+      {!diffTarget && (
       <div className="repo-column repo-column-left" style={{ width: leftWidth }}>
         <RepoSidebar
           repoPath={repoPath}
@@ -435,8 +438,11 @@ export function RepoColumns({
           onOpenRepoSettings={onOpenRepoSettings}
         />
       </div>
+      )}
 
-      <ResizeHandle side="left" aria-label="Resize sidebar" onPointerDown={startResize('left')} />
+      {!diffTarget && (
+        <ResizeHandle side="left" aria-label="Resize sidebar" onPointerDown={startResize('left')} />
+      )}
 
       <div
         className="repo-column repo-column-center"
@@ -448,6 +454,12 @@ export function RepoColumns({
             target={diffTarget}
             onClose={() => setDiffTarget(null)}
             onWorkingStatusChange={onWorkingStatusChange}
+            onSelectCommit={(hash) => {
+              // Close explicitly: selecting the already-selected commit
+              // wouldn't trip the stale-diff effect above.
+              setDiffTarget(null);
+              selectSingle(hash);
+            }}
           />
         ) : (
           <CommitList

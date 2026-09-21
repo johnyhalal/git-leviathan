@@ -77,6 +77,8 @@ import {
   type RebaseTodoEntry,
   type DiffSource,
   type DiffLine,
+  type BlameLine,
+  type FileBlame,
   type FileChange,
   type FileDiff,
   type FileStatus,
@@ -1012,7 +1014,12 @@ async function readRemotes(cwd: string): Promise<RemoteInfo[]> {
     const match = /^(\S+)\t(\S+)\s+\(fetch\)$/.exec(line);
     if (match) byName.set(match[1], match[2]);
   }
-  return [...byName.entries()].map(([name, url]) => ({ name, url }));
+  // Strip any embedded credentials (e.g. `https://user:ghp_token@github.com/...`)
+  // so a PAT baked into a remote URL never crosses IPC or reaches the UI.
+  return [...byName.entries()].map(([name, url]) => ({
+    name,
+    url: url.replace(/\/\/[^@\s/]+@/g, '//'),
+  }));
 }
 
 async function readTags(cwd: string): Promise<TagInfo[]> {
@@ -2368,6 +2375,138 @@ async function readFileContent(
 }
 
 /**
+ * Parse `git blame --porcelain` into one {@link BlameLine} per file line. The
+ * porcelain format prints a full metadata block (author/mail/time/summary) the
+ * first time each commit appears and only the terse "<hash> <orig> <final> <n>"
+ * header on repeats, so we cache each commit's metadata by hash as we walk. An
+ * all-zero hash marks a line that isn't committed yet (a working-tree edit).
+ */
+function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
+  const lines: BlameLine[] = [];
+  const meta = new Map<
+    string,
+    { author: string; email: string; date: string; summary: string }
+  >();
+  const raw = out.split('\n');
+  let i = 0;
+  while (i < raw.length) {
+    // Each entry opens with "<40-hex> <orig-line> <final-line> [<num-lines>]".
+    const header = /^([0-9a-f]{40}) \d+ (\d+)(?: \d+)?$/.exec(raw[i]);
+    if (!header) {
+      i += 1;
+      continue;
+    }
+    const hash = header[1];
+    const lineNo = parseInt(header[2], 10);
+    const cached = meta.get(hash);
+    const info = cached ?? { author: '', email: '', date: '', summary: '' };
+    i += 1;
+    // The metadata block runs until the "\t<content>" line; absent on a repeat.
+    let authorTime = 0;
+    while (i < raw.length && !raw[i].startsWith('\t')) {
+      const field = raw[i];
+      const sp = field.indexOf(' ');
+      const key = sp === -1 ? field : field.slice(0, sp);
+      const value = sp === -1 ? '' : field.slice(sp + 1);
+      if (key === 'author') info.author = value;
+      else if (key === 'author-mail') info.email = value.replace(/^<|>$/g, '');
+      else if (key === 'author-time') authorTime = parseInt(value, 10);
+      else if (key === 'summary') info.summary = value;
+      i += 1;
+    }
+    if (authorTime) info.date = new Date(authorTime * 1000).toISOString();
+    if (!cached) meta.set(hash, info);
+    // raw[i] is now the "\t<content>" line carrying this file line's text.
+    const content = i < raw.length ? raw[i].replace(/^\t/, '') : '';
+    lines.push({
+      lineNo,
+      content,
+      hash,
+      shortHash: hash.slice(0, 7),
+      author: info.author,
+      authorEmail: info.email,
+      authorAvatarUrl: avatarUrl(info.email, isGithubRepo),
+      date: info.date,
+      summary: info.summary,
+      uncommitted: /^0{40}$/.test(hash),
+    });
+    i += 1;
+  }
+  return lines;
+}
+
+/**
+ * Read `file`'s line-by-line blame as of `rev` (a commit, or '' for the working
+ * tree, which surfaces uncommitted lines). `-w` ignores whitespace-only changes
+ * so attribution follows real edits rather than reindents. `runGit` returns ''
+ * on failure (binary/absent file), yielding an empty blame the UI degrades on.
+ */
+async function readFileBlame(
+  cwd: string,
+  rev: string,
+  file: string,
+): Promise<FileBlame> {
+  const args = ['blame', '--porcelain', '-w'];
+  if (rev) args.push(rev);
+  args.push('--', file);
+  const [out, remoteInfos] = await Promise.all([runGit(cwd, args), readRemotes(cwd)]);
+  const isGithubRepo = remoteInfos.some(
+    (remote) => parseRepoHost(remote.url)?.provider === 'github',
+  );
+  return { path: file, lines: parseBlamePorcelain(out, isGithubRepo) };
+}
+
+/**
+ * Read the commits that touched `file`, newest first, following it across
+ * renames (`git log --follow`). Shares the log format + avatar/decoration
+ * resolution with the main history walk, so the file-history timeline renders
+ * with the same author avatars and ref badges.
+ */
+async function readFileLog(
+  cwd: string,
+  file: string,
+  limit: number,
+): Promise<CommitLogEntry[]> {
+  const remoteInfos = await readRemotes(cwd);
+  const remoteNames = new Set(remoteInfos.map((remote) => remote.name));
+  const isGithubRepo = remoteInfos.some(
+    (remote) => parseRepoHost(remote.url)?.provider === 'github',
+  );
+  // The message body (%b) is multi-line, so records are NUL-terminated (-z)
+  // rather than one per line, with the body as the trailing field.
+  const out = await runGit(cwd, [
+    'log',
+    '--follow',
+    '-M',
+    '--date-order',
+    '-z',
+    `--max-count=${limit}`,
+    `--pretty=format:${LOG_FORMAT}${LOG_FS}%b`,
+    '--',
+    file,
+  ]);
+  return out
+    .split('\0')
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const [hash, shortHash, parents, author, authorEmail, date, subject, decorations = '', ...rest] =
+        record.split(LOG_FS);
+      return {
+        hash,
+        shortHash,
+        parents: parents ? parents.split(' ').filter(Boolean) : [],
+        author,
+        authorEmail,
+        authorAvatarUrl: avatarUrl(authorEmail, isGithubRepo),
+        date,
+        subject,
+        body: rest.join(LOG_FS).trim(),
+        refs: parseDecorations(decorations, remoteNames),
+      };
+    });
+}
+
+/**
  * Read a single commit's full message and GPG signature status. `%G?` triggers
  * signature verification for just this one commit (cheap, unlike doing it across
  * the whole log), and `%B` is the raw message (subject + body).
@@ -3700,6 +3839,45 @@ function registerRepoIpc(): void {
         return [];
       }
       return readFileContent(repoPath, src, file);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.fileBlame,
+    async (
+      _event,
+      repoPath: unknown,
+      rev: unknown,
+      file: unknown,
+    ): Promise<FileBlame> => {
+      const path = typeof file === 'string' ? file : '';
+      if (
+        typeof repoPath !== 'string' ||
+        !isGitRepo(repoPath) ||
+        typeof rev !== 'string' ||
+        path.length === 0
+      ) {
+        return { path, lines: [] };
+      }
+      return readFileBlame(repoPath, rev, path);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.fileLog,
+    async (
+      _event,
+      repoPath: unknown,
+      file: unknown,
+      limit: unknown,
+    ): Promise<CommitLogEntry[]> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return [];
+      if (typeof file !== 'string' || file.length === 0) return [];
+      const cap =
+        typeof limit === 'number' && Number.isFinite(limit) && limit > 0
+          ? Math.floor(limit)
+          : DEFAULT_LOG_LIMIT;
+      return readFileLog(repoPath, file, cap);
     },
   );
 
@@ -6585,11 +6763,16 @@ async function addSshKey(provider: IntegrationProvider): Promise<SshKeyInfo> {
   const title = `GitLeviathan (${host}) ${date}`;
 
   const pair = generateSshKeyPair(title);
-  const remoteId = await PROVIDER_CLIENTS[provider].uploadSshKey(
-    token,
-    title,
-    pair.publicKey,
-  );
+  let remoteId: number;
+  try {
+    remoteId = await PROVIDER_CLIENTS[provider].uploadSshKey(
+      token,
+      title,
+      pair.publicKey,
+    );
+  } catch (err) {
+    throw new Error(sshKeyErrorMessage(provider, err));
+  }
   const privateKeyPath = writeSshKeyToDisk(provider, pair);
 
   const info: SshKeyInfo = {
@@ -7428,6 +7611,26 @@ async function updateAllowedSigners(publicKey: string): Promise<void> {
   );
   kept.push(`${email} ${key}`);
   fs.writeFileSync(file, `${kept.join('\n')}\n`, { mode: 0o644 });
+}
+
+/**
+ * Turn an SSH auth-key upload failure into one human-facing line. A permission
+ * failure gets remedy guidance that differs for OAuth (reconnect re-requests
+ * the scope) vs. a PAT (the token itself must be edited — reconnecting with
+ * the same token changes nothing). Note GitHub's `write:public_key` is a
+ * separate scope from `write:ssh_signing_key`; only the former covers
+ * `/user/keys`.
+ */
+function sshKeyErrorMessage(provider: IntegrationProvider, err: unknown): string {
+  const label = PROVIDER_LABELS[provider];
+  if (err instanceof KeyAccessError) {
+    const method = settings.integrations?.[provider]?.method ?? 'oauth';
+    const scope = provider === 'github' ? 'write:public_key' : 'api';
+    return method === 'token'
+      ? `Your ${label} personal access token lacks the SSH-key permission. Edit the token on ${label} to add the ${scope} scope (or create a new one with it), then reconnect.`
+      : `${label} denied the request — disconnect and reconnect the account to grant SSH key access.`;
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** The PAT scope a provider needs to manage the given signing-key kind. */

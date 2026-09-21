@@ -155,6 +155,11 @@ export async function uploadSshKey(
     signal,
   });
   if (!res.ok) {
+    // A permission failure is distinguished from other errors so the caller can
+    // tailor guidance (reconnect OAuth vs. a PAT missing the key scope).
+    if (res.status === 401 || res.status === 403 || res.status === 404) {
+      throw new KeyAccessError(await keyUploadError(res));
+    }
     throw new Error(await keyUploadError(res));
   }
   const body = (await res.json()) as { id?: number };
