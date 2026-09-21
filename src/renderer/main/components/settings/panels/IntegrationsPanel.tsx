@@ -24,7 +24,7 @@ interface ProviderMeta {
   /** Shown while disconnected — what connecting unlocks. */
   blurb: string;
   /** Where to mint a personal access token, and the scopes it needs. */
-  tokenHelp: { url: string; scopes: string };
+  tokenHelp: { url: string; scopes: { scope: string; why: string }[] };
 }
 
 const PROVIDERS: ProviderMeta[] = [
@@ -34,9 +34,15 @@ const PROVIDERS: ProviderMeta[] = [
     Icon: GithubIcon,
     blurb: 'Connect your GitHub account to browse and clone your repositories.',
     tokenHelp: {
-      url: 'https://github.com/settings/tokens/new?scopes=repo,read:org,write:public_key,write:ssh_signing_key,write:gpg_key&description=GitLeviathan',
-      scopes:
-        'repo, read:org, write:public_key, write:ssh_signing_key and write:gpg_key',
+      url: 'https://github.com/settings/tokens/new?scopes=repo,workflow,read:org,write:public_key,write:ssh_signing_key,write:gpg_key&description=GitLeviathan',
+      scopes: [
+        { scope: 'repo', why: 'list, clone, push and pull your repositories' },
+        { scope: 'workflow', why: 'push commits that touch .github/workflows' },
+        { scope: 'read:org', why: 'see repositories in your organizations' },
+        { scope: 'write:public_key', why: 'generate an SSH key for pushing' },
+        { scope: 'write:ssh_signing_key', why: 'upload an SSH commit-signing key' },
+        { scope: 'write:gpg_key', why: 'upload a GPG commit-signing key' },
+      ],
     },
   },
   {
@@ -46,7 +52,10 @@ const PROVIDERS: ProviderMeta[] = [
     blurb: 'Connect your GitLab account to browse and clone your repositories.',
     tokenHelp: {
       url: 'https://gitlab.com/-/user_settings/personal_access_tokens',
-      scopes: 'read_api and write_repository',
+      scopes: [
+        { scope: 'read_api', why: 'list your projects and manage SSH keys' },
+        { scope: 'write_repository', why: 'clone, push and pull over HTTPS' },
+      ],
     },
   },
 ];
@@ -95,8 +104,8 @@ function TokenConnect({ name, help, toggleLabel, onSubmit }: TokenConnectProps) 
         <>
           <p className="settings-desc">
             For organizations that restrict OAuth apps, connect with a personal
-            access token instead — it needs the <strong>{help.scopes}</strong>{' '}
-            scopes.{' '}
+            access token instead. Grant it these scopes (a missing one only
+            fails later, when that feature is used):{' '}
             <button
               type="button"
               className="integration-token-link"
@@ -105,6 +114,14 @@ function TokenConnect({ name, help, toggleLabel, onSubmit }: TokenConnectProps) 
               Create one on {name} ↗
             </button>
           </p>
+          <ul className="integration-token-scopes">
+            {help.scopes.map(({ scope, why }) => (
+              <li key={scope}>
+                <code>{scope}</code>
+                <span>{why}</span>
+              </li>
+            ))}
+          </ul>
           <div className="integration-token-row">
             <input
               type="password"
