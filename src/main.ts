@@ -6760,11 +6760,16 @@ async function addSshKey(provider: IntegrationProvider): Promise<SshKeyInfo> {
   const title = `GitLeviathan (${host}) ${date}`;
 
   const pair = generateSshKeyPair(title);
-  const remoteId = await PROVIDER_CLIENTS[provider].uploadSshKey(
-    token,
-    title,
-    pair.publicKey,
-  );
+  let remoteId: number;
+  try {
+    remoteId = await PROVIDER_CLIENTS[provider].uploadSshKey(
+      token,
+      title,
+      pair.publicKey,
+    );
+  } catch (err) {
+    throw new Error(sshKeyErrorMessage(provider, err));
+  }
   const privateKeyPath = writeSshKeyToDisk(provider, pair);
 
   const info: SshKeyInfo = {
@@ -7603,6 +7608,26 @@ async function updateAllowedSigners(publicKey: string): Promise<void> {
   );
   kept.push(`${email} ${key}`);
   fs.writeFileSync(file, `${kept.join('\n')}\n`, { mode: 0o644 });
+}
+
+/**
+ * Turn an SSH auth-key upload failure into one human-facing line. A permission
+ * failure gets remedy guidance that differs for OAuth (reconnect re-requests
+ * the scope) vs. a PAT (the token itself must be edited — reconnecting with
+ * the same token changes nothing). Note GitHub's `write:public_key` is a
+ * separate scope from `write:ssh_signing_key`; only the former covers
+ * `/user/keys`.
+ */
+function sshKeyErrorMessage(provider: IntegrationProvider, err: unknown): string {
+  const label = PROVIDER_LABELS[provider];
+  if (err instanceof KeyAccessError) {
+    const method = settings.integrations?.[provider]?.method ?? 'oauth';
+    const scope = provider === 'github' ? 'write:public_key' : 'api';
+    return method === 'token'
+      ? `Your ${label} personal access token lacks the SSH-key permission. Edit the token on ${label} to add the ${scope} scope (or create a new one with it), then reconnect.`
+      : `${label} denied the request — disconnect and reconnect the account to grant SSH key access.`;
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** The PAT scope a provider needs to manage the given signing-key kind. */
