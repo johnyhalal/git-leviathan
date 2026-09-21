@@ -10,6 +10,7 @@ import {
   nativeTheme,
   safeStorage,
   screen,
+  session,
   shell,
 } from 'electron';
 import path from 'node:path';
@@ -147,6 +148,24 @@ app.setName(app.isPackaged ? 'GitLeviathan' : 'GitLeviathan Dev');
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
   app.quit();
+}
+
+// One running instance only. A second launch would spin up its own working-tree
+// watchers and write settings.json whole, racing the first (last writer wins);
+// instead hand off to the existing instance and bring its window forward.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+    if (!win) {
+      boot();
+      return;
+    }
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
 }
 
 /** Minimum time the splash stays visible so it never just flashes. */
@@ -7084,6 +7103,61 @@ function loadDevUrlWithRetry(win: BrowserWindow, url: string): void {
   load();
 }
 
+/**
+ * The renderers show untrusted repo content (commit messages, diffs, branch
+ * names), so lock each window down: no in-page navigation away from our own
+ * bundle and no `window.open` — external links go through `shell.openExternal`
+ * in the main process (see app:openExternal), never the renderer.
+ */
+function lockDownWindow(win: BrowserWindow): void {
+  const allowed = (url: string): boolean => {
+    if (url.startsWith('file://')) return true;
+    // Dev: each renderer has its own Vite server origin (different ports).
+    const devOrigins = [MAIN_WINDOW_VITE_DEV_SERVER_URL, SPLASH_WINDOW_VITE_DEV_SERVER_URL]
+      .filter(Boolean)
+      .map((u) => new URL(u).origin);
+    return devOrigins.includes(new URL(url).origin);
+  };
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!allowed(url)) event.preventDefault();
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-attach-webview', (event) => event.preventDefault());
+}
+
+/**
+ * Content-Security-Policy for both renderers, injected as a response header so
+ * it covers packaged `file://` loads and the dev server alike. Scripts are
+ * same-origin only; styles need `'unsafe-inline'` for React `style={}` props
+ * and Vite's injected `<style>` tags; images may come from any https host
+ * because avatars are served by GitHub, GitLab (incl. self-hosted) and
+ * Gravatar. Dev additionally allows the react-refresh inline preamble and the
+ * HMR websocket.
+ */
+function installContentSecurityPolicy(): void {
+  const dev = !app.isPackaged;
+  const policy = [
+    "default-src 'self'",
+    `script-src 'self'${dev ? " 'unsafe-inline'" : ''}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https:",
+    "font-src 'self' data:",
+    `connect-src 'self'${dev ? ' ws: http://localhost:*' : ''}`,
+    "object-src 'none'",
+    "frame-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join('; ');
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [policy],
+      },
+    });
+  });
+}
+
 function createSplashWindow(): BrowserWindow {
   const splash = new BrowserWindow({
     width: 200,
@@ -7094,8 +7168,9 @@ function createSplashWindow(): BrowserWindow {
     center: true,
     show: false,
     backgroundColor: '#00000000',
-    webPreferences: { preload: preloadPath },
+    webPreferences: { preload: preloadPath, sandbox: true, devTools: !app.isPackaged },
   });
+  lockDownWindow(splash);
 
   if (SPLASH_WINDOW_VITE_DEV_SERVER_URL) {
     loadDevUrlWithRetry(splash, SPLASH_WINDOW_VITE_DEV_SERVER_URL);
@@ -7136,8 +7211,15 @@ function createMainWindow(): BrowserWindow {
       // window stuck on the splash until the reveal fallback. Keep the hidden
       // window running at full speed so it paints and signals promptly.
       backgroundThrottling: false,
+      // The preload only uses contextBridge/ipcRenderer, so it runs fine in a
+      // sandboxed renderer (no Node in the page process at all).
+      sandbox: true,
+      // Production builds ship without DevTools: this also disables the
+      // Cmd/Ctrl+Shift+I / F12 shortcuts, not just the menu item.
+      devTools: !app.isPackaged,
     },
   });
+  lockDownWindow(win);
 
   if (settings.windowMaximized) {
     win.maximize();
@@ -8353,9 +8435,13 @@ function installAppMenu(): void {
     {
       label: 'View',
       submenu: [
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
+        ...(app.isPackaged
+          ? []
+          : ([
+              { role: 'forceReload' },
+              { role: 'toggleDevTools' },
+              { type: 'separator' },
+            ] as MenuItemConstructorOptions[])),
         { role: 'resetZoom' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },
@@ -8378,6 +8464,7 @@ app.on('ready', () => {
   applyDockIcon();
   nativeTheme.themeSource = settings.themeSource;
   installAppMenu();
+  installContentSecurityPolicy();
   registerThemeIpc();
   registerRepoIpc();
   registerIntegrationsIpc();
