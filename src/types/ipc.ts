@@ -567,6 +567,12 @@ export interface CommitLogEntry {
   date: string;
   /** First line of the commit message. */
   subject: string;
+  /**
+   * The rest of the commit message (after the subject), trimmed. Only carried
+   * where it's shown — the file-history list — and absent from the graph log,
+   * which stays one line per commit.
+   */
+  body?: string;
   refs: CommitRefDecoration[];
   /**
    * Set when this row is a local stash rather than a real commit: the stash's
@@ -724,6 +730,8 @@ export interface BlameLine {
   author: string;
   /** Author email — the identity the line's color is keyed on. */
   authorEmail: string;
+  /** Author avatar URL, resolved like a log entry's `authorAvatarUrl`. */
+  authorAvatarUrl: string;
   /** ISO 8601 author date. */
   date: string;
   /** First line of that commit's message. */

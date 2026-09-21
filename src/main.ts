@@ -2381,7 +2381,7 @@ async function readFileContent(
  * header on repeats, so we cache each commit's metadata by hash as we walk. An
  * all-zero hash marks a line that isn't committed yet (a working-tree edit).
  */
-function parseBlamePorcelain(out: string): BlameLine[] {
+function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
   const lines: BlameLine[] = [];
   const meta = new Map<
     string,
@@ -2425,6 +2425,7 @@ function parseBlamePorcelain(out: string): BlameLine[] {
       shortHash: hash.slice(0, 7),
       author: info.author,
       authorEmail: info.email,
+      authorAvatarUrl: avatarUrl(info.email, isGithubRepo),
       date: info.date,
       summary: info.summary,
       uncommitted: /^0{40}$/.test(hash),
@@ -2448,8 +2449,11 @@ async function readFileBlame(
   const args = ['blame', '--porcelain', '-w'];
   if (rev) args.push(rev);
   args.push('--', file);
-  const out = await runGit(cwd, args);
-  return { path: file, lines: parseBlamePorcelain(out) };
+  const [out, remoteInfos] = await Promise.all([runGit(cwd, args), readRemotes(cwd)]);
+  const isGithubRepo = remoteInfos.some(
+    (remote) => parseRepoHost(remote.url)?.provider === 'github',
+  );
+  return { path: file, lines: parseBlamePorcelain(out, isGithubRepo) };
 }
 
 /**
@@ -2468,39 +2472,38 @@ async function readFileLog(
   const isGithubRepo = remoteInfos.some(
     (remote) => parseRepoHost(remote.url)?.provider === 'github',
   );
+  // The message body (%b) is multi-line, so records are NUL-terminated (-z)
+  // rather than one per line, with the body as the trailing field.
   const out = await runGit(cwd, [
     'log',
     '--follow',
     '-M',
     '--date-order',
+    '-z',
     `--max-count=${limit}`,
-    `--pretty=format:${LOG_FORMAT}`,
+    `--pretty=format:${LOG_FORMAT}${LOG_FS}%b`,
     '--',
     file,
   ]);
-  return nonEmptyLines(out).map((line) => {
-    const [
-      hash,
-      shortHash,
-      parents,
-      author,
-      authorEmail,
-      date,
-      subject,
-      decorations = '',
-    ] = line.split(LOG_FS);
-    return {
-      hash,
-      shortHash,
-      parents: parents ? parents.split(' ').filter(Boolean) : [],
-      author,
-      authorEmail,
-      authorAvatarUrl: avatarUrl(authorEmail, isGithubRepo),
-      date,
-      subject,
-      refs: parseDecorations(decorations, remoteNames),
-    };
-  });
+  return out
+    .split('\0')
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const [hash, shortHash, parents, author, authorEmail, date, subject, decorations = '', ...rest] =
+        record.split(LOG_FS);
+      return {
+        hash,
+        shortHash,
+        parents: parents ? parents.split(' ').filter(Boolean) : [],
+        author,
+        authorEmail,
+        authorAvatarUrl: avatarUrl(authorEmail, isGithubRepo),
+        date,
+        subject,
+        body: rest.join(LOG_FS).trim(),
+        refs: parseDecorations(decorations, remoteNames),
+      };
+    });
 }
 
 /**
