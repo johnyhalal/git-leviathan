@@ -7,6 +7,7 @@ import {
   type IconProps,
 } from '../../../../../../assets/icons';
 import type {
+  ClaudeModel,
   ClaudeStatus,
   DeviceCodePrompt,
   IntegrationConnection,
@@ -14,6 +15,7 @@ import type {
   IntegrationsState,
 } from '../../../../../types/ipc';
 import { SettingsSection } from '../SettingsSection';
+import { SettingsRow } from '../SettingsRow';
 import { ConnectingPrompt } from '../../integrations/ConnectingPrompt';
 import { AddSshKey } from '../../integrations/AddSshKey';
 
@@ -292,6 +294,17 @@ const DISCONNECTED = (provider: IntegrationProvider): IntegrationConnection => (
 });
 
 /**
+ * The models commit-message generation can run on, cheapest first. What a
+ * generation costs against the user's Claude limits scales with this, so the
+ * tradeoff is spelled out in the labels.
+ */
+const CLAUDE_MODELS: { value: ClaudeModel; label: string }[] = [
+  { value: 'haiku', label: 'Haiku — cheapest' },
+  { value: 'sonnet', label: 'Sonnet — balanced (default)' },
+  { value: 'opus', label: 'Opus — best quality' },
+];
+
+/**
  * Claude Code isn't an OAuth account like the Git hosts — "connecting" detects
  * the user's locally installed `claude` binary and remembers its path (its own
  * auth does the work). Connected shows the path/version + a Disconnect; otherwise
@@ -323,6 +336,14 @@ function ClaudeSection() {
     setBusy(true);
     window.api.claude
       .disconnect()
+      .then(setStatus)
+      .finally(() => setBusy(false));
+  };
+
+  const setModel = (model: ClaudeModel) => {
+    setBusy(true);
+    window.api.claude
+      .setModel(model)
       .then(setStatus)
       .finally(() => setBusy(false));
   };
@@ -374,6 +395,25 @@ function ClaudeSection() {
           </button>
         </div>
       </div>
+      {connected && (
+        <SettingsRow
+          label="Commit message model"
+          description="Which model writes commit messages. Cheaper models use less of your Claude limits."
+        >
+          <select
+            className="settings-select"
+            value={status?.model ?? 'sonnet'}
+            disabled={busy}
+            onChange={(e) => setModel(e.target.value as ClaudeModel)}
+          >
+            {CLAUDE_MODELS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </SettingsRow>
+      )}
     </SettingsSection>
   );
 }

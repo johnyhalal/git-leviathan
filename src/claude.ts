@@ -17,14 +17,25 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import type { ClaudeModel } from './types/ipc';
 
 const execFileAsync = promisify(execFile);
 
 /** How long a single `claude` invocation may run before we give up (ms). */
 const GENERATE_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 8_000;
-/** Cap the diff we hand to the model so a huge changeset can't blow up the call. */
-const MAX_DIFF_CHARS = 100_000;
+/**
+ * Cap the diff we hand to the model so a huge changeset can't blow up the call.
+ * Deliberately modest: every character here is paid for on every generation, and
+ * a commit message needs the *shape* of a change, not every line of it.
+ */
+const MAX_DIFF_CHARS = 40_000;
+/**
+ * When the budget has to be split across files, no file gets less than this —
+ * below a hunk header plus a few lines a patch says nothing at all, so it is
+ * better to overshoot the budget slightly than to include unreadable stubs.
+ */
+const MIN_PER_FILE_CHARS = 400;
 
 /**
  * Files whose *diff content* is withheld from the commit-message model. The
@@ -412,49 +423,156 @@ function parseCommitResult(stdout: string): CommitMessageResult {
 }
 
 /**
- * Generate a commit message from the staged diff by piping it to `claude -p`.
- * `recentSubjects` are woven into stdin (never argv) so a crafted commit subject
- * can't influence the command line. `changedFiles` is the full staged file list
- * — always shown so the model sees every change — while `excludedFiles` (a
- * subset) are the ones whose patch content was withheld (see
- * `COMMIT_CONTEXT_EXCLUDES`); they're listed but flagged, and `diff` already
- * omits their hunks. Rejects with a distilled error on failure.
+ * Fit a combined patch into `maxChars` by giving every file a fair share of the
+ * budget instead of slicing the whole payload at one offset. A global slice on a
+ * 90-file changeset describes the first twenty files and hides the rest; here
+ * each file keeps its `diff --git` header and as many leading hunk lines as its
+ * share allows, so the model sees the full breadth of the change.
+ *
+ * Files that come in under their share release the remainder to the ones that
+ * don't, so small patches stay whole and the large ones absorb the loss.
  */
-export function generateCommitMessage(
-  bin: string,
-  diff: string,
-  changedFiles: string[],
-  excludedFiles: string[],
-  recentSubjects: string[],
-  cwd: string,
-): Promise<CommitMessageResult> {
-  const trimmedDiff =
-    diff.length > MAX_DIFF_CHARS
-      ? `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated for length]`
-      : diff;
-  const excludedSet = new Set(excludedFiles);
-  const filesSection = changedFiles.length
-    ? `Changed files (staged):\n${changedFiles
-        .map((f) => (excludedSet.has(f) ? `- ${f} (diff omitted)` : `- ${f}`))
-        .join('\n')}\n\n`
-    : '';
-  const stdin =
-    (recentSubjects.length
-      ? `Recent commit subjects in this repository (match their style):\n${recentSubjects
-          .map((s) => `- ${s}`)
-          .join('\n')}\n\n`
-      : '') +
-    filesSection +
-    `Staged diff:\n${trimmedDiff}\n`;
+export function budgetDiff(diff: string, maxChars: number): string {
+  if (diff.length <= maxChars) return diff;
 
-  return new Promise((resolve, reject) => {
-    // `--output-format json` wraps the message in an envelope that also carries
-    // token usage and cost, which we log; we still resolve with the plain text.
-    const child = spawnClaude(
-      bin,
-      ['-p', COMMIT_INSTRUCTION, '--model', 'sonnet', '--output-format', 'json'],
-      cwd,
+  // Each chunk starts at a `diff --git` line and runs to just before the next.
+  const starts: number[] = [];
+  const re = /^diff --git /gm;
+  for (let m = re.exec(diff); m; m = re.exec(diff)) starts.push(m.index);
+  if (!starts.length) return `${cutAtLine(diff, maxChars)}\n\n[diff truncated for length]`;
+
+  const chunks: string[] = [];
+  // Anything before the first header (rare) rides along with the first chunk.
+  if (starts[0] > 0) starts[0] = 0;
+  for (let i = 0; i < starts.length; i++) {
+    chunks.push(diff.slice(starts[i], starts[i + 1] ?? diff.length));
+  }
+
+  // More files than the budget can describe even at the floor: the tail keeps
+  // its header only (the full file list is on stdin regardless), so a sprawling
+  // changeset can't multiply the floor into a payload of its own.
+  const affordable = Math.max(1, Math.floor(maxChars / MIN_PER_FILE_CHARS));
+  const kept: (string | null)[] = chunks.map(() => null);
+  let remaining = maxChars;
+  let hungry = chunks.length;
+  for (let i = affordable; i < chunks.length; i++) {
+    kept[i] = `${headerOf(chunks[i])}\n[patch omitted \u2014 too many files]\n`;
+    remaining -= (kept[i] as string).length;
+    hungry--;
+  }
+
+  // Two passes over the rest: hand out an equal share, then redistribute what
+  // the small files didn't use among the ones still over their share.
+  for (let pass = 0; pass < 2 && hungry > 0; pass++) {
+    const share = Math.max(
+      MIN_PER_FILE_CHARS,
+      Math.floor(Math.max(remaining, 0) / hungry),
     );
+    for (let i = 0; i < chunks.length; i++) {
+      if (kept[i] !== null) continue;
+      if (chunks[i].length <= share) {
+        kept[i] = chunks[i];
+        remaining -= chunks[i].length;
+        hungry--;
+      }
+    }
+  }
+  // Whatever is still unassigned is genuinely too big: cut it to its share.
+  const share =
+    hungry > 0
+      ? Math.max(MIN_PER_FILE_CHARS, Math.floor(Math.max(remaining, 0) / hungry))
+      : 0;
+  for (let i = 0; i < chunks.length; i++) {
+    if (kept[i] === null) kept[i] = `${cutAtLine(chunks[i], share)}\n[patch truncated]\n`;
+  }
+
+  // The per-file floor (and the headers themselves) can still add up on a
+  // changeset of hundreds of files; a hard ceiling keeps the worst case bounded.
+  const out = kept.join('');
+  const ceiling = Math.floor(maxChars * 1.25);
+  return out.length <= ceiling
+    ? out
+    : `${cutAtLine(out, ceiling)}\n\n[diff truncated for length]`;
+}
+
+/** The `diff --git`/mode/index/`---`/`+++` preamble of one file's patch. */
+function headerOf(chunk: string): string {
+  const lines = chunk.split('\n');
+  const end = lines.findIndex((l) => l.startsWith('@@'));
+  return (end === -1 ? lines : lines.slice(0, end)).join('\n').trimEnd();
+}
+
+/** Cut `text` to at most `max` characters, ending on a whole line. */
+function cutAtLine(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const nl = cut.lastIndexOf('\n');
+  return nl > 0 ? cut.slice(0, nl) : cut;
+}
+
+/** The short user turn; all the real instruction lives in the system prompt. */
+const COMMIT_PROMPT =
+  'Write the commit message for the staged changes provided on stdin.';
+
+/**
+ * The lean argv: a one-shot generation needs none of Claude Code's agent
+ * machinery, and every part of it is paid for on each click. Measured on a
+ * two-line diff, the default invocation costs ~26,000 input tokens (default
+ * system prompt + every tool schema + the repo's CLAUDE.md + the user's
+ * skills/plugins/MCP servers) against ~440 with these flags.
+ *
+ * `--safe-mode` (not `--bare`) is deliberate: it drops the customizations while
+ * leaving auth alone, so a subscription login keeps working.
+ */
+function leanArgs(model: ClaudeModel): string[] {
+  return [
+    '-p',
+    COMMIT_PROMPT,
+    '--system-prompt',
+    COMMIT_INSTRUCTION,
+    '--tools',
+    '', // no tool definitions in the request at all
+    '--safe-mode', // no CLAUDE.md, skills, plugins, hooks, MCP, custom agents
+    '--strict-mcp-config', // and no MCP servers from any other config either
+    '--no-session-persistence', // don't leave a transcript behind for a one-shot
+    '--model',
+    model,
+    '--output-format',
+    'json',
+  ];
+}
+
+/** The pre-lean argv, kept for `claude` builds that don't know the new flags. */
+function legacyArgs(model: ClaudeModel): string[] {
+  return ['-p', COMMIT_INSTRUCTION, '--model', model, '--output-format', 'json'];
+}
+
+/**
+ * Whether a given `claude` binary understood `leanArgs`. Populated the first
+ * time a binary rejects one of the flags, so the fallback is paid once per
+ * binary per app run rather than on every generation.
+ */
+const leanSupport = new Map<string, boolean>();
+
+/** An unknown-flag rejection, as commander reports it on stderr. */
+const UNKNOWN_FLAG_RE = /unknown (?:option|argument|command)/i;
+
+/** Raw outcome of one `claude` run. */
+interface ClaudeRun {
+  code: number | null;
+  out: string;
+  err: string;
+}
+
+/** Run `claude` once with `stdin` piped in, resolving even on a non-zero exit. */
+function runClaude(
+  bin: string,
+  args: string[],
+  cwd: string,
+  stdin: string,
+): Promise<ClaudeRun> {
+  return new Promise((resolve, reject) => {
+    const child = spawnClaude(bin, args, cwd);
     let out = '';
     let err = '';
     const timer = setTimeout(() => {
@@ -476,12 +594,7 @@ export function generateCommitMessage(
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (code === 0) {
-        resolve(parseCommitResult(out));
-      } else {
-        const detail = err.trim() || out.trim();
-        reject(new Error(detail || `Claude exited with code ${code}.`));
-      }
+      resolve({ code, out, err });
     });
 
     child.stdin.on('error', () => {
@@ -490,6 +603,57 @@ export function generateCommitMessage(
     child.stdin.write(stdin);
     child.stdin.end();
   });
+}
+
+/**
+ * Generate a commit message from the staged diff by piping it to `claude -p`.
+ * `recentSubjects` are woven into stdin (never argv) so a crafted commit subject
+ * can't influence the command line. `changedFiles` is the full staged file list
+ * — always shown so the model sees every change — while `excludedFiles` (a
+ * subset) are the ones whose patch content was withheld (see
+ * `COMMIT_CONTEXT_EXCLUDES`); they're listed but flagged, and `diff` already
+ * omits their hunks. `onNotice` receives the odd operational line worth logging.
+ * Rejects with a distilled error on failure.
+ */
+export async function generateCommitMessage(
+  bin: string,
+  diff: string,
+  changedFiles: string[],
+  excludedFiles: string[],
+  recentSubjects: string[],
+  cwd: string,
+  model: ClaudeModel = 'sonnet',
+  onNotice?: (text: string) => void,
+): Promise<CommitMessageResult> {
+  const trimmedDiff = budgetDiff(diff, MAX_DIFF_CHARS);
+  const excludedSet = new Set(excludedFiles);
+  const filesSection = changedFiles.length
+    ? `Changed files (staged):\n${changedFiles
+        .map((f) => (excludedSet.has(f) ? `- ${f} (diff omitted)` : `- ${f}`))
+        .join('\n')}\n\n`
+    : '';
+  const stdin =
+    (recentSubjects.length
+      ? `Recent commit subjects in this repository (match their style):\n${recentSubjects
+          .map((s) => `- ${s}`)
+          .join('\n')}\n\n`
+      : '') +
+    filesSection +
+    `Staged diff:\n${trimmedDiff}\n`;
+
+  const lean = leanSupport.get(bin) !== false;
+  let run = await runClaude(bin, lean ? leanArgs(model) : legacyArgs(model), cwd, stdin);
+  if (run.code !== 0 && lean && UNKNOWN_FLAG_RE.test(run.err)) {
+    // An older `claude` build: remember that and pay the full prompt cost.
+    leanSupport.set(bin, false);
+    onNotice?.(
+      'this claude CLI does not support the low-token flags; using the full prompt (update Claude Code to cut token usage)',
+    );
+    run = await runClaude(bin, legacyArgs(model), cwd, stdin);
+  }
+  if (run.code === 0) return parseCommitResult(run.out);
+  const detail = run.err.trim() || run.out.trim();
+  throw new Error(detail || `Claude exited with code ${run.code}.`);
 }
 
 /** Distill a thrown error from a `claude` run to one user-facing line. */

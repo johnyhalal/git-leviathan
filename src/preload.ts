@@ -8,6 +8,7 @@ import {
   ThemeChannels,
   UpdateChannels,
   type ClaudeStatus,
+  type ClaudeModel,
   type GenerateCommitResult,
   type CheckoutResult,
   type RefsMutationResult,
@@ -529,6 +530,8 @@ const api: ExposedApi = {
     connect: () => ipcRenderer.invoke(ClaudeChannels.connect) as Promise<ClaudeStatus>,
     disconnect: () =>
       ipcRenderer.invoke(ClaudeChannels.disconnect) as Promise<ClaudeStatus>,
+    setModel: (model: ClaudeModel) =>
+      ipcRenderer.invoke(ClaudeChannels.setModel, model) as Promise<ClaudeStatus>,
     generateCommitMessage: (path: string) =>
       ipcRenderer.invoke(
         ClaudeChannels.generateCommitMessage,

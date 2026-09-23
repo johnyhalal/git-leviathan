@@ -1345,6 +1345,17 @@ export const IntegrationChannels = {
 // ---- Claude Code (local AI helper) ----------------------------------------
 
 /**
+ * Which model the local `claude` CLI is asked to write commit messages with.
+ * Aliases (not pinned ids) so the CLI resolves whatever is current. The cost of
+ * a generation against the user's limits scales with this choice, hence the
+ * setting: haiku is the cheap one, opus the thorough one.
+ */
+export type ClaudeModel = 'haiku' | 'sonnet' | 'opus';
+
+/** The default when the user has never picked one. */
+export const DEFAULT_CLAUDE_MODEL: ClaudeModel = 'sonnet';
+
+/**
  * The user's Claude Code connection. There is no OAuth/token here (unlike the
  * Git hosts): "connecting" simply detects the *locally installed* `claude`
  * binary once and remembers its path, so its own auth does the real work. The
@@ -1357,6 +1368,8 @@ export interface ClaudeStatus {
   binaryPath?: string;
   /** `claude --version` output captured at connect time, when available. */
   version?: string;
+  /** The model commit-message generation runs on. */
+  model: ClaudeModel;
   /** Message from the most recent failed connect attempt. */
   error?: string;
 }
@@ -1377,6 +1390,8 @@ export const ClaudeChannels = {
   connect: 'claude:connect',
   /** Renderer -> main (invoke): forget the saved `claude` binary path. */
   disconnect: 'claude:disconnect',
+  /** Renderer -> main (invoke): choose the model used for commit messages. */
+  setModel: 'claude:set-model',
   /** Renderer -> main (invoke): generate a commit message from the staged diff. */
   generateCommitMessage: 'claude:generate-commit-message',
 } as const;
@@ -2221,6 +2236,8 @@ export interface ClaudeApi {
   connect(): Promise<ClaudeStatus>;
   /** Forget the saved `claude` binary path. */
   disconnect(): Promise<ClaudeStatus>;
+  /** Choose the model commit-message generation runs on. */
+  setModel(model: ClaudeModel): Promise<ClaudeStatus>;
   /** Ask Claude to write a commit message for the repo's staged changes. */
   generateCommitMessage(path: string): Promise<GenerateCommitResult>;
 }
