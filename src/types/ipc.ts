@@ -1363,15 +1363,30 @@ export const IntegrationChannels = {
 // ---- Claude Code (local AI helper) ----------------------------------------
 
 /**
- * Which model the local `claude` CLI is asked to write commit messages with.
- * Aliases (not pinned ids) so the CLI resolves whatever is current. The cost of
- * a generation against the user's limits scales with this choice, hence the
- * setting: haiku is the cheap one, opus the thorough one.
+ * Which model the local `claude` CLI runs on for every Claude feature (commit
+ * messages, conflict resolution): whatever `--model` accepts — an alias
+ * (`sonnet`, `opus`, `haiku`, `default`) that the CLI resolves to the current
+ * version, or a full model id. The choices
+ * aren't hard-coded; they come from the CLI itself (see `ClaudeModelOption`).
  */
-export type ClaudeModel = 'haiku' | 'sonnet' | 'opus';
+export type ClaudeModel = string;
 
 /** The default when the user has never picked one. */
 export const DEFAULT_CLAUDE_MODEL: ClaudeModel = 'sonnet';
+
+/**
+ * One model the user's `claude` CLI offers, as it reports them (the same list
+ * its own `/model` picker shows), so the choices track the user's account and
+ * CLI version instead of a list baked into this app.
+ */
+export interface ClaudeModelOption {
+  /** What to pass to `--model` (an alias or a full model id). */
+  value: ClaudeModel;
+  /** Human name, e.g. "Sonnet 5". */
+  displayName: string;
+  /** The CLI's one-line blurb for the model, when it has one. */
+  description?: string;
+}
 
 /**
  * The user's Claude Code connection. There is no OAuth/token here (unlike the
@@ -1386,7 +1401,7 @@ export interface ClaudeStatus {
   binaryPath?: string;
   /** `claude --version` output captured at connect time, when available. */
   version?: string;
-  /** The model commit-message generation runs on. */
+  /** The model Claude features (commit messages, conflict resolution) run on. */
   model: ClaudeModel;
   /** Message from the most recent failed connect attempt. */
   error?: string;
@@ -1435,8 +1450,10 @@ export const ClaudeChannels = {
   connect: 'claude:connect',
   /** Renderer -> main (invoke): forget the saved `claude` binary path. */
   disconnect: 'claude:disconnect',
-  /** Renderer -> main (invoke): choose the model used for commit messages. */
+  /** Renderer -> main (invoke): choose the model Claude features run on. */
   setModel: 'claude:set-model',
+  /** Renderer -> main (invoke): list the models the local `claude` CLI offers. */
+  listModels: 'claude:list-models',
   /** Renderer -> main (invoke): generate a commit message from the staged diff. */
   generateCommitMessage: 'claude:generate-commit-message',
   /** Renderer -> main (invoke): suggest a resolution for one conflict block. */
@@ -2284,8 +2301,13 @@ export interface ClaudeApi {
   connect(): Promise<ClaudeStatus>;
   /** Forget the saved `claude` binary path. */
   disconnect(): Promise<ClaudeStatus>;
-  /** Choose the model commit-message generation runs on. */
+  /** Choose the model Claude features (commit messages, conflict resolution) run on. */
   setModel(model: ClaudeModel): Promise<ClaudeStatus>;
+  /**
+   * The models the connected `claude` CLI offers (asked once per binary and
+   * cached); falls back to the plain aliases when the CLI can't be asked.
+   */
+  listModels(): Promise<ClaudeModelOption[]>;
   /** Ask Claude to write a commit message for the repo's staged changes. */
   generateCommitMessage(path: string): Promise<GenerateCommitResult>;
   /** Ask Claude to resolve one conflict block of a conflicted file in the repo. */

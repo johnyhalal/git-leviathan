@@ -9,6 +9,7 @@ import {
   UpdateChannels,
   type ClaudeStatus,
   type ClaudeModel,
+  type ClaudeModelOption,
   type GenerateCommitResult,
   type ResolveBlockRequest,
   type ResolveBlockResult,
@@ -534,6 +535,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(ClaudeChannels.disconnect) as Promise<ClaudeStatus>,
     setModel: (model: ClaudeModel) =>
       ipcRenderer.invoke(ClaudeChannels.setModel, model) as Promise<ClaudeStatus>,
+    listModels: () =>
+      ipcRenderer.invoke(ClaudeChannels.listModels) as Promise<ClaudeModelOption[]>,
     generateCommitMessage: (path: string) =>
       ipcRenderer.invoke(
         ClaudeChannels.generateCommitMessage,

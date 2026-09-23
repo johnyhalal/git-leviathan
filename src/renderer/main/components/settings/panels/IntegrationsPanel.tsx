@@ -8,12 +8,14 @@ import {
 } from '../../../../../../assets/icons';
 import type {
   ClaudeModel,
+  ClaudeModelOption,
   ClaudeStatus,
   DeviceCodePrompt,
   IntegrationConnection,
   IntegrationProvider,
   IntegrationsState,
 } from '../../../../../types/ipc';
+import { DEFAULT_CLAUDE_MODEL } from '../../../../../types/ipc';
 import { SettingsSection } from '../SettingsSection';
 import { SettingsRow } from '../SettingsRow';
 import { ConnectingPrompt } from '../../integrations/ConnectingPrompt';
@@ -294,17 +296,6 @@ const DISCONNECTED = (provider: IntegrationProvider): IntegrationConnection => (
 });
 
 /**
- * The models commit-message generation can run on, cheapest first. What a
- * generation costs against the user's Claude limits scales with this, so the
- * tradeoff is spelled out in the labels.
- */
-const CLAUDE_MODELS: { value: ClaudeModel; label: string }[] = [
-  { value: 'haiku', label: 'Haiku — cheapest' },
-  { value: 'sonnet', label: 'Sonnet — balanced (default)' },
-  { value: 'opus', label: 'Opus — best quality' },
-];
-
-/**
  * Claude Code isn't an OAuth account like the Git hosts — "connecting" detects
  * the user's locally installed `claude` binary and remembers its path (its own
  * auth does the work). Connected shows the path/version + a Disconnect; otherwise
@@ -313,6 +304,9 @@ const CLAUDE_MODELS: { value: ClaudeModel; label: string }[] = [
 function ClaudeSection() {
   const [status, setStatus] = useState<ClaudeStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  // The models the connected CLI offers; null while it's being asked.
+  const [models, setModels] = useState<ClaudeModelOption[] | null>(null);
+  const connected = status?.connected ?? false;
 
   useEffect(() => {
     let active = true;
@@ -323,6 +317,18 @@ function ClaudeSection() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!connected) return;
+    let active = true;
+    setModels(null);
+    window.api.claude.listModels().then((next) => {
+      if (active) setModels(next);
+    });
+    return () => {
+      active = false;
+    };
+  }, [connected, status?.binaryPath]);
 
   const connect = () => {
     setBusy(true);
@@ -348,7 +354,16 @@ function ClaudeSection() {
       .finally(() => setBusy(false));
   };
 
-  const connected = status?.connected ?? false;
+  const selectedModel = status?.model ?? DEFAULT_CLAUDE_MODEL;
+  // Keep a saved choice the CLI no longer lists selectable rather than silently
+  // showing a different model than the one generation will actually use.
+  const modelOptions =
+    models && !models.some((m) => m.value === selectedModel)
+      ? [...models, { value: selectedModel, displayName: selectedModel }]
+      : models;
+  const selectedModelDescription = modelOptions?.find(
+    (m) => m.value === selectedModel,
+  )?.description;
   const label = 'Claude Code';
   let detail: string;
   if (connected) {
@@ -397,20 +412,32 @@ function ClaudeSection() {
       </div>
       {connected && (
         <SettingsRow
-          label="Commit message model"
-          description="Which model writes commit messages. Cheaper models use less of your Claude limits."
+          label="Claude model"
+          description={
+            <>
+              {selectedModelDescription
+                ? `${selectedModelDescription}.`
+                : 'Which model writes commit messages and resolves merge conflicts.'}
+              <br />
+              Cheaper models use less of your Claude limits.
+            </>
+          }
         >
           <select
             className="settings-select"
-            value={status?.model ?? 'sonnet'}
-            disabled={busy}
-            onChange={(e) => setModel(e.target.value as ClaudeModel)}
+            value={modelOptions ? selectedModel : ''}
+            disabled={busy || !modelOptions}
+            onChange={(e) => setModel(e.target.value)}
           >
-            {CLAUDE_MODELS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
+            {modelOptions ? (
+              modelOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.displayName}
+                </option>
+              ))
+            ) : (
+              <option value="">Loading models…</option>
+            )}
           </select>
         </SettingsRow>
       )}

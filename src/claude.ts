@@ -17,7 +17,7 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import type { ClaudeModel } from './types/ipc';
+import type { ClaudeModel, ClaudeModelOption } from './types/ipc';
 
 const execFileAsync = promisify(execFile);
 
@@ -689,6 +689,128 @@ async function runOneShot(
   if (run.code === 0) return run.out;
   const detail = run.err.trim() || run.out.trim();
   throw new Error(detail || `Claude exited with code ${run.code}.`);
+}
+
+/** How long asking the CLI for its model list may take (it boots the CLI, no model call). */
+const LIST_MODELS_TIMEOUT_MS = 20_000;
+
+/**
+ * What `--model` values we accept: aliases and model ids only. Deliberately
+ * narrow — the value lands in argv, which on Windows goes through `cmd /c`.
+ */
+const MODEL_VALUE_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,99}$/;
+
+export function isValidModelValue(value: unknown): value is ClaudeModel {
+  return typeof value === 'string' && MODEL_VALUE_RE.test(value);
+}
+
+/** The `models` entries of the CLI's `initialize` control response (the subset we read). */
+interface CliModelInfo {
+  value?: unknown;
+  displayName?: unknown;
+  description?: unknown;
+}
+
+/**
+ * Ask a `claude` binary which models it offers — the list its own `/model`
+ * picker shows, so it follows the user's account and CLI version. This is the
+ * stream-json control protocol the Agent SDK uses for `supportedModels()`: send
+ * an `initialize` request and read the matching `control_response`. No user
+ * turn is ever sent, so no model runs and nothing counts against the user's
+ * limits. The child is killed as soon as the answer arrives. Rejects if the CLI
+ * is too old to speak the protocol or doesn't answer in time.
+ */
+export function listClaudeModels(bin: string, cwd: string): Promise<ClaudeModelOption[]> {
+  const requestId = 'gitleviathan-models';
+  const args = [
+    '-p',
+    '--input-format',
+    'stream-json',
+    '--output-format',
+    'stream-json',
+    '--verbose', // stream-json output requires it in print mode
+    '--safe-mode', // skip hooks/plugins/MCP so the boot is quick and side-effect free
+    '--strict-mcp-config',
+    '--no-session-persistence',
+  ];
+  return new Promise((resolve, reject) => {
+    const child = spawnClaude(bin, args, cwd);
+    let buffer = '';
+    let err = '';
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill('SIGKILL');
+      fn();
+    };
+    const timer = setTimeout(
+      () => finish(() => reject(new Error('Claude did not report its models in time.'))),
+      LIST_MODELS_TIMEOUT_MS,
+    );
+
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk;
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line.startsWith('{')) continue;
+        let msg: {
+          type?: string;
+          response?: { subtype?: string; request_id?: string; error?: string; response?: { models?: unknown } };
+        };
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (msg.type !== 'control_response' || msg.response?.request_id !== requestId) continue;
+        const response = msg.response;
+        if (response.subtype !== 'success') {
+          finish(() => reject(new Error(response.error || 'Claude refused to list its models.')));
+          return;
+        }
+        const raw = response.response?.models;
+        const models = (Array.isArray(raw) ? (raw as CliModelInfo[]) : []).flatMap(
+          (m): ClaudeModelOption[] =>
+            isValidModelValue(m.value)
+              ? [
+                  {
+                    value: m.value,
+                    displayName: typeof m.displayName === 'string' ? m.displayName : m.value,
+                    description: typeof m.description === 'string' ? m.description : undefined,
+                  },
+                ]
+              : [],
+        );
+        finish(() =>
+          models.length
+            ? resolve(models)
+            : reject(new Error('Claude reported no models.')),
+        );
+        return;
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      err += chunk;
+    });
+    child.on('error', (error) => finish(() => reject(error)));
+    child.on('close', (code) =>
+      finish(() =>
+        reject(new Error(err.trim() || `Claude exited with code ${code} before listing models.`)),
+      ),
+    );
+
+    child.stdin.on('error', () => {
+      /* reported via close */
+    });
+    // Leave stdin open: closing it ends the session before the answer comes back.
+    child.stdin.write(
+      `${JSON.stringify({ type: 'control_request', request_id: requestId, request: { subtype: 'initialize' } })}\n`,
+    );
+  });
 }
 
 /** The static instruction for resolving one conflict block; the block is on stdin. */

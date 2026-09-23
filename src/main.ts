@@ -28,6 +28,8 @@ import {
   claudeErrorMessage,
   isRunnable,
   isCommitContextExcluded,
+  isValidModelValue,
+  listClaudeModels,
   type TokenUsage,
 } from './claude';
 import {
@@ -41,6 +43,7 @@ import {
   GLOBAL_ACTIVITY_PATH,
   type ClaudeStatus,
   type ClaudeModel,
+  type ClaudeModelOption,
   DEFAULT_CLAUDE_MODEL,
   type GenerateCommitResult,
   type ResolveBlockRequest,
@@ -297,7 +300,7 @@ interface Settings {
   sshKeys?: Partial<Record<IntegrationProvider, SshKeyInfo[]>>;
   /** Saved Claude Code connection (detected `claude` binary), when connected. */
   claudeConnection?: ClaudeConnection;
-  /** Model used for commit-message generation; absent means the default. */
+  /** Model used for commit messages and conflict resolution; absent means the default. */
   claudeModel?: ClaudeModel;
   /**
    * Whether anonymous usage analytics are sent to Aptabase. On by default
@@ -432,7 +435,7 @@ function isClaudeConnection(value: unknown): value is ClaudeConnection {
 }
 
 function isClaudeModel(value: unknown): value is ClaudeModel {
-  return value === 'haiku' || value === 'sonnet' || value === 'opus';
+  return isValidModelValue(value);
 }
 
 function loadSettings(): void {
@@ -7494,6 +7497,23 @@ function formatTokenUsage(usage: TokenUsage): string {
   return `claude token usage: ${parts.join(' · ')}`;
 }
 
+/**
+ * The plain aliases, offered when the CLI can't be asked for its own list (an
+ * older `claude`, or the probe failed). The CLI resolves each to its current
+ * version, so these never go stale.
+ */
+const FALLBACK_CLAUDE_MODELS: ClaudeModelOption[] = [
+  { value: 'haiku', displayName: 'Haiku', description: 'Fastest and cheapest' },
+  { value: 'sonnet', displayName: 'Sonnet', description: 'Balanced' },
+  { value: 'opus', displayName: 'Opus', description: 'Most capable' },
+];
+
+/**
+ * Model lists per `claude` binary path, asked once per app run (it boots the
+ * CLI). A failed probe isn't cached, so the next open of Settings retries.
+ */
+const claudeModelCache = new Map<string, Promise<ClaudeModelOption[]>>();
+
 function registerClaudeIpc(): void {
   const currentStatus = (error?: string): ClaudeStatus => ({
     connected: Boolean(settings.claudeConnection),
@@ -7530,6 +7550,26 @@ function registerClaudeIpc(): void {
       settings.claudeModel = model;
       saveSettings();
       return currentStatus();
+    },
+  );
+
+  ipcMain.handle(
+    ClaudeChannels.listModels,
+    async (): Promise<ClaudeModelOption[]> => {
+      const bin = settings.claudeConnection?.binaryPath;
+      if (!bin) return FALLBACK_CLAUDE_MODELS;
+      let pending = claudeModelCache.get(bin);
+      if (!pending) {
+        pending = listClaudeModels(bin, app.getPath('home'));
+        claudeModelCache.set(bin, pending);
+      }
+      try {
+        return await pending;
+      } catch (err) {
+        claudeModelCache.delete(bin);
+        console.error('Failed to list Claude models:', err);
+        return FALLBACK_CLAUDE_MODELS;
+      }
     },
   );
 
