@@ -46,6 +46,10 @@ export const AppChannels = {
   getTelemetryEnabled: 'app:get-telemetry-enabled',
   /** Renderer -> main (invoke): turn anonymous usage analytics on/off. */
   setTelemetryEnabled: 'app:set-telemetry-enabled',
+  /** Renderer -> main (invoke): read the date/time display format. */
+  getDateFormat: 'app:get-date-format',
+  /** Renderer -> main (invoke): persist the date/time display format (global). */
+  setDateFormat: 'app:set-date-format',
   /**
    * Renderer -> main (invoke): whether the one-time analytics notice still
    * needs to be shown to this install (never acknowledged, analytics still on).
@@ -539,6 +543,20 @@ export type UpdateCheckInterval = (typeof UPDATE_CHECK_INTERVALS)[number];
 /** Interval applied when the user hasn't chosen one: hourly. */
 export const DEFAULT_UPDATE_CHECK_INTERVAL = 60;
 
+/**
+ * How dates and times are shown across the app (commit list, commit details,
+ * blame, file history, pull requests):
+ * - `system`   — the OS locale's style, e.g. "Sep 23, 2026 · 14:05"
+ * - `iso`      — ISO 8601, e.g. "2026-09-23 14:05"
+ * - `us`       — month first, 12-hour clock, e.g. "09/23/2026 2:05 PM"
+ * - `eu`       — day first, 24-hour clock, e.g. "23/09/2026 14:05"
+ * - `relative` — time ago, e.g. "3 days ago"
+ */
+export const DATE_FORMATS = ['system', 'iso', 'us', 'eu', 'relative'] as const;
+export type DateFormat = (typeof DATE_FORMATS)[number];
+/** Format applied when the user hasn't chosen one. */
+export const DEFAULT_DATE_FORMAT: DateFormat = 'system';
+
 /** A ref decoration attached to a commit (branch tip, tag, HEAD, …). */
 export type RefKind = 'head' | 'branch' | 'remote' | 'tag';
 
@@ -800,6 +818,11 @@ export interface MergeState {
   canContinue: boolean;
   /** Whether a "skip" action applies (true only for rebase). */
   canSkip: boolean;
+  /**
+   * For a merge: the message a clean merge would record (git's MERGE_MSG
+   * without its commented "# Conflicts:" hint), used to prefill the commit box.
+   */
+  message?: string;
 }
 
 /**
@@ -819,6 +842,19 @@ export interface ConflictFileContent {
   theirs: string[] | null;
   /** The on-disk working file with git's `<<<< ==== >>>>` markers, per line. */
   merged: string[];
+  /**
+   * For a binary conflict in a known image format: each stage's preview, or
+   * `null` where that side is absent (deleted, or no base for an add/add).
+   */
+  images?: { base: ConflictImage | null; ours: ConflictImage | null; theirs: ConflictImage | null };
+}
+
+/** One side of an image conflict. */
+export interface ConflictImage {
+  /** The blob's size on that side. */
+  bytes: number;
+  /** A `data:` URL of the image, or null when it's too large to preview. */
+  url: string | null;
 }
 
 /**
@@ -1345,15 +1381,30 @@ export const IntegrationChannels = {
 // ---- Claude Code (local AI helper) ----------------------------------------
 
 /**
- * Which model the local `claude` CLI is asked to write commit messages with.
- * Aliases (not pinned ids) so the CLI resolves whatever is current. The cost of
- * a generation against the user's limits scales with this choice, hence the
- * setting: haiku is the cheap one, opus the thorough one.
+ * Which model the local `claude` CLI runs on for every Claude feature (commit
+ * messages, conflict resolution): whatever `--model` accepts — an alias
+ * (`sonnet`, `opus`, `haiku`, `default`) that the CLI resolves to the current
+ * version, or a full model id. The choices
+ * aren't hard-coded; they come from the CLI itself (see `ClaudeModelOption`).
  */
-export type ClaudeModel = 'haiku' | 'sonnet' | 'opus';
+export type ClaudeModel = string;
 
 /** The default when the user has never picked one. */
 export const DEFAULT_CLAUDE_MODEL: ClaudeModel = 'sonnet';
+
+/**
+ * One model the user's `claude` CLI offers, as it reports them (the same list
+ * its own `/model` picker shows), so the choices track the user's account and
+ * CLI version instead of a list baked into this app.
+ */
+export interface ClaudeModelOption {
+  /** What to pass to `--model` (an alias or a full model id). */
+  value: ClaudeModel;
+  /** Human name, e.g. "Sonnet 5". */
+  displayName: string;
+  /** The CLI's one-line blurb for the model, when it has one. */
+  description?: string;
+}
 
 /**
  * The user's Claude Code connection. There is no OAuth/token here (unlike the
@@ -1368,7 +1419,7 @@ export interface ClaudeStatus {
   binaryPath?: string;
   /** `claude --version` output captured at connect time, when available. */
   version?: string;
-  /** The model commit-message generation runs on. */
+  /** The model Claude features (commit messages, conflict resolution) run on. */
   model: ClaudeModel;
   /** Message from the most recent failed connect attempt. */
   error?: string;
@@ -1383,6 +1434,33 @@ export type GenerateCommitResult =
   | { status: 'not-connected' }
   | { status: 'error'; message: string };
 
+/**
+ * One conflict block handed to Claude to resolve. The sides come from the
+ * working copy's markers; the main process looks up the block's common-ancestor
+ * lines itself (by re-running the merge in diff3 style).
+ */
+export interface ResolveBlockRequest {
+  /** Repo-relative path of the conflicted file (for the model's context). */
+  file: string;
+  ours: string[];
+  theirs: string[];
+  /** Unconflicted lines just above and below the block, for context. */
+  before: string[];
+  after: string[];
+}
+
+/** Outcome of asking Claude to resolve one conflict block. */
+export type ResolveBlockResult =
+  | {
+      status: 'ok';
+      /** The lines that replace the conflict block (may be empty). */
+      lines: string[];
+      /** Claude's one-sentence reason, shown beside the suggestion. */
+      rationale: string;
+    }
+  | { status: 'not-connected' }
+  | { status: 'error'; message: string };
+
 export const ClaudeChannels = {
   /** Renderer -> main (invoke): read the saved connection state (no detection). */
   status: 'claude:status',
@@ -1390,10 +1468,14 @@ export const ClaudeChannels = {
   connect: 'claude:connect',
   /** Renderer -> main (invoke): forget the saved `claude` binary path. */
   disconnect: 'claude:disconnect',
-  /** Renderer -> main (invoke): choose the model used for commit messages. */
+  /** Renderer -> main (invoke): choose the model Claude features run on. */
   setModel: 'claude:set-model',
+  /** Renderer -> main (invoke): list the models the local `claude` CLI offers. */
+  listModels: 'claude:list-models',
   /** Renderer -> main (invoke): generate a commit message from the staged diff. */
   generateCommitMessage: 'claude:generate-commit-message',
+  /** Renderer -> main (invoke): suggest a resolution for one conflict block. */
+  resolveConflictBlock: 'claude:resolve-conflict-block',
 } as const;
 
 export const SigningChannels = {
@@ -1471,6 +1553,13 @@ export interface AppApi {
   getTelemetryEnabled(): Promise<boolean>;
   /** Turn anonymous usage analytics on/off (global). */
   setTelemetryEnabled(enabled: boolean): Promise<void>;
+  /**
+   * Read the date/time display format. Defaults to
+   * {@link DEFAULT_DATE_FORMAT} when unset.
+   */
+  getDateFormat(): Promise<DateFormat>;
+  /** Persist the date/time display format (global). */
+  setDateFormat(format: DateFormat): Promise<void>;
   /**
    * Whether the one-time "usage analytics is on — you can turn it off in
    * Settings" notice should still be shown. True until acknowledged, and only
@@ -2041,10 +2130,11 @@ export interface RepoApi {
   markResolved(path: string, file: string | null): Promise<MarkResolvedResult>;
   /**
    * Finish the in-progress operation once every conflict is resolved: commit
-   * the merge, or `--continue` the rebase/cherry-pick/revert. Resolves with
-   * fresh refs, or an error message.
+   * the merge, or `--continue` the rebase/cherry-pick/revert. For a merge, a
+   * non-empty `message` is used as the merge commit's message instead of git's
+   * MERGE_MSG. Resolves with fresh refs, or an error message.
    */
-  mergeContinue(path: string): Promise<RefsMutationResult>;
+  mergeContinue(path: string, message?: string): Promise<RefsMutationResult>;
   /**
    * Abort the in-progress operation (`git <op> --abort`), restoring the
    * pre-operation state. Resolves with fresh refs, or an error message.
@@ -2236,10 +2326,17 @@ export interface ClaudeApi {
   connect(): Promise<ClaudeStatus>;
   /** Forget the saved `claude` binary path. */
   disconnect(): Promise<ClaudeStatus>;
-  /** Choose the model commit-message generation runs on. */
+  /** Choose the model Claude features (commit messages, conflict resolution) run on. */
   setModel(model: ClaudeModel): Promise<ClaudeStatus>;
+  /**
+   * The models the connected `claude` CLI offers (asked once per binary and
+   * cached); falls back to the plain aliases when the CLI can't be asked.
+   */
+  listModels(): Promise<ClaudeModelOption[]>;
   /** Ask Claude to write a commit message for the repo's staged changes. */
   generateCommitMessage(path: string): Promise<GenerateCommitResult>;
+  /** Ask Claude to resolve one conflict block of a conflicted file in the repo. */
+  resolveConflictBlock(path: string, request: ResolveBlockRequest): Promise<ResolveBlockResult>;
 }
 
 export interface SigningApi {

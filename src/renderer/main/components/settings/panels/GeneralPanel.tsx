@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import {
   DEFAULT_UPDATE_CHECK_INTERVAL,
+  type DateFormat,
   type UpdateCheckInterval,
   type UpdateInfo,
   type UpdateStatus,
 } from '../../../../../types/ipc';
 import { SettingsSection } from '../SettingsSection';
 import { SettingsRow } from '../SettingsRow';
+import { formatDateTime, setDateFormat, useDateFormat } from '../../../dateFormat';
 
 /** Labels for each allowed update-check interval, in dropdown order. */
 const INTERVAL_OPTIONS: { value: UpdateCheckInterval; label: string }[] = [
@@ -15,6 +17,15 @@ const INTERVAL_OPTIONS: { value: UpdateCheckInterval; label: string }[] = [
   { value: 360, label: 'Every 6 hours' },
   { value: 1440, label: 'Daily' },
   { value: 0, label: 'Never' },
+];
+
+/** Labels for each date format, in dropdown order; the example is appended live. */
+const DATE_FORMAT_OPTIONS: { value: DateFormat; label: string }[] = [
+  { value: 'system', label: 'System' },
+  { value: 'iso', label: 'ISO 8601' },
+  { value: 'us', label: 'US' },
+  { value: 'eu', label: 'European' },
+  { value: 'relative', label: 'Relative' },
 ];
 
 /** Result of a manual "Check now": pending, or the outcome of the last check. */
@@ -104,7 +115,10 @@ function updateDescription(check: CheckState, status: UpdateStatus): string {
   return 'Look for a newer release right now.';
 }
 
-/** General settings — the automatic update-check cadence + a manual check. */
+/**
+ * General settings — the date/time display format, the automatic update-check
+ * cadence + a manual check, and usage analytics.
+ */
 export function GeneralPanel() {
   const [interval, setIntervalMin] = useState<UpdateCheckInterval>(
     DEFAULT_UPDATE_CHECK_INTERVAL,
@@ -117,6 +131,10 @@ export function GeneralPanel() {
     supported: false,
   });
   const [telemetry, setTelemetry] = useState(true);
+  const dateFormat = useDateFormat();
+  // A fixed sample moment for the dropdown's examples, so they don't shift
+  // while the panel is open.
+  const [sample] = useState(() => new Date().toISOString());
 
   useEffect(() => window.api.update.onStatus(setStatus), []);
 
@@ -152,6 +170,24 @@ export function GeneralPanel() {
 
   return (
     <SettingsSection title="General">
+      <SettingsRow
+        label="Date format"
+        description="How commit, blame, and pull request dates are shown."
+      >
+        <select
+          className="settings-select"
+          value={dateFormat}
+          onChange={(e) => setDateFormat(e.target.value as DateFormat)}
+        >
+          {DATE_FORMAT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label} — {opt.value === 'relative'
+                ? '3 days ago'
+                : formatDateTime(sample, opt.value)}
+            </option>
+          ))}
+        </select>
+      </SettingsRow>
       <SettingsRow
         label="Check for updates"
         description="How often GitLeviathan looks for a newer release on GitHub."

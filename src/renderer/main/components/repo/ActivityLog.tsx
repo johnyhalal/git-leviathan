@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import { CheckIcon, CloseIcon, ListIcon } from '../../../../../assets/icons';
-import { GLOBAL_ACTIVITY_PATH, type RepoActivityEvent } from '../../../../types/ipc';
+import { clear, getSnapshot, subscribe, type LogRecord } from './activityStore';
 
 interface ActivityLogProps {
   /** The repo whose git activity this indicator shows; events for others are ignored. */
@@ -13,61 +13,19 @@ interface ActivityLogProps {
   openSignal?: number;
 }
 
-/** One rendered row in the log: a command boundary or a line of git output. */
-interface LogRecord {
-  id: number;
-  op: string;
-  kind: 'start' | 'line' | 'end';
-  stream?: 'stdout' | 'stderr';
-  text?: string;
-  ok?: boolean;
-  exitCode?: number;
-  ts: number;
-}
-
-/** Cap retained rows so a chatty hook can't grow the in-memory log unbounded. */
-const MAX_RECORDS = 1000;
-
 /**
  * The live git activity indicator for the open repository. It lives in the
  * status bar's left corner as an icon plus a one-line status summary, and opens
  * a modal popup (styled like the Settings dialog) with the full session
  * transcript — each mutation's output line by line, including repository hook
- * output (a `pre-commit` test run, a `pre-push` check). State is in-memory and
- * per session: it resets when the tab switches to another repo.
+ * output (a `pre-commit` test run, a `pre-push` check). History is in-memory and
+ * kept per repo by `activityStore`, so switching tabs away and back restores it.
  */
 export function ActivityLog({ repoPath, openSignal }: ActivityLogProps) {
-  const [records, setRecords] = useState<LogRecord[]>([]);
-  const [running, setRunning] = useState<string | null>(null);
-  // The outcome of the last finished command, for the status color.
-  const [lastOk, setLastOk] = useState<boolean | null>(null);
+  const { records, running, lastOk } = useSyncExternalStore(subscribe, () => getSnapshot(repoPath));
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const idRef = useRef(0);
   const bodyRef = useRef<HTMLDivElement | null>(null);
-
-  // A fresh repo starts a fresh transcript.
-  useEffect(() => {
-    setRecords([]);
-    setRunning(null);
-    setLastOk(null);
-  }, [repoPath]);
-
-  useEffect(() => {
-    return window.api.repo.onActivity((event: RepoActivityEvent) => {
-      // Show this repo's git activity plus app-wide events (e.g. auto-update).
-      if (event.repoPath !== repoPath && event.repoPath !== GLOBAL_ACTIVITY_PATH) return;
-      if (event.kind === 'start') setRunning(event.op);
-      else if (event.kind === 'end') {
-        setRunning(null);
-        setLastOk(event.ok ?? null);
-      }
-      setRecords((prev) => {
-        const next = prev.concat({ id: idRef.current++, ...event });
-        return next.length > MAX_RECORDS ? next.slice(next.length - MAX_RECORDS) : next;
-      });
-    });
-  }, [repoPath]);
 
   // An outside trigger (the hook-failure toast) asked to open the transcript.
   // Skip the initial 0 so the popup only opens on a real bump.
@@ -108,11 +66,10 @@ export function ActivityLog({ repoPath, openSignal }: ActivityLogProps) {
     });
   };
 
-  // Wipe the transcript. The in-flight command (if any) keeps streaming into a
-  // fresh log; the status summary drops back to idle for the cleared history.
+  // Wipe this repo's transcript. The in-flight command (if any) keeps streaming
+  // into a fresh log; the status summary drops back to idle for the cleared history.
   const clearLog = () => {
-    setRecords([]);
-    setLastOk(null);
+    clear(repoPath);
     setCopied(false);
   };
 
@@ -188,10 +145,10 @@ export function ActivityLog({ repoPath, openSignal }: ActivityLogProps) {
 
 /**
  * The command word an op shells out to, so the transcript's `$` line names the
- * real binary — `generate` runs the `claude` CLI, everything else is `git`.
+ * real binary — `generate`/`resolve` run the `claude` CLI, everything else is `git`.
  */
 function opCommand(op: string): string {
-  return op === 'generate' ? 'claude' : 'git';
+  return op === 'generate' || op === 'resolve' ? 'claude' : 'git';
 }
 
 /** Serialize one transcript row to plain text, matching what ActivityRow renders. */

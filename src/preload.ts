@@ -9,7 +9,10 @@ import {
   UpdateChannels,
   type ClaudeStatus,
   type ClaudeModel,
+  type ClaudeModelOption,
   type GenerateCommitResult,
+  type ResolveBlockRequest,
+  type ResolveBlockResult,
   type CheckoutResult,
   type RefsMutationResult,
   type UndoRedoState,
@@ -63,6 +66,7 @@ import {
   type RecentRepo,
   type RemoteRepo,
   type UpdateCheckInterval,
+  type DateFormat,
   type RepoInfo,
   type RepoRefs,
   type ResetMode,
@@ -114,6 +118,10 @@ const api: ExposedApi = {
         AppChannels.setTelemetryEnabled,
         enabled,
       ) as Promise<void>,
+    getDateFormat: () =>
+      ipcRenderer.invoke(AppChannels.getDateFormat) as Promise<DateFormat>,
+    setDateFormat: (format: DateFormat) =>
+      ipcRenderer.invoke(AppChannels.setDateFormat, format) as Promise<void>,
     getTelemetryNoticePending: () =>
       ipcRenderer.invoke(
         AppChannels.getTelemetryNoticePending,
@@ -401,8 +409,8 @@ const api: ExposedApi = {
       ) as Promise<MergeState | null>,
     markResolved: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.markResolved, path, file) as Promise<MarkResolvedResult>,
-    mergeContinue: (path: string) =>
-      ipcRenderer.invoke(RepoChannels.mergeContinue, path) as Promise<RefsMutationResult>,
+    mergeContinue: (path: string, message?: string) =>
+      ipcRenderer.invoke(RepoChannels.mergeContinue, path, message) as Promise<RefsMutationResult>,
     mergeAbort: (path: string) =>
       ipcRenderer.invoke(RepoChannels.mergeAbort, path) as Promise<RefsMutationResult>,
     rebaseSkip: (path: string) =>
@@ -532,11 +540,19 @@ const api: ExposedApi = {
       ipcRenderer.invoke(ClaudeChannels.disconnect) as Promise<ClaudeStatus>,
     setModel: (model: ClaudeModel) =>
       ipcRenderer.invoke(ClaudeChannels.setModel, model) as Promise<ClaudeStatus>,
+    listModels: () =>
+      ipcRenderer.invoke(ClaudeChannels.listModels) as Promise<ClaudeModelOption[]>,
     generateCommitMessage: (path: string) =>
       ipcRenderer.invoke(
         ClaudeChannels.generateCommitMessage,
         path,
       ) as Promise<GenerateCommitResult>,
+    resolveConflictBlock: (path: string, request: ResolveBlockRequest) =>
+      ipcRenderer.invoke(
+        ClaudeChannels.resolveConflictBlock,
+        path,
+        request,
+      ) as Promise<ResolveBlockResult>,
   },
   signing: {
     capabilities: () =>

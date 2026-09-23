@@ -1,7 +1,7 @@
 {
   "name": "gitleviathan",
   "productName": "GitLeviathan",
-  "version": "0.8.1",
+  "version": "1.0.0",
   "description": "GitLeviathan — a cross-platform desktop GUI for Git",
   "main": ".vite/build/main.js",
   "private": true,
@@ -12,7 +12,8 @@
     "make": "electron-forge make",
     "make:universal": "electron-forge make --arch=universal",
     "publish": "electron-forge publish",
-    "lint": "eslint --ext .ts,.tsx ."
+    "lint": "eslint --ext .ts,.tsx .",
+    "fixtures:conflicts": "sh scripts/make-conflict-repo.sh"
   },
   "keywords": [],
   "author": {
