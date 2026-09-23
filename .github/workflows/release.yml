@@ -52,6 +52,30 @@ jobs:
             echo "RELEASE_NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # Create the release once, as a draft, before any build uploads to it. A
+      # published release with no assets yet is visible to the in-app check (GitHub
+      # API) and to update.electronjs.org, which caches the asset-less release and
+      # answers "nothing newer" until its cache expires. The `publish` job flips it
+      # live only after every build job has uploaded. Creating it here (rather than
+      # letting each build job's upload create it) also avoids parallel jobs racing
+      # to create duplicate drafts — a draft has no tag yet, so it can't be found by
+      # tag. An existing release (a re-run, or a single-target rebuild) is reused
+      # as-is.
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          NOTES: ${{ steps.meta.outputs.notes }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading onto it"
+          else
+            printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" \
+              --title "GitLeviathan $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
   # One DMG per macOS arch instead of a single universal image. Both arches build
   # on Apple Silicon runners (macos-latest): arm64 natively, x64 cross-compiled
   # via `--arch=x64`. Nothing here is host-arch-bound — Electron's binary is
@@ -180,16 +204,14 @@ jobs:
           [ -z "$ZIP" ] && { echo "No macOS .zip produced under out/make"; exit 1; }
           cp "$ZIP" "GitLeviathan-macOS-${{ matrix.arch }}.zip"
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: GitLeviathan ${{ needs.prepare.outputs.version }}
-          body: ${{ needs.prepare.outputs.notes }}
-          files: |
-            GitLeviathan-macOS-${{ matrix.arch }}.dmg
-            GitLeviathan-macOS-${{ matrix.arch }}.zip
-          fail_on_unmatched_files: true
+      # Uploads onto the draft `prepare` created; --clobber makes re-runs idempotent.
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.prepare.outputs.tag }}" --clobber \
+            "GitLeviathan-macOS-${{ matrix.arch }}.dmg" \
+            "GitLeviathan-macOS-${{ matrix.arch }}.zip"
 
   build-windows:
     needs: prepare
@@ -234,22 +256,31 @@ jobs:
       - name: Build Windows distributable
         run: npm run make
 
-      - name: Stage asset with a stable name
+      # Besides the installer, in-app auto-update needs Squirrel's own feed files:
+      # update.electronjs.org serves a win32 app the release's `RELEASES` asset,
+      # which lists the `*-full.nupkg` Squirrel.Windows then downloads. Those two
+      # keep their original names — RELEASES references the nupkg by filename.
+      - name: Stage assets
         run: |
           EXE=$(find out/make -name '*.exe' | head -n1)
           [ -z "$EXE" ] && { echo "No Windows Setup .exe produced under out/make"; exit 1; }
           cp "$EXE" "GitLeviathan-Windows-Setup.exe"
+          RELEASES=$(find out/make -name 'RELEASES' | head -n1)
+          [ -z "$RELEASES" ] && { echo "No Squirrel RELEASES produced under out/make"; exit 1; }
+          NUPKG=$(find out/make -name '*-full.nupkg' | head -n1)
+          [ -z "$NUPKG" ] && { echo "No Squirrel -full.nupkg produced under out/make"; exit 1; }
+          grep -q "$(basename "$NUPKG")" "$RELEASES" || { echo "RELEASES does not reference $(basename "$NUPKG")"; exit 1; }
+          cp "$RELEASES" RELEASES
+          cp "$NUPKG" .
+          echo "NUPKG=$(basename "$NUPKG")" >> "$GITHUB_ENV"
 
-      # Uploads onto the same tag/release the macOS job creates; action-gh-release
-      # upserts the release and appends this asset.
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: GitLeviathan ${{ needs.prepare.outputs.version }}
-          body: ${{ needs.prepare.outputs.notes }}
-          files: GitLeviathan-Windows-Setup.exe
-          fail_on_unmatched_files: true
+      # Uploads onto the draft `prepare` created; --clobber makes re-runs idempotent.
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.prepare.outputs.tag }}" --clobber \
+            GitLeviathan-Windows-Setup.exe RELEASES "$NUPKG"
 
   # Turn the single `target` choice into the list of Linux arches to build, so a
   # `linux-x64` selection doesn't also spin up an arm64 build. `all` builds both.
@@ -328,15 +359,26 @@ jobs:
           cp "$DEB" "GitLeviathan-Linux-${{ matrix.arch }}.deb"
           cp "$RPM" "GitLeviathan-Linux-${{ matrix.arch }}.rpm"
 
-      # Uploads onto the same tag/release the other jobs use; action-gh-release
-      # upserts the release and appends these assets.
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: GitLeviathan ${{ needs.prepare.outputs.version }}
-          body: ${{ needs.prepare.outputs.notes }}
-          files: |
-            GitLeviathan-Linux-${{ matrix.arch }}.deb
-            GitLeviathan-Linux-${{ matrix.arch }}.rpm
-          fail_on_unmatched_files: true
+      # Uploads onto the draft `prepare` created; --clobber makes re-runs idempotent.
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.prepare.outputs.tag }}" --clobber \
+            "GitLeviathan-Linux-${{ matrix.arch }}.deb" \
+            "GitLeviathan-Linux-${{ matrix.arch }}.rpm"
+
+  # Flip the draft live only once every selected build has uploaded, so neither
+  # the in-app check nor update.electronjs.org ever sees a half-populated release.
+  # Runs when the build jobs succeeded or were skipped (not selected by `target`);
+  # any failure or cancellation leaves the release as a draft to fix and re-run.
+  publish:
+    needs: [prepare, build-macos, build-windows, build-linux]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && !contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false
