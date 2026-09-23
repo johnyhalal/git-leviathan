@@ -824,6 +824,19 @@ export interface ConflictFileContent {
   theirs: string[] | null;
   /** The on-disk working file with git's `<<<< ==== >>>>` markers, per line. */
   merged: string[];
+  /**
+   * For a binary conflict in a known image format: each stage's preview, or
+   * `null` where that side is absent (deleted, or no base for an add/add).
+   */
+  images?: { base: ConflictImage | null; ours: ConflictImage | null; theirs: ConflictImage | null };
+}
+
+/** One side of an image conflict. */
+export interface ConflictImage {
+  /** The blob's size on that side. */
+  bytes: number;
+  /** A `data:` URL of the image, or null when it's too large to preview. */
+  url: string | null;
 }
 
 /**
@@ -1388,6 +1401,33 @@ export type GenerateCommitResult =
   | { status: 'not-connected' }
   | { status: 'error'; message: string };
 
+/**
+ * One conflict block handed to Claude to resolve. The sides come from the
+ * working copy's markers; the main process looks up the block's common-ancestor
+ * lines itself (by re-running the merge in diff3 style).
+ */
+export interface ResolveBlockRequest {
+  /** Repo-relative path of the conflicted file (for the model's context). */
+  file: string;
+  ours: string[];
+  theirs: string[];
+  /** Unconflicted lines just above and below the block, for context. */
+  before: string[];
+  after: string[];
+}
+
+/** Outcome of asking Claude to resolve one conflict block. */
+export type ResolveBlockResult =
+  | {
+      status: 'ok';
+      /** The lines that replace the conflict block (may be empty). */
+      lines: string[];
+      /** Claude's one-sentence reason, shown beside the suggestion. */
+      rationale: string;
+    }
+  | { status: 'not-connected' }
+  | { status: 'error'; message: string };
+
 export const ClaudeChannels = {
   /** Renderer -> main (invoke): read the saved connection state (no detection). */
   status: 'claude:status',
@@ -1399,6 +1439,8 @@ export const ClaudeChannels = {
   setModel: 'claude:set-model',
   /** Renderer -> main (invoke): generate a commit message from the staged diff. */
   generateCommitMessage: 'claude:generate-commit-message',
+  /** Renderer -> main (invoke): suggest a resolution for one conflict block. */
+  resolveConflictBlock: 'claude:resolve-conflict-block',
 } as const;
 
 export const SigningChannels = {
@@ -2246,6 +2288,8 @@ export interface ClaudeApi {
   setModel(model: ClaudeModel): Promise<ClaudeStatus>;
   /** Ask Claude to write a commit message for the repo's staged changes. */
   generateCommitMessage(path: string): Promise<GenerateCommitResult>;
+  /** Ask Claude to resolve one conflict block of a conflicted file in the repo. */
+  resolveConflictBlock(path: string, request: ResolveBlockRequest): Promise<ResolveBlockResult>;
 }
 
 export interface SigningApi {

@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
-import { CloseIcon } from '../../../../../assets/icons';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { CloseIcon, SparkleIcon } from '../../../../../assets/icons';
 import type {
   ConflictFile,
   ConflictFileContent,
   ConflictKind,
   MergeResolution,
   MergeState,
+  ResolveBlockRequest,
 } from '../../../../types/ipc';
-import { MergeEditor } from './MergeEditor';
+import { MergeEditor, type MergeEditorHandle } from './MergeEditor';
 
 interface ConflictResolverProps {
   repoPath: string;
@@ -17,6 +18,12 @@ interface ConflictResolverProps {
   initialFile?: string | null;
   /** Apply a fresh merge state after resolving a file (may be null once done). */
   onResolved: (next: MergeState | null) => void;
+  /** Stage `file` exactly as it is on disk, without using the editor's result. */
+  onMarkAsIs: (file: string) => Promise<void>;
+  /** Surface a failure (e.g. a Claude request) as an error toast. */
+  onError?: (title: string, message: string) => void;
+  /** Open Settings at a section — used to send the user to connect Claude. */
+  onOpenSettings?: (section?: string) => void;
   onClose: () => void;
 }
 
@@ -43,6 +50,9 @@ export function ConflictResolver({
   mergeState,
   initialFile,
   onResolved,
+  onMarkAsIs,
+  onError,
+  onOpenSettings,
   onClose,
 }: ConflictResolverProps) {
   const conflicts = mergeState.conflicts;
@@ -53,6 +63,9 @@ export function ConflictResolver({
   const [content, setContent] = useState<ConflictFileContent | null>(null);
   const [merged, setMerged] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const editorRef = useRef<MergeEditorHandle>(null);
+  // A whole-file Auto Resolve is running.
+  const [autoResolving, setAutoResolving] = useState(false);
 
   // Keep a valid selection as the conflict list shrinks (resolved files drop off).
   useEffect(() => {
@@ -92,6 +105,54 @@ export function ConflictResolver({
     },
     [repoPath, selected, busy, onResolved],
   );
+
+  const markAsIs = useCallback(async () => {
+    if (!selected || busy) return;
+    setBusy(true);
+    try {
+      await onMarkAsIs(selected);
+    } finally {
+      setBusy(false);
+    }
+  }, [selected, busy, onMarkAsIs]);
+
+  // One conflict block to Claude; failures become a toast and a null answer.
+  const askClaude = useCallback(
+    async (request: ResolveBlockRequest) => {
+      try {
+        const result = await window.api.claude.resolveConflictBlock(repoPath, request);
+        if (result.status === 'ok') return { lines: result.lines, rationale: result.rationale };
+        if (result.status === 'not-connected') {
+          // Not connected yet — send the user straight to connect Claude Code.
+          onOpenSettings?.('integrations');
+        } else {
+          onError?.('Claude could not resolve', result.message);
+        }
+      } catch (err) {
+        onError?.('Claude could not resolve', err instanceof Error ? err.message : String(err));
+      }
+      return null;
+    },
+    [repoPath, onError, onOpenSettings],
+  );
+
+  // Auto Resolve every undecided conflict in the file. Checks the connection
+  // up front so a disconnected Claude sends the user to Settings once, rather
+  // than failing per block.
+  const autoResolveFile = useCallback(async () => {
+    if (!editorRef.current || autoResolving) return;
+    const status = await window.api.claude.status().catch(() => null);
+    if (!status?.connected) {
+      onOpenSettings?.('integrations');
+      return;
+    }
+    setAutoResolving(true);
+    try {
+      await editorRef.current.autoResolveAll();
+    } finally {
+      setAutoResolving(false);
+    }
+  }, [autoResolving, onOpenSettings]);
 
   const kind = conflicts.find((c) => c.path === selected)?.kind;
   // A both-deleted or binary conflict has no textual result to write — it's
@@ -149,27 +210,42 @@ export function ConflictResolver({
             ) : !content ? (
               <div className="merge-empty">Loading…</div>
             ) : (
-              <MergeEditor content={content} onChange={setMerged} />
+              <MergeEditor
+                content={content}
+                onChange={setMerged}
+                onPickSide={(side) => void resolve({ kind: side })}
+                busy={busy}
+                onAskClaude={askClaude}
+                ref={editorRef}
+              />
             )}
 
             {selected && (
               <footer className="merge-footer">
-                <div className="merge-footer-sides">
+                {/* Only for a text file that still has undecided conflicts. */}
+                {content && !content.binary && merged === null && (
                   <button
-                    className="merge-side-button"
-                    disabled={busy}
-                    onClick={() => void resolve({ kind: 'ours' })}
+                    className="merge-auto-file pill-btn-rainbow"
+                    disabled={busy || autoResolving}
+                    onClick={() => void autoResolveFile()}
+                    data-tooltip="Ask Claude to resolve every undecided conflict in this file"
                   >
-                    Use ours (whole file)
+                    {autoResolving ? (
+                      <span className="mini-spinner" aria-hidden="true" />
+                    ) : (
+                      <SparkleIcon size={14} />
+                    )}
+                    {autoResolving ? 'Resolving…' : 'Auto Resolve File'}
                   </button>
-                  <button
-                    className="merge-side-button"
-                    disabled={busy}
-                    onClick={() => void resolve({ kind: 'theirs' })}
-                  >
-                    Use theirs (whole file)
-                  </button>
-                </div>
+                )}
+                <button
+                  className="merge-side-button merge-as-is tooltip-host"
+                  disabled={busy}
+                  onClick={() => void markAsIs()}
+                  data-tooltip="Stage the file exactly as it is on disk, ignoring the editor"
+                >
+                  Mark resolved as-is
+                </button>
                 {/* Tooltip lives on the wrapper span: a disabled button gets no
                     hover, so the "why it's disabled" hint would never show. */}
                 <span

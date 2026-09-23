@@ -24,10 +24,11 @@ import { gitBin, gitEnv, initShellPath } from './git';
 import {
   probeClaude,
   generateCommitMessage,
+  resolveConflictBlock,
   claudeErrorMessage,
   isRunnable,
   isCommitContextExcluded,
-  type CommitUsage,
+  type TokenUsage,
 } from './claude';
 import {
   AppChannels,
@@ -42,6 +43,8 @@ import {
   type ClaudeModel,
   DEFAULT_CLAUDE_MODEL,
   type GenerateCommitResult,
+  type ResolveBlockRequest,
+  type ResolveBlockResult,
   type CloneProgress,
   type CloneRequest,
   type CloneResult,
@@ -91,6 +94,7 @@ import {
   type ConflictFile,
   type ConflictKind,
   type ConflictFileContent,
+  type ConflictImage,
   type MergeResolution,
   type MarkResolvedResult,
   type IntegrationsState,
@@ -3459,13 +3463,54 @@ async function readConflicts(cwd: string): Promise<ConflictFile[]> {
 }
 
 /**
- * Whether a conflicted file is binary. `git diff --numstat` reports `-\t-` for a
- * binary path; we diff the two conflicting sides (stages 2 and 3) of the file.
+ * Whether a conflicted file is binary. With both sides present we diff their
+ * index stages (2 and 3) — `git diff --numstat` reports `-\t-` for binary and
+ * honours `.gitattributes`. (A plain `git diff -- file` on an unmerged path
+ * prints `0\t0` instead, so it can't tell.) With one side deleted there's
+ * nothing to diff against, so fall back to git's own heuristic: a NUL byte in
+ * the first 8000 bytes of the surviving side.
  */
 async function isBinaryConflict(cwd: string, file: string): Promise<boolean> {
-  const out = await runGit(cwd, ['diff', '--numstat', '--', file]);
-  return /^-\t-\t/.test(out.trim());
+  const stages = await conflictStages(cwd, file);
+  if (stages.has(2) && stages.has(3)) {
+    const out = await runGit(cwd, ['diff', '--numstat', `:2:${file}`, `:3:${file}`]);
+    return /^-\t-\t/.test(out.trim());
+  }
+  const side = stages.has(2) ? 2 : stages.has(3) ? 3 : null;
+  if (side === null) return false;
+  const blob = await readStageBlob(cwd, side, file);
+  return blob !== null && blob.subarray(0, 8000).includes(0);
 }
+
+/** The raw bytes of index stage `n` of `file`, or null when absent/unreadable. */
+async function readStageBlob(cwd: string, n: number, file: string): Promise<Buffer | null> {
+  try {
+    const { stdout } = await execFileAsync(gitBin, ['cat-file', 'blob', `:${n}:${file}`], {
+      cwd,
+      env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
+      encoding: 'buffer',
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    return stdout;
+  } catch {
+    return null;
+  }
+}
+
+/** Image types the resolver previews, by extension (SVG is text, so it merges as text). */
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+};
+
+/** An image stage larger than this isn't previewed (it crosses IPC as base64). */
+const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 
 /**
  * Read the in-progress conflict state, or `null` when the tree has no conflicts
@@ -3559,7 +3604,31 @@ function readGitFile(gitDir: string, name: string): string {
 async function readConflictFile(cwd: string, file: string): Promise<ConflictFileContent> {
   const binary = await isBinaryConflict(cwd, file);
   if (binary) {
-    return { path: file, binary: true, base: null, ours: null, theirs: null, merged: [] };
+    const content: ConflictFileContent = {
+      path: file,
+      binary: true,
+      base: null,
+      ours: null,
+      theirs: null,
+      merged: [],
+    };
+    const mime = IMAGE_MIME[path.extname(file).toLowerCase()];
+    if (mime) {
+      const preview = async (n: number): Promise<ConflictImage | null> => {
+        const blob = await readStageBlob(cwd, n, file);
+        if (!blob) return null;
+        return {
+          bytes: blob.length,
+          url:
+            blob.length <= MAX_PREVIEW_BYTES
+              ? `data:${mime};base64,${blob.toString('base64')}`
+              : null,
+        };
+      };
+      const [base, ours, theirs] = await Promise.all([preview(1), preview(2), preview(3)]);
+      content.images = { base, ours, theirs };
+    }
+    return content;
   }
   const stage = async (n: number): Promise<string[] | null> => {
     // `git show :N:path` prints stage N of the index, but a missing stage errors
@@ -3575,9 +3644,77 @@ async function readConflictFile(cwd: string, file: string): Promise<ConflictFile
 
 /** Whether index stage `n` exists for `file` (a side of the conflict). */
 async function stageExists(cwd: string, n: number, file: string): Promise<boolean> {
+  return (await conflictStages(cwd, file)).has(n);
+}
+
+/**
+ * The common-ancestor lines of the conflict block in `file` whose sides are
+ * `ours`/`theirs`, or null when unknown. The working copy's markers usually
+ * lack a base section, so the three index stages are re-merged with
+ * `git merge-file --diff3` and the block is matched by its side contents
+ * (not its index, which a hand-edited file could shift).
+ */
+async function readConflictBlockBase(
+  cwd: string,
+  file: string,
+  ours: string[],
+  theirs: string[],
+): Promise<string[] | null> {
+  const [base, mine, other] = await Promise.all([1, 2, 3].map((n) => readStageBlob(cwd, n, file)));
+  if (!base || !mine || !other) return null;
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gitleviathan-merge-'));
+  try {
+    const names = ['ours', 'base', 'theirs'];
+    await Promise.all(
+      [mine, base, other].map((blob, i) => fs.promises.writeFile(path.join(dir, names[i]), blob)),
+    );
+    let out: string;
+    try {
+      ({ stdout: out } = await execFileAsync(
+        gitBin,
+        ['merge-file', '-p', '--diff3', ...names],
+        { cwd: dir, env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }), maxBuffer: 32 * 1024 * 1024 },
+      ));
+    } catch (err) {
+      // merge-file exits with the conflict count, so a conflicted merge
+      // "fails" — its output is still on the error.
+      out = (err as { stdout?: string }).stdout ?? '';
+    }
+    return findBlockBase(out.split('\n').map((l) => l.replace(/\r$/, '')), ours, theirs);
+  } catch {
+    return null;
+  } finally {
+    void fs.promises.rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Scan diff3-style merge output for the block with these sides; its base lines. */
+function findBlockBase(lines: string[], ours: string[], theirs: string[]): string[] | null {
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((l, i) => l === b[i]);
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith('<<<<<<<')) continue;
+    const parts: string[][] = [[], [], []];
+    let part = 0;
+    for (i++; i < lines.length && !lines[i].startsWith('>>>>>>>'); i++) {
+      if (part === 0 && lines[i].startsWith('|||||||')) part = 1;
+      else if (part < 2 && lines[i].startsWith('=======')) part = 2;
+      else parts[part].push(lines[i]);
+    }
+    if (same(parts[0], ours) && same(parts[2], theirs)) return parts[1];
+  }
+  return null;
+}
+
+/** The index stages (1 base, 2 ours, 3 theirs) present for a conflicted `file`. */
+async function conflictStages(cwd: string, file: string): Promise<Set<number>> {
   const out = await runGit(cwd, ['ls-files', '-u', '-z', '--', file]);
-  // Entries look like "<mode> <sha> <stage>\t<path>"; check for the stage digit.
-  return out.split('\0').some((line) => new RegExp(`\\s${n}\\t`).test(line));
+  // Entries look like "<mode> <sha> <stage>\t<path>".
+  const stages = new Set<number>();
+  for (const entry of out.split('\0')) {
+    const m = /\s([123])\t/.exec(entry);
+    if (m) stages.add(Number(m[1]));
+  }
+  return stages;
 }
 
 /** Validate an untrusted merge-resolution payload from IPC, or null if invalid. */
@@ -3615,9 +3752,11 @@ async function resolveConflictFile(
   if (resolution.kind === 'content') {
     // `splitContent` dropped the file's trailing newline when reading; restore it
     // so a resolved file keeps the POSIX end-of-file newline.
+    // A CRLF file gets a CRLF terminator to match the rest of its lines.
+    const eol = resolution.text.includes('\r\n') ? '\r\n' : '\n';
     const text =
       resolution.text.length > 0 && !resolution.text.endsWith('\n')
-        ? `${resolution.text}\n`
+        ? `${resolution.text}${eol}`
         : resolution.text;
     await fs.promises.writeFile(resolveInRepo(cwd, file), text, 'utf8');
     await spawnGit(cwd, ['add', '--', file], 'add', env);
@@ -7344,7 +7483,7 @@ function boot(): void {
  * commit panel.
  */
 /** One-line summary of a generation's token usage/cost for the activity log. */
-function formatCommitUsage(usage: CommitUsage): string {
+function formatTokenUsage(usage: TokenUsage): string {
   const n = (v: number) => v.toLocaleString('en-US');
   const parts = [
     `${n(usage.inputTokens)} in`,
@@ -7414,17 +7553,8 @@ function registerClaudeIpc(): void {
       if (!(await commitishExists(repoPath, 'HEAD'))) {
         return { status: 'ok', message: 'Initial commit' };
       }
-      // Use the saved path directly — no per-click detection. A stale path
-      // (binary moved/uninstalled) drops back to "not connected" so the user
-      // is nudged to reconnect rather than shown a cryptic spawn error.
-      const bin = settings.claudeConnection?.binaryPath;
-      if (!bin || !isRunnable(bin)) {
-        if (bin) {
-          delete settings.claudeConnection;
-          saveSettings();
-        }
-        return { status: 'not-connected' };
-      }
+      const bin = connectedClaudeBin();
+      if (!bin) return { status: 'not-connected' };
       // The full staged file list is always handed to the model, even for
       // excluded files; only the *content* of excluded files is withheld.
       const changedFiles = (
@@ -7500,7 +7630,7 @@ function registerClaudeIpc(): void {
             op: 'generate',
             kind: 'line',
             stream: 'stdout',
-            text: formatCommitUsage(usage),
+            text: formatTokenUsage(usage),
             ts: Date.now(),
           });
         }
@@ -7512,6 +7642,69 @@ function registerClaudeIpc(): void {
       }
     },
   );
+
+  ipcMain.handle(
+    ClaudeChannels.resolveConflictBlock,
+    async (_event, repoPath: unknown, request: unknown): Promise<ResolveBlockResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const req = asResolveBlockRequest(request);
+      if (!req) return { status: 'error', message: 'Invalid conflict block.' };
+      const bin = connectedClaudeBin();
+      if (!bin) return { status: 'not-connected' };
+      const base = await readConflictBlockBase(repoPath, req.file, req.ours, req.theirs);
+      emitActivity({ repoPath, op: 'resolve', kind: 'start', ts: Date.now() });
+      const notice = (text: string) =>
+        emitActivity({ repoPath, op: 'resolve', kind: 'line', stream: 'stdout', text, ts: Date.now() });
+      notice(`${req.file}: ${req.ours.length} ours / ${req.theirs.length} theirs lines${base ? `, ${base.length} base` : ', no base'}`);
+      try {
+        const { lines, rationale, usage } = await resolveConflictBlock(
+          bin,
+          { ...req, base },
+          repoPath,
+          settings.claudeModel ?? DEFAULT_CLAUDE_MODEL,
+          notice,
+        );
+        notice(rationale);
+        if (usage) notice(formatTokenUsage(usage));
+        emitActivity({ repoPath, op: 'resolve', kind: 'end', ok: true, ts: Date.now() });
+        return { status: 'ok', lines, rationale };
+      } catch (err) {
+        emitActivity({ repoPath, op: 'resolve', kind: 'end', ok: false, ts: Date.now() });
+        return { status: 'error', message: claudeErrorMessage(err) };
+      }
+    },
+  );
+}
+
+/**
+ * The saved `claude` binary, or null when not connected. Uses the saved path
+ * directly — no per-click detection. A stale path (binary moved/uninstalled)
+ * drops back to "not connected" so the user is nudged to reconnect rather than
+ * shown a cryptic spawn error.
+ */
+function connectedClaudeBin(): string | null {
+  const bin = settings.claudeConnection?.binaryPath;
+  if (bin && isRunnable(bin)) return bin;
+  if (bin) {
+    delete settings.claudeConnection;
+    saveSettings();
+  }
+  return null;
+}
+
+/** Validate an untrusted conflict-block payload from IPC, or null if invalid. */
+function asResolveBlockRequest(value: unknown): ResolveBlockRequest | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const isLines = (x: unknown): x is string[] =>
+    Array.isArray(x) && x.length <= 5000 && x.every((l) => typeof l === 'string');
+  if (typeof v.file !== 'string' || !v.file) return null;
+  if (!isLines(v.ours) || !isLines(v.theirs) || !isLines(v.before) || !isLines(v.after)) {
+    return null;
+  }
+  return { file: v.file, ours: v.ours, theirs: v.theirs, before: v.before, after: v.after };
 }
 
 // ---- Commit/tag signing ---------------------------------------------------

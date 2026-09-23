@@ -10,6 +10,8 @@ import {
   type ClaudeStatus,
   type ClaudeModel,
   type GenerateCommitResult,
+  type ResolveBlockRequest,
+  type ResolveBlockResult,
   type CheckoutResult,
   type RefsMutationResult,
   type UndoRedoState,
@@ -537,6 +539,12 @@ const api: ExposedApi = {
         ClaudeChannels.generateCommitMessage,
         path,
       ) as Promise<GenerateCommitResult>,
+    resolveConflictBlock: (path: string, request: ResolveBlockRequest) =>
+      ipcRenderer.invoke(
+        ClaudeChannels.resolveConflictBlock,
+        path,
+        request,
+      ) as Promise<ResolveBlockResult>,
   },
   signing: {
     capabilities: () =>

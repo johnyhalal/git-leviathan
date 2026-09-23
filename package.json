@@ -12,7 +12,8 @@
     "make": "electron-forge make",
     "make:universal": "electron-forge make --arch=universal",
     "publish": "electron-forge publish",
-    "lint": "eslint --ext .ts,.tsx ."
+    "lint": "eslint --ext .ts,.tsx .",
+    "fixtures:conflicts": "sh scripts/make-conflict-repo.sh"
   },
   "keywords": [],
   "author": {

@@ -188,10 +188,10 @@ export function ActivityLog({ repoPath, openSignal }: ActivityLogProps) {
 
 /**
  * The command word an op shells out to, so the transcript's `$` line names the
- * real binary — `generate` runs the `claude` CLI, everything else is `git`.
+ * real binary — `generate`/`resolve` run the `claude` CLI, everything else is `git`.
  */
 function opCommand(op: string): string {
-  return op === 'generate' ? 'claude' : 'git';
+  return op === 'generate' || op === 'resolve' ? 'claude' : 'git';
 }
 
 /** Serialize one transcript row to plain text, matching what ActivityRow renders. */

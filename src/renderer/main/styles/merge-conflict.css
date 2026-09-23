@@ -71,6 +71,13 @@
   font-weight: 600;
 }
 
+/* Stay green on hover (the generic hover above would grey it out); brighten
+   like the other primary buttons (.clone-submit). */
+.merge-banner-button.is-primary:hover:not(:disabled) {
+  background: var(--primary);
+  filter: brightness(1.05);
+}
+
 .merge-banner-button.is-danger {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 40%, transparent);
@@ -81,7 +88,9 @@
 .merge-overlay {
   position: fixed;
   inset: 0;
-  z-index: 120;
+  /* Below the shared popup layer (.settings-overlay, 100) so Settings — e.g.
+     opened to connect Claude — and other popups stack on top of the resolver. */
+  z-index: 90;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -195,6 +204,9 @@
 }
 
 .merge-editor {
+  /* --merge-row-h is set inline from MergeEditor's ROW_H. */
+  --merge-ours: #2ea043;
+  --merge-theirs: var(--primary-dark);
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
@@ -202,169 +214,467 @@
   overflow: hidden;
 }
 
-.merge-editor-binary {
+.merge-editor-message {
   align-items: center;
   justify-content: center;
+  gap: 4px;
+  padding: 24px;
   color: var(--fg-muted);
+  text-align: center;
 }
 
 .merge-editor-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--panel-bg);
   flex: 0 0 auto;
 }
 
-.merge-editor-heads {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 8px;
-  flex: 1 1 auto;
+.merge-progress {
   font-size: 12px;
-  color: var(--fg-muted);
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
 }
 
-.merge-editor-heads span {
-  text-align: center;
+.merge-progress.is-done {
+  color: var(--primary-dark);
 }
 
-.merge-mode-toggle {
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elev);
-  color: inherit;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.merge-mode-toggle:hover {
-  background: var(--control-bg);
-}
-
-.merge-grid {
-  flex: 1 1 auto;
-  overflow: auto;
-  font-family:
-    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  line-height: 1.5;
-}
-
-.merge-row-common {
-  padding: 0 8px;
-}
-
-.merge-row-conflict {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 8px;
-  padding: 4px 8px;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  margin: 4px 0;
-}
-
-.merge-cell {
+.merge-bar-actions {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 6px;
-  border-radius: 8px;
-  padding: 4px;
-  min-width: 0;
 }
 
-.merge-cell-ours {
-  background: color-mix(in srgb, #2ea043 10%, transparent);
+.merge-bar-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
 }
 
-.merge-cell-theirs {
-  background: color-mix(in srgb, var(--primary) 12%, transparent);
-}
-
-.merge-cell.is-chosen {
-  outline: 2px solid var(--primary);
-}
-
-.merge-cell-result {
-  background: var(--control-bg);
-}
-
-.merge-lines {
-  white-space: pre;
-  overflow-x: auto;
-}
-
-.merge-line-empty {
-  color: var(--fg-muted);
-  font-style: italic;
-}
-
-.merge-code {
-  white-space: pre;
-  tab-size: 2;
-}
-
-.merge-pane-common {
-  color: var(--fg-muted);
-}
-
-.merge-unchosen {
-  color: var(--fg-muted);
-  font-style: italic;
-  padding: 4px;
-}
-
-.merge-both {
-  display: flex;
-  gap: 6px;
-  margin-top: auto;
-}
-
-.merge-both button,
-.merge-pick {
+.merge-bar-button,
+.merge-block-tools button {
   height: 24px;
-  padding: 0 8px;
+  padding: 0 9px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-elev);
   color: inherit;
   font: inherit;
-  font-size: 11px;
+  font-size: 11.5px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.merge-both button:hover,
-.merge-pick:hover {
+.merge-bar-button:hover:not(:disabled),
+.merge-block-tools button:hover {
   background: var(--control-bg);
 }
 
-.merge-pick {
-  align-self: flex-start;
+.merge-bar-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.merge-textarea {
+/* Ours | Theirs on top, the output underneath — each half of the editor. */
+.merge-sources {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex: 1 1 0;
+  min-height: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.merge-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.merge-pane-theirs {
+  border-left: 1px solid var(--border);
+}
+
+.merge-pane-output {
+  flex: 1 1 0;
+}
+
+.merge-pane-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  height: 28px;
+  padding: 0 12px;
+  line-height: 28px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+  font-size: 12px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.merge-pane-title {
+  font-weight: 600;
+}
+
+.merge-pane-ours .merge-pane-title {
+  color: var(--merge-ours);
+}
+
+.merge-pane-theirs .merge-pane-title {
+  color: var(--merge-theirs);
+}
+
+.merge-pane-label {
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.merge-scroll {
   flex: 1 1 auto;
-  width: 100%;
-  resize: none;
-  border: none;
-  padding: 8px 12px;
+  min-height: 0;
+  overflow: auto;
   background: var(--bg);
-  color: inherit;
+}
+
+/* Grows to its widest line so long lines scroll the pane horizontally. */
+.merge-doc {
+  position: relative;
+  display: inline-block;
+  min-width: 100%;
   font-family:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 12.5px;
-  line-height: 1.5;
-  tab-size: 2;
+  line-height: var(--merge-row-h);
+  tab-size: 4;
 }
 
-.merge-textarea:focus {
+/*
+ * Row backgrounds are opaque (tints mixed into --bg) because the sticky gutter
+ * paints over code scrolled underneath it; --row-bg is shared by row and gutter.
+ */
+.merge-doc {
+  --row-bg: var(--bg);
+}
+
+.merge-src-block.is-ours {
+  --tint: var(--merge-ours);
+}
+
+.merge-src-block.is-theirs {
+  --tint: var(--merge-theirs);
+}
+
+.merge-src-block.is-conflict {
+  --row-bg: color-mix(in srgb, var(--tint) 10%, var(--bg));
+  background: var(--row-bg);
+}
+
+.merge-row {
+  display: flex;
+  height: var(--merge-row-h);
+  white-space: pre;
+  background: var(--row-bg);
+}
+
+.merge-row.is-pickable:hover {
+  --row-bg: color-mix(in srgb, var(--tint) 17%, var(--bg));
+}
+
+.merge-row.is-picked {
+  --row-bg: color-mix(in srgb, var(--tint) 28%, var(--bg));
+}
+
+.merge-row.is-picked:hover {
+  --row-bg: color-mix(in srgb, var(--tint) 34%, var(--bg));
+}
+
+/* [block checkbox][line +/−][line number], pinned to the left edge. */
+.merge-src-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  width: 86px;
+  height: 100%;
+  background: var(--row-bg);
+}
+
+.merge-src-block.is-conflict .merge-src-gutter {
+  box-shadow: inset 3px 0 var(--tint);
+}
+
+/* Reserves the checkbox column in each row; the checkbox itself is overlaid. */
+.merge-block-slot {
+  flex: 0 0 24px;
+}
+
+.merge-block-anchor {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  width: 24px;
+  height: 0;
+}
+
+.merge-block-check {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+}
+
+.merge-block-check input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.merge-line-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+}
+
+.merge-line-toggle button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--tint);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+}
+
+/* Heavier strokes than the icons' default so the tiny glyphs stay legible. */
+.merge-line-toggle svg {
+  stroke-width: 3.5;
+}
+
+/*
+ * A picked line always shows a green check; hovering it turns the icon into
+ * the red remove glyph.
+ */
+.merge-row.is-picked .merge-line-toggle button {
+  opacity: 1;
+  background: var(--current);
+}
+
+.merge-row.is-picked:hover .merge-line-toggle button,
+.merge-row.is-picked .merge-line-toggle button:focus-visible {
+  background: var(--danger);
+}
+
+.merge-icon-picked,
+.merge-icon-remove {
+  display: flex;
+}
+
+.merge-icon-remove,
+.merge-row.is-picked:hover .merge-icon-picked,
+.merge-line-toggle button:focus-visible .merge-icon-picked {
+  display: none;
+}
+
+.merge-row.is-picked:hover .merge-icon-remove,
+.merge-line-toggle button:focus-visible .merge-icon-remove {
+  display: flex;
+}
+
+.merge-row:hover .merge-line-toggle button,
+.merge-line-toggle button:focus-visible {
+  opacity: 1;
+}
+
+.merge-num {
+  flex: 0 0 42px;
+  padding-right: 10px;
+  text-align: right;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.merge-code {
+  flex: 1 0 auto;
+  padding-right: 16px;
+}
+
+.merge-filler {
+  display: flex;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 6px,
+    var(--control-bg) 6px 7px
+  );
+}
+
+.merge-filler-note {
+  padding-left: 8px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/*
+ * A conflict's output controls hang off a zero-width rail stuck to the pane's
+ * right edge, so they overlay the block (never shifting rows) and stay in view
+ * however far the pane is scrolled sideways.
+ */
+.merge-out-side {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  flex: 0 0 0;
+  width: 0;
+  height: 100%;
+}
+
+/* [badge][Reset][✦ Auto Resolve], centred on the block's right edge. */
+.merge-out-controls {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Hover-only tools (badge + Reset), left of the Auto Resolve button. */
+.merge-block-tools {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.merge-out-block:hover .merge-block-tools,
+.merge-out-block:focus-within .merge-block-tools,
+.merge-block-tools.is-pinned {
+  opacity: 1;
+}
+
+.merge-out-block {
+  position: relative;
+  display: flex;
+  background: var(--row-bg);
+}
+
+.merge-out-block.is-unresolved {
+  --row-bg: color-mix(in srgb, var(--danger) 10%, var(--bg));
+  --tint: var(--danger);
+}
+
+.merge-out-block.is-resolved {
+  --row-bg: color-mix(in srgb, var(--primary) 9%, var(--bg));
+  --tint: var(--primary-dark);
+}
+
+/* Same width as the source gutter so the columns line up across panes. */
+.merge-out-block .merge-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: 0 0 86px;
+  padding-left: 44px;
+  background: var(--row-bg);
+}
+
+.merge-out-block.is-unresolved .merge-gutter,
+.merge-out-block.is-resolved .merge-gutter {
+  box-shadow: inset 3px 0 var(--tint);
+}
+
+.merge-out-text {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0 16px 0 0;
+  border: none;
   outline: none;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: var(--merge-row-h);
+  tab-size: 4;
+  white-space: pre;
+}
+
+.merge-out-text::placeholder {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.merge-block-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+.merge-block-tools button {
+  height: 18px;
+  font-size: 11px;
+}
+
+/* Per-block "Auto Resolve" (asks Claude); its purple → pink fill and border
+   come from the shared .pill-btn-rainbow, like the commit-message AI button. */
+.merge-ai {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 6px;
+  font: inherit;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.merge-ai.is-busy {
+  cursor: progress;
+}
+
+.merge-ai .mini-spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+
+.merge-edited.is-claude {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--primary-dark);
+  font-style: normal;
+}
+
+.merge-edited {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-style: italic;
+  margin-right: 2px;
 }
 
 .merge-footer {
@@ -378,8 +688,95 @@
   flex: 0 0 auto;
 }
 
-.merge-footer-sides {
+.merge-images {
+  flex-direction: row;
+  gap: 1px;
+  background: var(--border);
+}
+
+.merge-image-card {
   display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--bg-elev);
+}
+
+.merge-image-card.is-ours .merge-pane-title {
+  color: var(--merge-ours);
+}
+
+.merge-image-card.is-theirs .merge-pane-title {
+  color: var(--merge-theirs);
+}
+
+.merge-image-card.is-base .merge-pane-title {
+  color: var(--fg-muted);
+}
+
+/* Checkerboard behind the image so transparency is visible. */
+.merge-image-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 16px;
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(45deg, var(--control-bg) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--control-bg) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--control-bg) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--control-bg) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.merge-image-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  image-rendering: auto;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.merge-image-note {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.merge-image-pick {
+  margin: 10px;
+  align-self: center;
+}
+
+.merge-as-is {
+  margin-left: auto;
+}
+
+/* Whole-file Auto Resolve; fill and border from the shared .pill-btn-rainbow
+   (not .merge-side-button, whose background would override the gradient). */
+.merge-auto-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.merge-auto-file:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.merge-message-actions {
+  display: flex;
+  justify-content: center;
   gap: 8px;
 }
 

@@ -1214,6 +1214,9 @@ export function RepoView({
             mergeState={mergeState}
             initialFile={resolverFile}
             onResolved={(next) => applyMergeRef.current(next)}
+            onMarkAsIs={markResolved}
+            onError={onError}
+            onOpenSettings={onOpenSettings}
             onClose={() => setResolverOpen(false)}
           />
         )}

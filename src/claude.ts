@@ -23,6 +23,10 @@ const execFileAsync = promisify(execFile);
 
 /** How long a single `claude` invocation may run before we give up (ms). */
 const GENERATE_TIMEOUT_MS = 30_000;
+/** Resolving a conflict is more reasoning than a commit message; allow longer. */
+const RESOLVE_TIMEOUT_MS = 60_000;
+/** Cap each side of a conflict block handed to the model. */
+const MAX_BLOCK_CHARS = 20_000;
 const PROBE_TIMEOUT_MS = 8_000;
 /**
  * Cap the diff we hand to the model so a huge changeset can't blow up the call.
@@ -336,7 +340,7 @@ interface ClaudeJsonResult {
 }
 
 /** Normalized token usage/cost parsed from a single generation. */
-export interface CommitUsage {
+export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -347,7 +351,29 @@ export interface CommitUsage {
 /** The generated commit message plus, when available, its token usage. */
 export interface CommitMessageResult {
   message: string;
-  usage?: CommitUsage;
+  usage?: TokenUsage;
+}
+
+/** Read the model's answer and token usage out of a `--output-format json` envelope. */
+function readEnvelope(stdout: string): { text: string; usage?: TokenUsage } | null {
+  let parsed: ClaudeJsonResult;
+  try {
+    parsed = JSON.parse(stdout.trim()) as ClaudeJsonResult;
+  } catch {
+    return null;
+  }
+  if (typeof parsed.result !== 'string') return null;
+  const u = parsed.usage ?? {};
+  return {
+    text: parsed.result,
+    usage: {
+      inputTokens: u.input_tokens ?? 0,
+      outputTokens: u.output_tokens ?? 0,
+      cacheReadTokens: u.cache_read_input_tokens ?? 0,
+      cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+      costUsd: typeof parsed.total_cost_usd === 'number' ? parsed.total_cost_usd : undefined,
+    },
+  };
 }
 
 /** The Conventional Commits types we anchor the header on when de-preambling. */
@@ -397,28 +423,11 @@ function stripAiAttribution(message: string): string {
  * gracefully rather than breaking generation.
  */
 function parseCommitResult(stdout: string): CommitMessageResult {
-  const trimmed = stdout.trim();
-  let parsed: ClaudeJsonResult | null = null;
-  try {
-    parsed = JSON.parse(trimmed) as ClaudeJsonResult;
-  } catch {
-    parsed = null;
-  }
-  if (!parsed || typeof parsed.result !== 'string') {
-    return { message: stripAiAttribution(stripCommitPreamble(trimmed)) };
-  }
-
-  const u = parsed.usage ?? {};
+  const envelope = readEnvelope(stdout);
+  if (!envelope) return { message: stripAiAttribution(stripCommitPreamble(stdout.trim())) };
   return {
-    message: stripAiAttribution(stripCommitPreamble(parsed.result.trim())),
-    usage: {
-      inputTokens: u.input_tokens ?? 0,
-      outputTokens: u.output_tokens ?? 0,
-      cacheReadTokens: u.cache_read_input_tokens ?? 0,
-      cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
-      costUsd:
-        typeof parsed.total_cost_usd === 'number' ? parsed.total_cost_usd : undefined,
-    },
+    message: stripAiAttribution(stripCommitPreamble(envelope.text.trim())),
+    usage: envelope.usage,
   };
 }
 
@@ -524,12 +533,12 @@ const COMMIT_PROMPT =
  * `--safe-mode` (not `--bare`) is deliberate: it drops the customizations while
  * leaving auth alone, so a subscription login keeps working.
  */
-function leanArgs(model: ClaudeModel): string[] {
+function leanArgs(model: ClaudeModel, prompt: string, system: string): string[] {
   return [
     '-p',
-    COMMIT_PROMPT,
+    prompt,
     '--system-prompt',
-    COMMIT_INSTRUCTION,
+    system,
     '--tools',
     '', // no tool definitions in the request at all
     '--safe-mode', // no CLAUDE.md, skills, plugins, hooks, MCP, custom agents
@@ -543,8 +552,8 @@ function leanArgs(model: ClaudeModel): string[] {
 }
 
 /** The pre-lean argv, kept for `claude` builds that don't know the new flags. */
-function legacyArgs(model: ClaudeModel): string[] {
-  return ['-p', COMMIT_INSTRUCTION, '--model', model, '--output-format', 'json'];
+function legacyArgs(model: ClaudeModel, system: string): string[] {
+  return ['-p', system, '--model', model, '--output-format', 'json'];
 }
 
 /**
@@ -570,6 +579,7 @@ function runClaude(
   args: string[],
   cwd: string,
   stdin: string,
+  timeoutMs: number,
 ): Promise<ClaudeRun> {
   return new Promise((resolve, reject) => {
     const child = spawnClaude(bin, args, cwd);
@@ -579,8 +589,8 @@ function runClaude(
       // SIGKILL (not the default SIGTERM) so a wedged `claude` can't ignore the
       // signal and keep the button spinning past the timeout.
       child.kill('SIGKILL');
-      reject(new Error('Claude timed out generating the message.'));
-    }, GENERATE_TIMEOUT_MS);
+      reject(new Error('Claude timed out.'));
+    }, timeoutMs);
 
     child.stdout.on('data', (chunk) => {
       out += chunk;
@@ -641,19 +651,122 @@ export async function generateCommitMessage(
     filesSection +
     `Staged diff:\n${trimmedDiff}\n`;
 
+  const out = await runOneShot(bin, cwd, stdin, model, COMMIT_PROMPT, COMMIT_INSTRUCTION, GENERATE_TIMEOUT_MS, onNotice);
+  return parseCommitResult(out);
+}
+
+/**
+ * Run one headless generation — the lean argv, falling back once per binary to
+ * the legacy argv on an older `claude` — and return its raw stdout. Rejects
+ * with the CLI's own error text on a non-zero exit.
+ */
+async function runOneShot(
+  bin: string,
+  cwd: string,
+  stdin: string,
+  model: ClaudeModel,
+  prompt: string,
+  system: string,
+  timeoutMs: number,
+  onNotice?: (text: string) => void,
+): Promise<string> {
   const lean = leanSupport.get(bin) !== false;
-  let run = await runClaude(bin, lean ? leanArgs(model) : legacyArgs(model), cwd, stdin);
+  let run = await runClaude(
+    bin,
+    lean ? leanArgs(model, prompt, system) : legacyArgs(model, system),
+    cwd,
+    stdin,
+    timeoutMs,
+  );
   if (run.code !== 0 && lean && UNKNOWN_FLAG_RE.test(run.err)) {
     // An older `claude` build: remember that and pay the full prompt cost.
     leanSupport.set(bin, false);
     onNotice?.(
       'this claude CLI does not support the low-token flags; using the full prompt (update Claude Code to cut token usage)',
     );
-    run = await runClaude(bin, legacyArgs(model), cwd, stdin);
+    run = await runClaude(bin, legacyArgs(model, system), cwd, stdin, timeoutMs);
   }
-  if (run.code === 0) return parseCommitResult(run.out);
+  if (run.code === 0) return run.out;
   const detail = run.err.trim() || run.out.trim();
   throw new Error(detail || `Claude exited with code ${run.code}.`);
+}
+
+/** The static instruction for resolving one conflict block; the block is on stdin. */
+const RESOLVE_INSTRUCTION = [
+  'You resolve a single git merge conflict block.',
+  'stdin gives the file path, a few unconflicted lines before and after the block, the OURS lines, the THEIRS lines, and — when known — the BASE lines (the common ancestor both sides changed from).',
+  'Use BASE to work out what each side intended: a side identical to BASE made no change there, so the other side wins; lines removed from BASE by one side were deliberately deleted.',
+  'Produce the lines that should replace the whole conflict block so the file is correct and keeps the intent of both sides wherever they are compatible; when they truly contradict, prefer the more complete or more recent-looking change.',
+  'Never repeat the BEFORE/AFTER context lines, never output conflict markers, and preserve the exact indentation, quoting and style of the surrounding code.',
+  'Answer in exactly this format and nothing else:',
+  '<resolved>',
+  '...the replacement lines, verbatim (may be empty)...',
+  '</resolved>',
+  '<why>one short sentence explaining the choice</why>',
+].join('\n');
+
+const RESOLVE_PROMPT = 'Resolve the merge conflict block provided on stdin.';
+
+/** One conflict block and its surroundings, as handed to `resolveConflictBlock`. */
+export interface ConflictBlockInput {
+  file: string;
+  ours: string[];
+  theirs: string[];
+  /** The common-ancestor lines, or null when unknown (e.g. an add/add conflict). */
+  base: string[] | null;
+  before: string[];
+  after: string[];
+}
+
+/** Claude's suggested replacement for a conflict block. */
+export interface ConflictBlockResolution {
+  lines: string[];
+  rationale: string;
+  /** Token usage/cost, when the CLI reported it. */
+  usage?: TokenUsage;
+}
+
+/** A labelled stdin section; the label line can't collide with code lines. */
+function section(label: string, lines: string[]): string {
+  const body = lines.join('\n');
+  const text =
+    body.length > MAX_BLOCK_CHARS ? `${cutAtLine(body, MAX_BLOCK_CHARS)}\n[truncated]` : body;
+  return `===== ${label} (${lines.length} lines) =====\n${text}\n`;
+}
+
+/**
+ * Ask `claude -p` to resolve one conflict block. The block's content goes on
+ * stdin (never argv). Rejects with a distilled error when the CLI fails or its
+ * answer lacks the `<resolved>` envelope.
+ */
+export async function resolveConflictBlock(
+  bin: string,
+  input: ConflictBlockInput,
+  cwd: string,
+  model: ClaudeModel = 'sonnet',
+  onNotice?: (text: string) => void,
+): Promise<ConflictBlockResolution> {
+  const stdin =
+    `File: ${input.file}\n\n` +
+    section('BEFORE (context, do not repeat)', input.before) +
+    section('OURS', input.ours) +
+    (input.base ? section('BASE', input.base) : '===== BASE unknown =====\n') +
+    section('THEIRS', input.theirs) +
+    section('AFTER (context, do not repeat)', input.after);
+
+  const raw = await runOneShot(bin, cwd, stdin, model, RESOLVE_PROMPT, RESOLVE_INSTRUCTION, RESOLVE_TIMEOUT_MS, onNotice);
+  // Not the JSON envelope (an unexpected format) → treat stdout as the answer itself.
+  const envelope = readEnvelope(raw);
+  const text = envelope?.text ?? raw.trim();
+  const resolved = /<resolved>\r?\n?([\s\S]*?)\r?\n?<\/resolved>/.exec(text);
+  if (!resolved) throw new Error("Claude's answer couldn't be read.");
+  const why = /<why>([\s\S]*?)<\/why>/.exec(text);
+  const body = resolved[1].replace(/\r/g, '');
+  return {
+    lines: body === '' ? [] : body.split('\n'),
+    rationale: why?.[1].trim() || 'Suggested by Claude.',
+    usage: envelope?.usage,
+  };
 }
 
 /** Distill a thrown error from a `claude` run to one user-facing line. */
