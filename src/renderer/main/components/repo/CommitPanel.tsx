@@ -1249,6 +1249,9 @@ function WorkingChanges({
   onOpenSettings,
 }: WorkingChangesProps) {
   const [busy, setBusy] = useState(false);
+  // What the in-flight commit is doing, so the button can say so — a slow
+  // pre-commit hook (or the follow-up push) otherwise looks like a hang.
+  const [busyPhase, setBusyPhase] = useState<'committing' | 'pushing'>('committing');
   const [generating, setGenerating] = useState(false);
   // When set, a successful commit is immediately pushed to its upstream.
   const [pushAfterCommit, setPushAfterCommit] = useState(false);
@@ -1471,6 +1474,7 @@ function WorkingChanges({
 
   const commit = useCallback(async () => {
     setBusy(true);
+    setBusyPhase('committing');
     const result = await window.api.repo.commit(repoPath, message, amendCommit);
     if (result.status === 'error') {
       setBusy(false);
@@ -1482,6 +1486,7 @@ function WorkingChanges({
     // Optionally push the fresh commit to its upstream before finishing. An amend
     // rewrites history, so force (with lease) to get past the non-fast-forward.
     if (pushAfterCommit) {
+      setBusyPhase('pushing');
       const pushed = await window.api.repo.push(repoPath, amendCommit);
       if (pushed.status === 'needs-upstream') {
         onError?.(
@@ -1818,10 +1823,20 @@ function WorkingChanges({
           type="button"
           className="commit-submit"
           disabled={!canCommit}
+          aria-busy={busy}
           onClick={() => void commit()}
         >
-          {amendCommit ? 'Amend' : 'Commit'}
-          {staged.length > 0 ? ` (${staged.length})` : ''}
+          {busy ? (
+            <>
+              <span className="mini-spinner" aria-hidden="true" />
+              {busyPhase === 'pushing' ? 'Pushing…' : amendCommit ? 'Amending…' : 'Committing…'}
+            </>
+          ) : (
+            <>
+              {amendCommit ? 'Amend' : 'Commit'}
+              {staged.length > 0 ? ` (${staged.length})` : ''}
+            </>
+          )}
         </button>
       </div>
 

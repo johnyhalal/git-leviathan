@@ -1786,6 +1786,8 @@ async function integrateBranch(
   // A fast-forward is a merge that refuses to create a merge commit.
   const args = op === 'ff-only' ? ['merge', '--ff-only', source] : [op, source];
   const label = op === 'ff-only' ? 'merge' : op;
+  // A merge commit or rebased commits are signed when signing is on.
+  if (op !== 'ff-only') await primeSigningIfNeeded(cwd);
   let output = '';
   try {
     await spawnGit(cwd, ['checkout', target], 'checkout', env);
@@ -3482,6 +3484,7 @@ async function readMergeState(cwd: string): Promise<MergeState | null> {
   let op: MergeOp | null = null;
   let description = '';
   let step: MergeState['step'];
+  let message: string | undefined;
   const branch = (await currentBranchName(cwd)) || 'HEAD';
 
   if (has('rebase-merge') || has('rebase-apply')) {
@@ -3501,6 +3504,9 @@ async function readMergeState(cwd: string): Promise<MergeState | null> {
     const msg = readGitFile(abs, 'MERGE_MSG');
     const other = /Merge (?:branch|remote-tracking branch|commit) ['"]?([^'"\n]+)/.exec(msg);
     description = other ? `Merging ${other[1]} into ${branch}` : `Merging into ${branch}`;
+    // The message a clean merge would have recorded: git's MERGE_MSG minus the
+    // commented "# Conflicts:" hint it appends when the merge stops.
+    message = stripCommentLines(msg) || undefined;
   } else if (has('CHERRY_PICK_HEAD')) {
     op = 'cherry-pick';
     description = 'Cherry-picking';
@@ -3521,7 +3527,18 @@ async function readMergeState(cwd: string): Promise<MergeState | null> {
     conflicts,
     canContinue: op !== 'stash-pop',
     canSkip: op === 'rebase',
+    message,
   };
+}
+
+/** Drop `#` comment lines from a git message file (as `--cleanup=strip` would). */
+function stripCommentLines(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !line.startsWith('#'))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /** Read a text file inside the git dir, trimmed; '' when absent/unreadable. */
@@ -3618,9 +3635,13 @@ async function resolveConflictFile(
   return readMergeState(cwd);
 }
 
-/** The git step that finishes each conflicting operation once resolved. */
+/**
+ * The git step that finishes each conflicting operation once resolved. A merge
+ * commits with `--cleanup=strip` so git's commented "# Conflicts:" hint in
+ * MERGE_MSG isn't recorded in the message (`--no-edit` alone would keep it).
+ */
 const CONTINUE_STEP: Record<MergeOp, string[] | null> = {
-  merge: ['commit', '--no-edit'],
+  merge: ['commit', '--no-edit', '--cleanup=strip'],
   rebase: ['rebase', '--continue'],
   'cherry-pick': ['cherry-pick', '--continue'],
   revert: ['revert', '--continue'],
@@ -3639,16 +3660,22 @@ const ABORT_STEP: Record<MergeOp, string[] | null> = {
 /**
  * Finish the in-progress operation. Refuses while conflicts remain. Runs with
  * scripted editors (`GIT_EDITOR`/`GIT_SEQUENCE_EDITOR` = `true`) so a continue
- * never opens an interactive editor and hangs the app.
+ * never opens an interactive editor and hangs the app. For a merge, a non-empty
+ * `message` (the commit panel's text) replaces git's MERGE_MSG.
  */
-async function continueOperation(cwd: string): Promise<RefsMutationResult> {
+async function continueOperation(cwd: string, message = ''): Promise<RefsMutationResult> {
   const state = await readMergeState(cwd);
   if (!state) return { status: 'error', message: 'Nothing to continue.' };
   if (state.conflicts.length > 0) {
     return { status: 'error', message: 'Resolve every conflict before continuing.' };
   }
-  const step = CONTINUE_STEP[state.op];
+  let step = CONTINUE_STEP[state.op];
   if (!step) return { status: 'error', message: 'This operation cannot be continued.' };
+  if (state.op === 'merge' && message.trim()) {
+    step = ['commit', '--cleanup=strip', '-m', message.trim()];
+  }
+  // Continuing records a commit, which is signed when signing is on.
+  await primeSigningIfNeeded(cwd);
   const env = gitEnv({
     GIT_TERMINAL_PROMPT: '0',
     GIT_EDITOR: 'true',
@@ -3673,6 +3700,8 @@ async function abortOperation(cwd: string): Promise<RefsMutationResult> {
 
 /** Skip the current commit during a rebase (`git rebase --skip`). */
 async function skipRebaseStep(cwd: string): Promise<RefsMutationResult> {
+  // The remaining rebase steps are re-signed when signing is on.
+  await primeSigningIfNeeded(cwd);
   const env = gitEnv({
     GIT_TERMINAL_PROMPT: '0',
     GIT_EDITOR: 'true',
@@ -4972,6 +5001,7 @@ function registerRepoIpc(): void {
       // revert exits non-zero and leaves REVERT_HEAD in place; the error surfaces
       // the conflict resolver, and the merge banner reads the in-progress state,
       // letting the user continue or abort.
+      await primeSigningIfNeeded(repoPath);
       return mutateRepo(repoPath, [['revert', '--no-edit', hash]], 'Could not revert the commit.');
     },
   );
@@ -5791,6 +5821,7 @@ function registerRepoIpc(): void {
       }
       // Switch to the base, merge the topic branch with a merge commit, then
       // delete it. A conflicting merge aborts and surfaces git's message.
+      await primeSigningIfNeeded(repoPath);
       return mutateRepo(
         repoPath,
         [
@@ -5884,11 +5915,11 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.mergeContinue,
-    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+    async (_event, repoPath: unknown, message: unknown): Promise<RefsMutationResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
       }
-      return continueOperation(repoPath);
+      return continueOperation(repoPath, typeof message === 'string' ? message : '');
     },
   );
 

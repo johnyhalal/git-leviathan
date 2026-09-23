@@ -401,8 +401,8 @@ const api: ExposedApi = {
       ) as Promise<MergeState | null>,
     markResolved: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.markResolved, path, file) as Promise<MarkResolvedResult>,
-    mergeContinue: (path: string) =>
-      ipcRenderer.invoke(RepoChannels.mergeContinue, path) as Promise<RefsMutationResult>,
+    mergeContinue: (path: string, message?: string) =>
+      ipcRenderer.invoke(RepoChannels.mergeContinue, path, message) as Promise<RefsMutationResult>,
     mergeAbort: (path: string) =>
       ipcRenderer.invoke(RepoChannels.mergeAbort, path) as Promise<RefsMutationResult>,
     rebaseSkip: (path: string) =>

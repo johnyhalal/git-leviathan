@@ -1367,6 +1367,10 @@ body.is-row-resizing {
 }
 
 .commit-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   height: 34px;
   border: none;
   border-radius: 8px;

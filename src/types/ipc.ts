@@ -800,6 +800,11 @@ export interface MergeState {
   canContinue: boolean;
   /** Whether a "skip" action applies (true only for rebase). */
   canSkip: boolean;
+  /**
+   * For a merge: the message a clean merge would record (git's MERGE_MSG
+   * without its commented "# Conflicts:" hint), used to prefill the commit box.
+   */
+  message?: string;
 }
 
 /**
@@ -2041,10 +2046,11 @@ export interface RepoApi {
   markResolved(path: string, file: string | null): Promise<MarkResolvedResult>;
   /**
    * Finish the in-progress operation once every conflict is resolved: commit
-   * the merge, or `--continue` the rebase/cherry-pick/revert. Resolves with
-   * fresh refs, or an error message.
+   * the merge, or `--continue` the rebase/cherry-pick/revert. For a merge, a
+   * non-empty `message` is used as the merge commit's message instead of git's
+   * MERGE_MSG. Resolves with fresh refs, or an error message.
    */
-  mergeContinue(path: string): Promise<RefsMutationResult>;
+  mergeContinue(path: string, message?: string): Promise<RefsMutationResult>;
   /**
    * Abort the in-progress operation (`git <op> --abort`), restoring the
    * pre-operation state. Resolves with fresh refs, or an error message.

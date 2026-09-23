@@ -144,6 +144,10 @@ export function RepoView({
     if (next && !was) {
       setResolverOpen(true);
       onNotice?.('Conflicts', `${next.description} — resolve the conflicts to continue.`);
+      // A conflicted merge still gets the message a clean merge would record;
+      // prefill it (without clobbering a message the user already typed).
+      const mergeMessage = next.op === 'merge' ? next.message : undefined;
+      if (mergeMessage) setCommitMessage((prev) => (prev.trim() ? prev : mergeMessage));
     }
     if (!next) setResolverOpen(false);
   }, [onNotice]);
@@ -168,7 +172,9 @@ export function RepoView({
     hadMergeRef.current = false;
     void window.api.repo.commitDraft(repoPath).then((draft) => {
       if (!live) return;
-      setCommitMessage(draft);
+      // Keep a merge message prefilled while the draft was loading (the message
+      // was reset above, so anything here belongs to this repo).
+      setCommitMessage((prev) => draft || prev);
       draftLoadedFor.current = repoPath;
     });
     return () => {
@@ -1019,9 +1025,20 @@ export function RepoView({
     [mergeBusy, reload, onError],
   );
 
+  // A merge commits with the commit box's message (prefilled from git's merge
+  // message); the other operations keep their own commit messages.
   const mergeContinue = useCallback(
-    () => runMergeAction('Continue failed', () => window.api.repo.mergeContinue(repoPath)),
-    [repoPath, runMergeAction],
+    () =>
+      runMergeAction('Continue failed', async () => {
+        const isMerge = mergeState?.op === 'merge';
+        const result = await window.api.repo.mergeContinue(
+          repoPath,
+          isMerge ? commitMessage : undefined,
+        );
+        if (result.status === 'ok' && isMerge) setCommitMessage('');
+        return result;
+      }),
+    [repoPath, runMergeAction, mergeState, commitMessage],
   );
   const mergeAbort = useCallback(
     () => runMergeAction('Abort failed', () => window.api.repo.mergeAbort(repoPath)),
