@@ -13,6 +13,7 @@ import type { DiffTarget } from './DiffView';
 import { FileContextMenu, type FileMenuItem } from './FileContextMenu';
 import { useConfirm, type ConfirmAction } from '../ConfirmBar';
 import { CopyButton } from '../CopyButton';
+import { formatDateTime, useDateFormat } from '../../dateFormat';
 import {
   CertificateIcon,
   ChevronDownIcon,
@@ -43,15 +44,6 @@ function statusIcon(status: FileStatus) {
       return <PencilIcon size={14} />;
   }
 }
-
-const dateFmt = new Intl.DateTimeFormat(undefined, {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-});
-const formatDate = (iso: string) => {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : dateFmt.format(date);
-};
 
 const baseName = (path: string) => path.split('/').pop() ?? path;
 const dirName = (path: string) => {
@@ -568,6 +560,7 @@ function CommitDetail({
   activeDiff,
   onError,
 }: CommitDetailProps) {
+  const dateFormat = useDateFormat();
   const [files, setFiles] = useState<FileChange[] | null>(null);
   const [detail, setDetail] = useState<CommitDetailData | null>(null);
   // Exact number of commits a reword would rebase (this + descendants), from git;
@@ -748,7 +741,7 @@ function CommitDetail({
           <div className="commit-detail-author">
             <span className="commit-detail-author-name">{commit.author}</span>
             <span className="commit-detail-author-date">
-              <i>authored</i> {formatDate(commit.date)}
+              <i>authored</i> {formatDateTime(commit.date, dateFormat)}
             </span>
           </div>
           {commit.parents.length > 0 && (
@@ -836,6 +829,7 @@ interface CommitCardProps {
  * aggregated below the cards, not per-card.
  */
 function CommitCard({ commit, files }: CommitCardProps) {
+  const dateFormat = useDateFormat();
   const counts = useMemo(() => fileCounts(files ?? []), [files]);
   return (
     <div className="commit-group-box">
@@ -872,7 +866,7 @@ function CommitCard({ commit, files }: CommitCardProps) {
           height={18}
         />
         <span className="commit-group-author">{commit.author}</span>
-        <span className="commit-group-date">{formatDate(commit.date)}</span>
+        <span className="commit-group-date">{formatDateTime(commit.date, dateFormat)}</span>
       </div>
     </div>
   );

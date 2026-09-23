@@ -116,6 +116,9 @@ import {
   type UpdateCheckInterval,
   UPDATE_CHECK_INTERVALS,
   DEFAULT_UPDATE_CHECK_INTERVAL,
+  type DateFormat,
+  DATE_FORMATS,
+  DEFAULT_DATE_FORMAT,
   type RecentRepo,
   type RemoteBranchInfo,
   type RemoteInfo,
@@ -294,6 +297,8 @@ interface Settings {
   signingKeyUploads?: Partial<Record<IntegrationProvider, string>>;
   /** Auto-update check interval in minutes; `0` disables the periodic check. */
   updateCheckInterval?: UpdateCheckInterval;
+  /** How dates/times are displayed across the app (global). */
+  dateFormat?: DateFormat;
   /** Connected Git host accounts, keyed by provider id. */
   integrations?: Partial<Record<IntegrationProvider, IntegrationConnection>>;
   /** SSH keys generated and uploaded from this app, keyed by provider id. */
@@ -491,6 +496,9 @@ function loadSettings(): void {
     }
     if (UPDATE_CHECK_INTERVALS.includes(parsed.updateCheckInterval as UpdateCheckInterval)) {
       settings.updateCheckInterval = parsed.updateCheckInterval as UpdateCheckInterval;
+    }
+    if (DATE_FORMATS.includes(parsed.dateFormat as DateFormat)) {
+      settings.dateFormat = parsed.dateFormat as DateFormat;
     }
     if (parsed.integrations && typeof parsed.integrations === 'object') {
       const raw = parsed.integrations as Record<string, unknown>;
@@ -8467,6 +8475,19 @@ function registerAppIpc(): void {
       saveSettings();
     },
   );
+
+  ipcMain.handle(
+    AppChannels.getDateFormat,
+    (): DateFormat => settings.dateFormat ?? DEFAULT_DATE_FORMAT,
+  );
+
+  ipcMain.handle(AppChannels.setDateFormat, (_event, format: unknown): void => {
+    if (!DATE_FORMATS.includes(format as DateFormat)) {
+      throw new Error('Invalid date format');
+    }
+    settings.dateFormat = format as DateFormat;
+    saveSettings();
+  });
 
   ipcMain.handle(AppChannels.getTelemetryEnabled, (): boolean => telemetryEnabled());
 

@@ -8,11 +8,13 @@ import type {
   FileDiff,
   FileStatus,
   WorkingStatus,
+  DateFormat,
 } from '../../../../types/ipc';
 import { highlightBuffer, highlightLine, languageForPath } from './syntax';
 import { authorColor } from './authorColor';
 import { useConfirm } from '../ConfirmBar';
 import { CopyButton } from '../CopyButton';
+import { formatDateOnly, useDateFormat } from '../../dateFormat';
 import { ResizeHandle } from './ResizeHandle';
 import { useResizableColumns } from './useResizableColumns';
 import {
@@ -58,20 +60,9 @@ const dirName = (path: string) => {
   return slash === -1 ? '' : path.slice(0, slash + 1);
 };
 
-const shortDateFmt = new Intl.DateTimeFormat(undefined, {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-});
-/** Compact date for the blame gutter / history rows; falls back to the raw ISO. */
-function shortDate(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : shortDateFmt.format(date);
-}
-
 /** The blame avatar's tooltip: the commit's hash, author, date, and title. */
-function blameTooltip(line: BlameLine): string {
-  return `${line.shortHash} · ${line.author} · ${shortDate(line.date)}\n${line.summary}`;
+function blameTooltip(line: BlameLine, dateFormat: DateFormat): string {
+  return `${line.shortHash} · ${line.author} · ${formatDateOnly(line.date, dateFormat)}\n${line.summary}`;
 }
 
 /** What the body shows: the change to the file, or the file itself. */
@@ -752,6 +743,7 @@ function BlameCell({
   hunk: boolean;
   onPickRev: (hash: string) => void;
 }) {
+  const dateFormat = useDateFormat();
   const color = line && !line.uncommitted ? authorColor(line.authorEmail, line.author) : null;
   const style = color ? { background: color.tint, borderLeftColor: color.accent } : undefined;
   return (
@@ -764,7 +756,7 @@ function BlameCell({
           <button type="button" className="blame-commit" onClick={() => onPickRev(line.hash)}>
             <img
               className="blame-avatar tooltip-host"
-              data-tooltip={blameTooltip(line)}
+              data-tooltip={blameTooltip(line, dateFormat)}
               src={line.authorAvatarUrl}
               alt={line.author}
               width={16}
@@ -773,7 +765,7 @@ function BlameCell({
               draggable={false}
             />
             <span className="blame-summary">{line.summary}</span>
-            <span className="blame-date">{shortDate(line.date)}</span>
+            <span className="blame-date">{formatDateOnly(line.date, dateFormat)}</span>
           </button>
         ))}
     </div>
@@ -798,6 +790,7 @@ function HistoryBody({
   onPickRev: (hash: string) => void;
   onSelectCommit?: (hash: string) => void;
 }) {
+  const dateFormat = useDateFormat();
   if (history === null) return <p className="diff-empty">Loading…</p>;
   if (history.length === 0) return <p className="diff-empty">No history for this file.</p>;
 
@@ -838,7 +831,7 @@ function HistoryBody({
                 {commit.subject}
               </span>
               <span className="file-history-meta">
-                {shortDate(commit.date)} · {commit.author}
+                {formatDateOnly(commit.date, dateFormat)} · {commit.author}
               </span>
             </span>
             {/* The hash is its own hover target: it jumps to the commit in the

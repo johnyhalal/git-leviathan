@@ -15,9 +15,11 @@ import type {
   ResetMode,
   ResetPreview,
   WorkingStatus,
+  DateFormat,
 } from '../../../../types/ipc';
 import { CheckIcon, LocalIcon, MinusIcon, PencilIcon, PlusIcon, TagIcon } from '../../../../../assets/icons';
 import { useConfirm } from '../ConfirmBar';
+import { formatDateTime, useDateFormat } from '../../dateFormat';
 import { RemoteAvatar } from './RemoteAvatar';
 import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
 import { TagContextMenu } from './TagContextMenu';
@@ -38,35 +40,6 @@ const noop = () => undefined;
 const COLUMN_META = Object.fromEntries(
   COMMIT_COLUMNS.map((c) => [c.key, c]),
 ) as Record<CommitColumnKey, CommitColumnDef>;
-
-/**
- * How the Date column renders. Tweak these to change the format everywhere:
- * `DATE_FORMAT`/`TIME_FORMAT` are `Intl.DateTimeFormat` option sets (pass `null`
- * to a part to omit it) and `DATE_SEPARATOR` joins them. Locale is the system
- * default (`undefined`).
- */
-const DATE_FORMAT: Intl.DateTimeFormatOptions | null = {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-};
-const TIME_FORMAT: Intl.DateTimeFormatOptions | null = {
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-};
-const DATE_SEPARATOR = ' · ';
-
-const dateFmt = DATE_FORMAT && new Intl.DateTimeFormat(undefined, DATE_FORMAT);
-const timeFmt = TIME_FORMAT && new Intl.DateTimeFormat(undefined, TIME_FORMAT);
-
-function formatDate(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return [dateFmt?.format(date), timeFmt?.format(date)]
-    .filter(Boolean)
-    .join(DATE_SEPARATOR);
-}
 
 /** Highest lane index used by any row — sets the graph column width. */
 function maxLaneOf(graph: GraphNode[]): number {
@@ -628,6 +601,8 @@ function BranchDropMenu({
 /** Context passed to each column's cell renderer for a single row. */
 interface CellContext {
   commit: CommitLogEntry;
+  /** The user's date/time display preference, for the Date column. */
+  dateFormat: DateFormat;
   graph: GraphNode;
   maxLane: number;
   /** Remote name → fetch URL, for resolving a remote badge's avatar. */
@@ -924,7 +899,7 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
     case 'date':
       return (
         <td key={key} className="commit-date">
-          <div className="commit-cell-inset">{formatDate(commit.date)}</div>
+          <div className="commit-cell-inset">{formatDateTime(commit.date, ctx.dateFormat)}</div>
         </td>
       );
     case 'author':
@@ -976,6 +951,7 @@ export function CommitList({
   onDeleteRemoteBranch,
 }: CommitListProps) {
   const requestConfirm = useConfirm();
+  const dateFormat = useDateFormat();
   const graph = useMemo(() => computeGraph(commits ?? []), [commits]);
   const maxLane = useMemo(() => maxLaneOf(graph), [graph]);
   const laneBranches = useMemo(() => laneBranchByHash(commits ?? []), [commits]);
@@ -1219,6 +1195,7 @@ export function CommitList({
               : undefined;
           const ctx: CellContext = {
             commit,
+            dateFormat,
             graph: graph[index],
             maxLane,
             urlByRemote,

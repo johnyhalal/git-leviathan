@@ -46,6 +46,10 @@ export const AppChannels = {
   getTelemetryEnabled: 'app:get-telemetry-enabled',
   /** Renderer -> main (invoke): turn anonymous usage analytics on/off. */
   setTelemetryEnabled: 'app:set-telemetry-enabled',
+  /** Renderer -> main (invoke): read the date/time display format. */
+  getDateFormat: 'app:get-date-format',
+  /** Renderer -> main (invoke): persist the date/time display format (global). */
+  setDateFormat: 'app:set-date-format',
   /**
    * Renderer -> main (invoke): whether the one-time analytics notice still
    * needs to be shown to this install (never acknowledged, analytics still on).
@@ -538,6 +542,20 @@ export const UPDATE_CHECK_INTERVALS = [30, 60, 360, 1440, 0] as const;
 export type UpdateCheckInterval = (typeof UPDATE_CHECK_INTERVALS)[number];
 /** Interval applied when the user hasn't chosen one: hourly. */
 export const DEFAULT_UPDATE_CHECK_INTERVAL = 60;
+
+/**
+ * How dates and times are shown across the app (commit list, commit details,
+ * blame, file history, pull requests):
+ * - `system`   — the OS locale's style, e.g. "Sep 23, 2026 · 14:05"
+ * - `iso`      — ISO 8601, e.g. "2026-09-23 14:05"
+ * - `us`       — month first, 12-hour clock, e.g. "09/23/2026 2:05 PM"
+ * - `eu`       — day first, 24-hour clock, e.g. "23/09/2026 14:05"
+ * - `relative` — time ago, e.g. "3 days ago"
+ */
+export const DATE_FORMATS = ['system', 'iso', 'us', 'eu', 'relative'] as const;
+export type DateFormat = (typeof DATE_FORMATS)[number];
+/** Format applied when the user hasn't chosen one. */
+export const DEFAULT_DATE_FORMAT: DateFormat = 'system';
 
 /** A ref decoration attached to a commit (branch tip, tag, HEAD, …). */
 export type RefKind = 'head' | 'branch' | 'remote' | 'tag';
@@ -1535,6 +1553,13 @@ export interface AppApi {
   getTelemetryEnabled(): Promise<boolean>;
   /** Turn anonymous usage analytics on/off (global). */
   setTelemetryEnabled(enabled: boolean): Promise<void>;
+  /**
+   * Read the date/time display format. Defaults to
+   * {@link DEFAULT_DATE_FORMAT} when unset.
+   */
+  getDateFormat(): Promise<DateFormat>;
+  /** Persist the date/time display format (global). */
+  setDateFormat(format: DateFormat): Promise<void>;
   /**
    * Whether the one-time "usage analytics is on — you can turn it off in
    * Settings" notice should still be shown. True until acknowledged, and only

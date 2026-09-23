@@ -66,6 +66,7 @@ import {
   type RecentRepo,
   type RemoteRepo,
   type UpdateCheckInterval,
+  type DateFormat,
   type RepoInfo,
   type RepoRefs,
   type ResetMode,
@@ -117,6 +118,10 @@ const api: ExposedApi = {
         AppChannels.setTelemetryEnabled,
         enabled,
       ) as Promise<void>,
+    getDateFormat: () =>
+      ipcRenderer.invoke(AppChannels.getDateFormat) as Promise<DateFormat>,
+    setDateFormat: (format: DateFormat) =>
+      ipcRenderer.invoke(AppChannels.setDateFormat, format) as Promise<void>,
     getTelemetryNoticePending: () =>
       ipcRenderer.invoke(
         AppChannels.getTelemetryNoticePending,

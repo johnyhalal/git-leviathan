@@ -1,9 +1,11 @@
 import { useEffect } from 'react';
 import { CloseIcon, BranchIcon } from '../../../../../assets/icons';
+import { formatDateOnly, useDateFormat } from '../../dateFormat';
 import type {
   IntegrationProvider,
   PullRequestState,
   PullRequestSummary,
+  DateFormat,
 } from '../../../../types/ipc';
 
 const PR_STATE_LABEL: Record<PullRequestState, string> = {
@@ -18,17 +20,10 @@ const PROVIDER_LABEL: Record<IntegrationProvider, string> = {
   gitlab: 'GitLab',
 };
 
-/** Format an ISO timestamp as a short local date, or '' when absent/unparseable. */
-function formatDate(iso: string | undefined): string {
-  if (!iso) return '';
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime())
-    ? ''
-    : date.toLocaleDateString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      });
+/** Format an ISO timestamp as a date, or '' when absent/unparseable. */
+function formatDate(iso: string | undefined, dateFormat: DateFormat): string {
+  if (!iso || Number.isNaN(new Date(iso).getTime())) return '';
+  return formatDateOnly(iso, dateFormat);
 }
 
 interface PullRequestDialogProps {
@@ -51,8 +46,9 @@ export function PullRequestDialog({ pull, provider, onClose }: PullRequestDialog
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
-  const created = formatDate(pull.createdAt);
-  const updated = formatDate(pull.updatedAt);
+  const dateFormat = useDateFormat();
+  const created = formatDate(pull.createdAt, dateFormat);
+  const updated = formatDate(pull.updatedAt, dateFormat);
 
   return (
     <div className="settings-overlay" onClick={onClose}>
