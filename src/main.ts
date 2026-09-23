@@ -39,6 +39,8 @@ import {
   UpdateChannels,
   GLOBAL_ACTIVITY_PATH,
   type ClaudeStatus,
+  type ClaudeModel,
+  DEFAULT_CLAUDE_MODEL,
   type GenerateCommitResult,
   type CloneProgress,
   type CloneRequest,
@@ -291,6 +293,8 @@ interface Settings {
   sshKeys?: Partial<Record<IntegrationProvider, SshKeyInfo[]>>;
   /** Saved Claude Code connection (detected `claude` binary), when connected. */
   claudeConnection?: ClaudeConnection;
+  /** Model used for commit-message generation; absent means the default. */
+  claudeModel?: ClaudeModel;
   /**
    * Whether anonymous usage analytics are sent to Aptabase. On by default
    * (absent means enabled); toggled from General settings.
@@ -423,6 +427,10 @@ function isClaudeConnection(value: unknown): value is ClaudeConnection {
   );
 }
 
+function isClaudeModel(value: unknown): value is ClaudeModel {
+  return value === 'haiku' || value === 'sonnet' || value === 'opus';
+}
+
 function loadSettings(): void {
   try {
     const parsed = JSON.parse(
@@ -504,6 +512,9 @@ function loadSettings(): void {
     }
     if (isClaudeConnection(parsed.claudeConnection)) {
       settings.claudeConnection = parsed.claudeConnection;
+    }
+    if (isClaudeModel(parsed.claudeModel)) {
+      settings.claudeModel = parsed.claudeModel;
     }
     if (typeof parsed.telemetryEnabled === 'boolean') {
       settings.telemetryEnabled = parsed.telemetryEnabled;
@@ -7318,6 +7329,7 @@ function registerClaudeIpc(): void {
     connected: Boolean(settings.claudeConnection),
     binaryPath: settings.claudeConnection?.binaryPath,
     version: settings.claudeConnection?.version,
+    model: settings.claudeModel ?? DEFAULT_CLAUDE_MODEL,
     error,
   });
 
@@ -7336,6 +7348,16 @@ function registerClaudeIpc(): void {
         binaryPath: probe.binaryPath,
         version: probe.version,
       };
+      saveSettings();
+      return currentStatus();
+    },
+  );
+
+  ipcMain.handle(
+    ClaudeChannels.setModel,
+    (_event, model: unknown): ClaudeStatus => {
+      if (!isClaudeModel(model)) return currentStatus('Unknown model.');
+      settings.claudeModel = model;
       saveSettings();
       return currentStatus();
     },
@@ -7394,6 +7416,9 @@ function registerClaudeIpc(): void {
         ? await runGitDiff(repoPath, [
             'diff',
             '--cached',
+            // One line of context instead of three: enough to see what a hunk
+            // touches, a third fewer tokens to pay for.
+            '-U1',
             '--',
             ...includedFiles.map((f) => `:(literal)${f}`),
           ])
@@ -7423,6 +7448,16 @@ function registerClaudeIpc(): void {
           excludedFiles,
           recentSubjects,
           repoPath,
+          settings.claudeModel ?? DEFAULT_CLAUDE_MODEL,
+          (text) =>
+            emitActivity({
+              repoPath,
+              op: 'generate',
+              kind: 'line',
+              stream: 'stdout',
+              text,
+              ts: Date.now(),
+            }),
         );
         if (!message.trim()) {
           emitActivity({ repoPath, op: 'generate', kind: 'end', ok: false, ts: Date.now() });
