@@ -43,3 +43,8 @@ export { SparkleIcon } from './SparkleIcon';
 export { StarIcon } from './StarIcon';
 export { FeedbackIcon } from './FeedbackIcon';
 export { RefreshIcon } from './RefreshIcon';
+export { HunkViewIcon } from './HunkViewIcon';
+export { InlineViewIcon } from './InlineViewIcon';
+export { SplitViewIcon } from './SplitViewIcon';
+export { WhitespaceIcon } from './WhitespaceIcon';
+export { WrapIcon } from './WrapIcon';

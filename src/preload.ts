@@ -37,6 +37,7 @@ import {
   type CommitLogEntry,
   type CommitSearchResult,
   type DiffLineRef,
+  type DiffOptions,
   type LinesResult,
   type CommitDetailData,
   type CommitResult,
@@ -153,8 +154,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.commitFiles, path, hash) as Promise<FileChange[]>,
     commitTree: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.commitTree, path, hash) as Promise<string[]>,
-    fileDiff: (path: string, source: DiffSource, file: string) =>
-      ipcRenderer.invoke(RepoChannels.fileDiff, path, source, file) as Promise<FileDiff>,
+    fileDiff: (path: string, source: DiffSource, file: string, options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.fileDiff, path, source, file, options) as Promise<FileDiff>,
     fileContent: (path: string, source: DiffSource, file: string) =>
       ipcRenderer.invoke(RepoChannels.fileContent, path, source, file) as Promise<string[]>,
     fileBlame: (path: string, rev: string, file: string) =>
@@ -167,18 +168,18 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.status, path) as Promise<WorkingStatus>,
     stage: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.stage, path, file) as Promise<WorkingStatus>,
-    stageHunk: (path: string, file: string, hunkIndex: number) =>
-      ipcRenderer.invoke(RepoChannels.stageHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
-    discardHunk: (path: string, file: string, hunkIndex: number) =>
-      ipcRenderer.invoke(RepoChannels.discardHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
-    unstageHunk: (path: string, file: string, hunkIndex: number) =>
-      ipcRenderer.invoke(RepoChannels.unstageHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
-    stageLines: (path: string, file: string, lines: DiffLineRef[]) =>
-      ipcRenderer.invoke(RepoChannels.stageLines, path, file, lines) as Promise<LinesResult>,
-    unstageLines: (path: string, file: string, lines: DiffLineRef[]) =>
-      ipcRenderer.invoke(RepoChannels.unstageLines, path, file, lines) as Promise<LinesResult>,
-    discardLines: (path: string, file: string, lines: DiffLineRef[]) =>
-      ipcRenderer.invoke(RepoChannels.discardLines, path, file, lines) as Promise<LinesResult>,
+    stageHunk: (path: string, file: string, hunkIndex: number, options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.stageHunk, path, file, hunkIndex, options) as Promise<WorkingStatus>,
+    discardHunk: (path: string, file: string, hunkIndex: number, options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.discardHunk, path, file, hunkIndex, options) as Promise<WorkingStatus>,
+    unstageHunk: (path: string, file: string, hunkIndex: number, options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.unstageHunk, path, file, hunkIndex, options) as Promise<WorkingStatus>,
+    stageLines: (path: string, file: string, lines: DiffLineRef[], options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.stageLines, path, file, lines, options) as Promise<LinesResult>,
+    unstageLines: (path: string, file: string, lines: DiffLineRef[], options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.unstageLines, path, file, lines, options) as Promise<LinesResult>,
+    discardLines: (path: string, file: string, lines: DiffLineRef[], options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.discardLines, path, file, lines, options) as Promise<LinesResult>,
     unstage: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.unstage, path, file) as Promise<WorkingStatus>,
     discardAll: (path: string) =>

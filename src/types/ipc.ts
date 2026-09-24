@@ -733,6 +733,18 @@ export interface DiffLine {
 }
 
 /**
+ * How a file diff is read:
+ * - `context` — `hunks` (git's default 3 lines around each change) or `full`
+ *   (the whole file, so every line shows with the changes inline).
+ * - `ignoreWhitespace` — hide whitespace-only changes (`git diff -w`). Display
+ *   only: staging calls never apply it.
+ */
+export interface DiffOptions {
+  context?: 'hunks' | 'full';
+  ignoreWhitespace?: boolean;
+}
+
+/**
  * One row of a file diff picked for line-level staging: the 0-based hunk index
  * (in diff order) and the row's index within that hunk's body (context, added
  * and deleted rows in order — the `@@` header isn't counted).
@@ -1657,7 +1669,7 @@ export interface RepoApi {
    * Read the parsed unified diff of `file` at `source` (a commit against its
    * parent, or a staged/unstaged working-tree change).
    */
-  fileDiff(path: string, source: DiffSource, file: string): Promise<FileDiff>;
+  fileDiff(path: string, source: DiffSource, file: string, options?: DiffOptions): Promise<FileDiff>;
   /**
    * Read `file`'s full content at `source` as an array of lines, for the diff
    * viewer's "file view". For an unstaged source this is the on-disk working
@@ -1689,30 +1701,31 @@ export interface RepoApi {
   /**
    * Stage just the `hunkIndex`-th hunk (0-based, in diff order) of `file`'s
    * unstaged changes by applying that single hunk to the index. Returns fresh
-   * status.
+   * status. Hunk and line calls take the viewer's DiffOptions so their indices
+   * refer to the same diff that was shown (`ignoreWhitespace` is ignored).
    */
-  stageHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
+  stageHunk(path: string, file: string, hunkIndex: number, options?: DiffOptions): Promise<WorkingStatus>;
   /**
    * Discard just the `hunkIndex`-th hunk (0-based, in diff order) of `file`'s
    * unstaged changes by reverse-applying that hunk to the working tree.
    * Irreversible. Returns fresh status.
    */
-  discardHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
+  discardHunk(path: string, file: string, hunkIndex: number, options?: DiffOptions): Promise<WorkingStatus>;
   /**
    * Unstage just the `hunkIndex`-th hunk (0-based, in diff order) of `file`'s
    * staged changes by reverse-applying that hunk to the index. Returns fresh
    * status.
    */
-  unstageHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
+  unstageHunk(path: string, file: string, hunkIndex: number, options?: DiffOptions): Promise<WorkingStatus>;
   /** Stage only the picked changed rows of `file`'s unstaged diff. */
-  stageLines(path: string, file: string, lines: DiffLineRef[]): Promise<LinesResult>;
+  stageLines(path: string, file: string, lines: DiffLineRef[], options?: DiffOptions): Promise<LinesResult>;
   /** Unstage only the picked changed rows of `file`'s staged diff. */
-  unstageLines(path: string, file: string, lines: DiffLineRef[]): Promise<LinesResult>;
+  unstageLines(path: string, file: string, lines: DiffLineRef[], options?: DiffOptions): Promise<LinesResult>;
   /**
    * Discard only the picked changed rows of `file`'s unstaged diff from the
    * working tree. Irreversible.
    */
-  discardLines(path: string, file: string, lines: DiffLineRef[]): Promise<LinesResult>;
+  discardLines(path: string, file: string, lines: DiffLineRef[], options?: DiffOptions): Promise<LinesResult>;
   /** Unstage `file` (a path), or everything when null. Returns fresh status. */
   unstage(path: string, file: string | null): Promise<WorkingStatus>;
   /**

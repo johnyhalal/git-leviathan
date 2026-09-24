@@ -79,6 +79,7 @@ import {
   type CommitLogEntry,
   type CommitSearchResult,
   type DiffLineRef,
+  type DiffOptions,
   type LinesResult,
   type CommitRefDecoration,
   type CommitDetailData,
@@ -2302,7 +2303,25 @@ function parseUnifiedDiff(patch: string): { binary: boolean; lines: DiffLine[] }
 }
 
 /** The git args that emit `file`'s unified diff for a given diff source. */
-function fileDiffArgs(source: DiffSource, file: string): string[] {
+function fileDiffArgs(source: DiffSource, file: string, options: DiffOptions = {}): string[] {
+  const args = baseFileDiffArgs(source, file);
+  const flags = diffOptionFlags(options);
+  // The option flags go right after the subcommand (before any revision / `--`).
+  return flags.length > 0 ? [args[0], ...flags, ...args.slice(1)] : args;
+}
+
+/** Context lines that stand in for "the whole file" (`--unified` needs a number). */
+const FULL_CONTEXT_LINES = 1_000_000;
+
+/** The extra `git diff`/`show` flags a DiffOptions asks for. */
+function diffOptionFlags(options: DiffOptions): string[] {
+  const flags: string[] = [];
+  if (options.context === 'full') flags.push(`--unified=${FULL_CONTEXT_LINES}`);
+  if (options.ignoreWhitespace) flags.push('--ignore-all-space');
+  return flags;
+}
+
+function baseFileDiffArgs(source: DiffSource, file: string): string[] {
   switch (source.kind) {
     case 'commit':
       // `show --format=` prints just the patch; --root lists the initial commit's
@@ -2367,10 +2386,22 @@ async function isUntracked(cwd: string, file: string): Promise<boolean> {
  * untracked file isn't part of git's diff (it prints nothing), so it's diffed
  * against an empty file, matching how it renders once `git add`ed.
  */
-async function rawUnstagedDiff(cwd: string, file: string): Promise<string> {
-  const out = await runGit(cwd, fileDiffArgs({ kind: 'unstaged' }, file));
+async function rawUnstagedDiff(
+  cwd: string,
+  file: string,
+  options: DiffOptions = {},
+): Promise<string> {
+  const out = await runGit(cwd, fileDiffArgs({ kind: 'unstaged' }, file, options));
   if (out === '' && (await isUntracked(cwd, file))) {
-    return runGitDiff(cwd, ['diff', '--no-color', '--no-index', '--', '/dev/null', file]);
+    return runGitDiff(cwd, [
+      'diff',
+      '--no-color',
+      ...diffOptionFlags(options),
+      '--no-index',
+      '--',
+      '/dev/null',
+      file,
+    ]);
   }
   return out;
 }
@@ -2379,11 +2410,12 @@ async function readFileDiff(
   cwd: string,
   source: DiffSource,
   file: string,
+  options: DiffOptions = {},
 ): Promise<FileDiff> {
   const out =
     source.kind === 'unstaged'
-      ? await rawUnstagedDiff(cwd, file)
-      : await runGit(cwd, fileDiffArgs(source, file));
+      ? await rawUnstagedDiff(cwd, file, options)
+      : await runGit(cwd, fileDiffArgs(source, file, options));
   const { binary, lines } = parseUnifiedDiff(out);
   return { path: file, binary, lines };
 }
@@ -4155,6 +4187,24 @@ function registerRepoIpc(): void {
     return null;
   };
 
+  // Narrow an untrusted IPC value to DiffOptions (unknown/invalid fields dropped).
+  const asDiffOptions = (value: unknown): DiffOptions => {
+    if (typeof value !== 'object' || value === null) return {};
+    const raw = value as { context?: unknown; ignoreWhitespace?: unknown };
+    const options: DiffOptions = {};
+    if (raw.context === 'full' || raw.context === 'hunks') options.context = raw.context;
+    if (raw.ignoreWhitespace === true) options.ignoreWhitespace = true;
+    return options;
+  };
+
+  // Staging patches are carved from a diff re-read with the viewer's context, so
+  // hunk/row indices line up with what's on screen. Whitespace-ignoring diffs
+  // can't be applied faithfully, so that option never reaches a staging read.
+  const stagingOptions = (value: unknown): DiffOptions => {
+    const { context } = asDiffOptions(value);
+    return context ? { context } : {};
+  };
+
   ipcMain.handle(
     RepoChannels.fileDiff,
     async (
@@ -4162,6 +4212,7 @@ function registerRepoIpc(): void {
       repoPath: unknown,
       source: unknown,
       file: unknown,
+      options: unknown,
     ): Promise<FileDiff> => {
       const src = asDiffSource(source);
       if (
@@ -4173,7 +4224,7 @@ function registerRepoIpc(): void {
       ) {
         return { path: typeof file === 'string' ? file : '', binary: false, lines: [] };
       }
-      return readFileDiff(repoPath, src, file);
+      return readFileDiff(repoPath, src, file, asDiffOptions(options));
     },
   );
 
@@ -4284,6 +4335,7 @@ function registerRepoIpc(): void {
     hunkIndex: unknown,
     from: 'staged' | 'unstaged',
     args: string[],
+    options: DiffOptions = {},
   ): Promise<WorkingStatus> => {
     if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
     if (typeof file !== 'string' || file.length === 0) return readStatus(repoPath);
@@ -4292,8 +4344,8 @@ function registerRepoIpc(): void {
     }
     const rawDiff =
       from === 'staged'
-        ? await runGit(repoPath, fileDiffArgs({ kind: 'staged' }, file))
-        : await rawUnstagedDiff(repoPath, file);
+        ? await runGit(repoPath, fileDiffArgs({ kind: 'staged' }, file, options))
+        : await rawUnstagedDiff(repoPath, file, options);
     const patch = extractHunkPatch(rawDiff, hunkIndex);
     if (patch !== null) await runGitApply(repoPath, args, patch);
     return readStatus(repoPath);
@@ -4301,21 +4353,21 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.stageHunk,
-    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
-      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--cached']),
+    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown, options: unknown): Promise<WorkingStatus> =>
+      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--cached'], stagingOptions(options)),
   );
 
   ipcMain.handle(
     RepoChannels.discardHunk,
-    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
-      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--reverse']),
+    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown, options: unknown): Promise<WorkingStatus> =>
+      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--reverse'], stagingOptions(options)),
   );
 
   // Unstage reverse-applies the hunk to the index alone (worktree untouched).
   ipcMain.handle(
     RepoChannels.unstageHunk,
-    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
-      applyHunk(repoPath, file, hunkIndex, 'staged', ['--cached', '--reverse']),
+    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown, options: unknown): Promise<WorkingStatus> =>
+      applyHunk(repoPath, file, hunkIndex, 'staged', ['--cached', '--reverse'], stagingOptions(options)),
   );
 
   // Stage/unstage/discard only some changed lines: like `applyHunk`, but the
@@ -4327,6 +4379,7 @@ function registerRepoIpc(): void {
     lines: unknown,
     from: 'staged' | 'unstaged',
     args: string[],
+    options: DiffOptions = {},
   ): Promise<LinesResult> => {
     if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return { status: emptyStatus };
     if (typeof file !== 'string' || file.length === 0) {
@@ -4356,8 +4409,8 @@ function registerRepoIpc(): void {
     }
     const rawDiff =
       from === 'staged'
-        ? await runGit(repoPath, fileDiffArgs({ kind: 'staged' }, file))
-        : await rawUnstagedDiff(repoPath, file);
+        ? await runGit(repoPath, fileDiffArgs({ kind: 'staged' }, file, options))
+        : await rawUnstagedDiff(repoPath, file, options);
     const patch = extractLinesPatch(rawDiff, picks, args.includes('--reverse'));
     let error: string | undefined;
     if (patch === null) {
@@ -4373,21 +4426,21 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.stageLines,
-    (_event, repoPath: unknown, file: unknown, lines: unknown): Promise<LinesResult> =>
-      applyLines(repoPath, file, lines, 'unstaged', ['--cached']),
+    (_event, repoPath: unknown, file: unknown, lines: unknown, options: unknown): Promise<LinesResult> =>
+      applyLines(repoPath, file, lines, 'unstaged', ['--cached'], stagingOptions(options)),
   );
 
   ipcMain.handle(
     RepoChannels.unstageLines,
-    (_event, repoPath: unknown, file: unknown, lines: unknown): Promise<LinesResult> =>
-      applyLines(repoPath, file, lines, 'staged', ['--cached', '--reverse']),
+    (_event, repoPath: unknown, file: unknown, lines: unknown, options: unknown): Promise<LinesResult> =>
+      applyLines(repoPath, file, lines, 'staged', ['--cached', '--reverse'], stagingOptions(options)),
   );
 
   // Discard reverse-applies the picked lines to the working tree (index untouched).
   ipcMain.handle(
     RepoChannels.discardLines,
-    (_event, repoPath: unknown, file: unknown, lines: unknown): Promise<LinesResult> =>
-      applyLines(repoPath, file, lines, 'unstaged', ['--reverse']),
+    (_event, repoPath: unknown, file: unknown, lines: unknown, options: unknown): Promise<LinesResult> =>
+      applyLines(repoPath, file, lines, 'unstaged', ['--reverse'], stagingOptions(options)),
   );
 
   ipcMain.handle(

@@ -4,6 +4,7 @@ import type {
   BlameLine,
   CommitLogEntry,
   DiffLineRef,
+  DiffOptions,
   DiffSource,
   FileBlame,
   FileDiff,
@@ -21,9 +22,15 @@ import { useResizableColumns } from './useResizableColumns';
 import {
   ChevronDownIcon,
   CloseIcon,
+  HunkViewIcon,
+  InlineViewIcon,
   MinusIcon,
   PencilIcon,
   PlusIcon,
+  SplitViewIcon,
+  WhitespaceIcon,
+  WrapIcon,
+  type IconProps,
 } from '../../../../../assets/icons';
 
 /**
@@ -68,6 +75,54 @@ function blameTooltip(line: BlameLine, dateFormat: DateFormat): string {
 
 /** What the body shows: the change to the file, or the file itself. */
 export type ViewMode = 'diff' | 'file';
+
+/**
+ * How diff mode lays a change out: `hunks` shows just the changed regions with
+ * a little context, `inline` the whole file with the changes woven in, and
+ * `split` the whole file's old and new versions side by side.
+ */
+type DiffLayout = 'hunks' | 'inline' | 'split';
+
+/** The viewer's display preferences, remembered across files and restarts. */
+interface DiffPrefs {
+  layout: DiffLayout;
+  /** Hide whitespace-only changes (display only — staging is off meanwhile). */
+  ignoreWhitespace: boolean;
+  /** Soft-wrap long lines instead of scrolling horizontally. */
+  wrap: boolean;
+}
+
+const DIFF_PREFS_KEY = 'gitleviathan.diffPrefs';
+const DEFAULT_DIFF_PREFS: DiffPrefs = { layout: 'hunks', ignoreWhitespace: false, wrap: false };
+
+/** The layout switch's buttons, in order. */
+const DIFF_LAYOUTS: { layout: DiffLayout; label: string; Icon: (props: IconProps) => React.JSX.Element }[] = [
+  { layout: 'hunks', label: 'Hunk view', Icon: HunkViewIcon },
+  { layout: 'inline', label: 'Inline view', Icon: InlineViewIcon },
+  { layout: 'split', label: 'Split view', Icon: SplitViewIcon },
+];
+
+function loadDiffPrefs(): DiffPrefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DIFF_PREFS_KEY) ?? '{}') as Partial<DiffPrefs>;
+    return {
+      layout:
+        raw.layout === 'inline' || raw.layout === 'split' ? raw.layout : DEFAULT_DIFF_PREFS.layout,
+      ignoreWhitespace: raw.ignoreWhitespace === true,
+      wrap: raw.wrap === true,
+    };
+  } catch {
+    return DEFAULT_DIFF_PREFS;
+  }
+}
+
+function saveDiffPrefs(prefs: DiffPrefs) {
+  try {
+    localStorage.setItem(DIFF_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage unavailable — the preference just won't persist.
+  }
+}
 
 // The history sidebar's width, remembered across viewers for the session so a
 // resized sidebar comes back the same when the next file is opened.
@@ -127,6 +182,24 @@ export function DiffView({
   // returns to what the user chose.
   const [preferredMode, setPreferredMode] = useState<ViewMode>(target.view ?? 'diff');
   const [showBlame, setShowBlame] = useState(target.blame ?? false);
+  const [prefs, setPrefs] = useState<DiffPrefs>(loadDiffPrefs);
+  const updatePrefs = (patch: Partial<DiffPrefs>) => {
+    setPrefs((prev) => {
+      const next = { ...prev, ...patch };
+      saveDiffPrefs(next);
+      return next;
+    });
+  };
+  // How the diff is read: the whole file for the inline and split layouts, and optionally
+  // without whitespace-only changes. Hunk/line staging passes the same options
+  // so its indices match what's on screen.
+  const diffOptions = useMemo<DiffOptions>(
+    () => ({
+      context: prefs.layout === 'hunks' ? 'hunks' : 'full',
+      ignoreWhitespace: prefs.ignoreWhitespace,
+    }),
+    [prefs.layout, prefs.ignoreWhitespace],
+  );
   const [showHistory, setShowHistory] = useState(target.history ?? false);
   // Opening the history sidebar selects its first (newest) commit; when the
   // history is still loading, this defers that until it arrives.
@@ -174,6 +247,11 @@ export function DiffView({
     diff.lines.length > 0 &&
     diff.lines.every((line) => line.kind === 'add' || line.kind === 'hunk');
   const mode: ViewMode = wholeFile ? 'file' : preferredMode;
+  // The row-aligned blame column can't sit beside split view's two panes, nor
+  // beside wrapped rows (they vary in height).
+  const split = mode === 'diff' && prefs.layout === 'split';
+  const blameOn = showBlame && !split;
+  const wrapOn = prefs.wrap && !blameOn;
 
   // The viewed revision (or the file) changed: rev-dependent views are stale.
   useEffect(() => {
@@ -181,6 +259,11 @@ export function DiffView({
     setContent(null);
     setBlame(null);
   }, [repoPath, path, viewSource]);
+
+  // A different diff read (layout context / whitespace) needs a fresh diff only.
+  useEffect(() => {
+    setDiff(null);
+  }, [diffOptions]);
 
   // Load the file's history once per file — it powers both the timeline and the
   // older/newer steppers, so it's fetched eagerly rather than only in history mode.
@@ -200,13 +283,13 @@ export function DiffView({
   useEffect(() => {
     if (diff !== null) return;
     let live = true;
-    void window.api.repo.fileDiff(repoPath, viewSource, path).then((result) => {
+    void window.api.repo.fileDiff(repoPath, viewSource, path, diffOptions).then((result) => {
       if (live) setDiff(result);
     });
     return () => {
       live = false;
     };
-  }, [diff, repoPath, viewSource, path]);
+  }, [diff, repoPath, viewSource, path, diffOptions]);
 
   useEffect(() => {
     if (mode !== 'file' || content !== null) return;
@@ -220,7 +303,7 @@ export function DiffView({
   }, [mode, content, repoPath, viewSource, path]);
 
   useEffect(() => {
-    if (!showBlame || blame !== null) return;
+    if (!blameOn || blame !== null) return;
     let live = true;
     void window.api.repo.fileBlame(repoPath, blameRev, path).then((result) => {
       if (live) setBlame(result);
@@ -228,13 +311,19 @@ export function DiffView({
     return () => {
       live = false;
     };
-  }, [showBlame, blame, repoPath, blameRev, path]);
+  }, [blameOn, blame, repoPath, blameRev, path]);
 
   // Hunk-level actions only apply when the *original* working-tree change is in
   // view (rev === '' and a staged/unstaged source) — not a historical revision.
   const atOriginal = rev === '';
-  const canStageHunks = atOriginal && source.kind === 'unstaged';
-  const canUnstageHunks = atOriginal && source.kind === 'staged';
+  // A whitespace-ignoring diff can't be staged faithfully (its context lines
+  // needn't match the file), so hunk/line actions are off while it's shown.
+  const canStage = atOriginal && !prefs.ignoreWhitespace;
+  const canStageHunks = canStage && source.kind === 'unstaged';
+  const canUnstageHunks = canStage && source.kind === 'staged';
+  // Whole-hunk pills only in the hunk layout: inline and split read the whole
+  // file as a single hunk, where they'd act on every change at once.
+  const hunkButtons = prefs.layout === 'hunks';
   // After a hunk/line action, reload this side's diff. When that emptied it
   // (the last change was staged, unstaged or discarded), follow the file to the
   // other side if it still has changes there — as staging a whole file does —
@@ -242,7 +331,7 @@ export function DiffView({
   const afterHunk = useCallback(
     async (nextStatus: WorkingStatus) => {
       onWorkingStatusChange?.(nextStatus);
-      const fresh = await window.api.repo.fileDiff(repoPath, source, path);
+      const fresh = await window.api.repo.fileDiff(repoPath, source, path, diffOptions);
       if (fresh.lines.length > 0) {
         setDiff(fresh);
         return;
@@ -255,19 +344,19 @@ export function DiffView({
         onClose();
       }
     },
-    [onWorkingStatusChange, repoPath, source, path, onClose, onRetarget],
+    [onWorkingStatusChange, repoPath, source, path, diffOptions, onClose, onRetarget],
   );
   const stageHunk = useCallback(
     async (hunkIndex: number) => {
-      await afterHunk(await window.api.repo.stageHunk(repoPath, path, hunkIndex));
+      await afterHunk(await window.api.repo.stageHunk(repoPath, path, hunkIndex, diffOptions));
     },
-    [afterHunk, repoPath, path],
+    [afterHunk, repoPath, path, diffOptions],
   );
   const unstageHunk = useCallback(
     async (hunkIndex: number) => {
-      await afterHunk(await window.api.repo.unstageHunk(repoPath, path, hunkIndex));
+      await afterHunk(await window.api.repo.unstageHunk(repoPath, path, hunkIndex, diffOptions));
     },
-    [afterHunk, repoPath, path],
+    [afterHunk, repoPath, path, diffOptions],
   );
   // Line-level stage/unstage/discard. Guarded so a quick second click can't
   // fire against the pre-refresh diff, whose row indices the first action just
@@ -281,17 +370,17 @@ export function DiffView({
       try {
         const result =
           action === 'stage'
-            ? await window.api.repo.stageLines(repoPath, path, refs)
+            ? await window.api.repo.stageLines(repoPath, path, refs, diffOptions)
             : action === 'unstage'
-              ? await window.api.repo.unstageLines(repoPath, path, refs)
-              : await window.api.repo.discardLines(repoPath, path, refs);
+              ? await window.api.repo.unstageLines(repoPath, path, refs, diffOptions)
+              : await window.api.repo.discardLines(repoPath, path, refs, diffOptions);
         if (result.error) onError?.(LINE_ACTION_FAILED[action], result.error);
         await afterHunk(result.status);
       } finally {
         setLineBusy(false);
       }
     },
-    [lineBusy, repoPath, path, onError, afterHunk],
+    [lineBusy, repoPath, path, diffOptions, onError, afterHunk],
   );
   // Discarding is irreversible, so it's confirmed first; stage/unstage run as-is.
   const requestLines = useCallback(
@@ -325,13 +414,15 @@ export function DiffView({
             busyLabel: 'Discarding…',
             tone: 'danger',
             onClick: async () => {
-              await afterHunk(await window.api.repo.discardHunk(repoPath, path, hunkIndex));
+              await afterHunk(
+                await window.api.repo.discardHunk(repoPath, path, hunkIndex, diffOptions),
+              );
             },
           },
         ],
       });
     },
-    [requestConfirm, afterHunk, repoPath, path],
+    [requestConfirm, afterHunk, repoPath, path, diffOptions],
   );
 
   // Revision stepping through the file's history list. Index of the viewed rev
@@ -441,8 +532,10 @@ export function DiffView({
           <div className="diff-viewswitch" role="group" aria-label="Panels">
             <button
               type="button"
-              className={showBlame ? 'active' : ''}
-              aria-pressed={showBlame}
+              className={`tooltip-host${blameOn ? ' active' : ''}`}
+              data-tooltip={split ? 'Blame isn’t available in split view' : 'Show who last changed each line'}
+              aria-pressed={blameOn}
+              disabled={split}
               onClick={() => setShowBlame(!showBlame)}
             >
               Blame
@@ -478,6 +571,52 @@ export function DiffView({
               <ChevronDownIcon size={14} />
             </button>
           </div>
+          {mode === 'diff' && (
+            <div className="diff-viewswitch" role="group" aria-label="Diff layout">
+              {DIFF_LAYOUTS.map(({ layout, label, Icon }) => (
+                <button
+                  key={layout}
+                  type="button"
+                  className={`is-icon tooltip-host${prefs.layout === layout ? ' active' : ''}`}
+                  data-tooltip={label}
+                  aria-label={label}
+                  aria-pressed={prefs.layout === layout}
+                  onClick={() => updatePrefs({ layout })}
+                >
+                  <Icon size={16} />
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="diff-viewswitch" role="group" aria-label="Display options">
+            {mode === 'diff' && (
+              <button
+                type="button"
+                className={`is-icon tooltip-host${prefs.ignoreWhitespace ? ' active' : ''}`}
+                data-tooltip={
+                  prefs.ignoreWhitespace
+                    ? 'Ignore leading/trailing whitespace (staging is off while this is on)'
+                    : 'Ignore leading/trailing whitespace'
+                }
+                aria-label="Ignore leading/trailing whitespace"
+                aria-pressed={prefs.ignoreWhitespace}
+                onClick={() => updatePrefs({ ignoreWhitespace: !prefs.ignoreWhitespace })}
+              >
+                <WhitespaceIcon size={16} />
+              </button>
+            )}
+            <button
+              type="button"
+              className={`is-icon tooltip-host${wrapOn ? ' active' : ''}`}
+              data-tooltip={blameOn ? 'Word wrap (unavailable while blame is shown)' : 'Word wrap'}
+              aria-label="Word wrap"
+              aria-pressed={wrapOn}
+              disabled={blameOn}
+              onClick={() => updatePrefs({ wrap: !prefs.wrap })}
+            >
+              <WrapIcon size={16} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -504,11 +643,13 @@ export function DiffView({
             <DiffBody
               diff={diff}
               lang={lang}
-              blame={showBlame ? blame : undefined}
+              layout={split ? 'split' : 'unified'}
+              wrap={wrapOn}
+              blame={blameOn ? blame : undefined}
               onPickRev={pickRev}
-              onStageHunk={canStageHunks ? stageHunk : undefined}
-              onDiscardHunk={canStageHunks ? discardHunk : undefined}
-              onUnstageHunk={canUnstageHunks ? unstageHunk : undefined}
+              onStageHunk={hunkButtons && canStageHunks ? stageHunk : undefined}
+              onDiscardHunk={hunkButtons && canStageHunks ? discardHunk : undefined}
+              onUnstageHunk={hunkButtons && canUnstageHunks ? unstageHunk : undefined}
               linesMode={canStageHunks ? 'unstaged' : canUnstageHunks ? 'staged' : null}
               onLines={requestLines}
               lineBusy={lineBusy}
@@ -517,7 +658,8 @@ export function DiffView({
             <FileBody
               content={content}
               lang={lang}
-              blame={showBlame ? blame : undefined}
+              wrap={wrapOn}
+              blame={blameOn ? blame : undefined}
               onPickRev={pickRev}
             />
           )}
@@ -554,6 +696,12 @@ interface RowRef {
   /** Diff row index of the other half of an edited line, or null. */
   partner: number | null;
 }
+
+/** A row the diff body draws (see DiffBody's `displayRows`). */
+type DisplayRow =
+  | { kind: 'hunk'; index: number; hunk: number }
+  | { kind: 'line'; index: number }
+  | { kind: 'pair'; left: number | null; right: number | null };
 
 /** One row of the blame column, paired 1:1 with a row of the code pane. */
 interface BlameRowSpec {
@@ -624,15 +772,19 @@ function BlamePane({
   );
 }
 
-/** The unified-diff rendering: two line-number gutters and a marked code column.
- * Each line is highlighted on its own — add/delete/context lines don't form a
- * contiguous program, so a whole-hunk highlight would be misleading. With blame
- * on, a separate column beside the pane annotates each row that exists on the
- * diff's new side (context/add lines); deleted lines and hunk headers get a
- * blank cell. */
+/** The diff rendering. Unified: two line-number gutters and a marked code
+ * column per row. Split: each row pairs an old-side cell with a new-side cell
+ * (a run of removed lines beside the run of added lines that replaced it), each
+ * with its own gutter. Each line is highlighted on its own — add/delete/context
+ * lines don't form a contiguous program, so a whole-hunk highlight would be
+ * misleading. With blame on (unified only), a separate column beside the pane
+ * annotates each row that exists on the diff's new side (context/add lines);
+ * deleted lines and hunk headers get a blank cell. */
 function DiffBody({
   diff,
   lang,
+  layout = 'unified',
+  wrap = false,
   blame,
   onPickRev,
   onStageHunk,
@@ -644,6 +796,10 @@ function DiffBody({
 }: BlameColumn & {
   diff: FileDiff | null;
   lang: string | null;
+  /** One column of rows, or old and new side by side (always wrapped). */
+  layout?: 'unified' | 'split';
+  /** Soft-wrap long lines. */
+  wrap?: boolean;
   /** Stage the hunk at this index (unstaged view); paired with onDiscardHunk. */
   onStageHunk?: (hunkIndex: number) => void;
   onDiscardHunk?: (hunkIndex: number) => void;
@@ -660,6 +816,13 @@ function DiffBody({
   lineBusy?: boolean;
 }) {
   const { paneRef, scrollRef, sync, onWheel } = useBlameSync();
+  // Unwrapped split view renders old and new as two panes, each scrolling
+  // sideways on its own; their vertical scroll is mirrored so rows stay level.
+  const oldPaneRef = useRef<HTMLDivElement>(null);
+  const newPaneRef = useRef<HTMLDivElement>(null);
+  const mirrorScroll = (from: HTMLDivElement, to: HTMLDivElement | null) => {
+    if (to && to.scrollTop !== from.scrollTop) to.scrollTop = from.scrollTop;
+  };
 
   // Each diff row's address for line staging (null for hunk headers), plus its
   // "partner": in a block of removed lines directly followed by added lines,
@@ -702,6 +865,43 @@ function DiffBody({
     pairUp();
     return refs;
   }, [diff]);
+
+  // The rows to draw. Unified: one per diff line. Split: hunk headers, plus
+  // pairs — a context line on both sides, and each run of removed lines zipped
+  // with the run of added lines after it (the shorter side padded with blanks).
+  const displayRows = useMemo(() => {
+    const rows: DisplayRow[] = [];
+    if (diff === null) return rows;
+    let hunk = -1;
+    let deletes: number[] = [];
+    let adds: number[] = [];
+    const flush = () => {
+      for (let i = 0; i < Math.max(deletes.length, adds.length); i++) {
+        rows.push({ kind: 'pair', left: deletes[i] ?? null, right: adds[i] ?? null });
+      }
+      deletes = [];
+      adds = [];
+    };
+    diff.lines.forEach((line, index) => {
+      if (line.kind === 'hunk') {
+        flush();
+        hunk += 1;
+        rows.push({ kind: 'hunk', index, hunk });
+      } else if (layout === 'unified') {
+        rows.push({ kind: 'line', index });
+      } else if (line.kind === 'delete') {
+        if (adds.length > 0) flush();
+        deletes.push(index);
+      } else if (line.kind === 'add') {
+        adds.push(index);
+      } else {
+        flush();
+        rows.push({ kind: 'pair', left: index, right: index });
+      }
+    });
+    flush();
+    return rows;
+  }, [diff, layout]);
 
   // Multi-line selection (diff row indices), made by clicking the line-number
   // gutters: plain click selects one row (or clears a lone selection), ⌘/Ctrl
@@ -801,9 +1001,6 @@ function DiffBody({
   if (diff.lines.length === 0) return <p className="diff-empty">No changes.</p>;
 
   const hunkActions = (onStageHunk && onDiscardHunk) || onUnstageHunk;
-  // Hunks are numbered in diff order, matching how the main process re-derives
-  // them for `stageHunk`/`discardHunk`; count headers seen so far as we render.
-  let hunkIndex = -1;
   const lineButtons = linesMode !== null && onLines !== undefined;
   const primaryAction: LineAction = linesMode === 'staged' ? 'unstage' : 'stage';
   const lineButton = (action: LineAction, index: number) => (
@@ -832,6 +1029,205 @@ function DiffBody({
     </button>
   );
   const selectedRefs = toRefs([...selectedRows].sort((a, b) => a - b));
+
+  // A hunk's `@@` separator row, with its stage/discard/unstage pills (unless
+  // `withActions` is false — the old pane of an unwrapped split). Hunks are
+  // numbered in diff order, matching how the main process re-derives them.
+  const hunkRow = (index: number, hunk: number, withActions = true, key?: number) => {
+    const text = diff.lines[index].text;
+    const rangeEnd = text.indexOf('@@', 2);
+    const hunkText = rangeEnd === -1 ? text : text.slice(0, rangeEnd + 2);
+    return (
+      <div key={key ?? index} className="diff-line diff-line-hunk" role="row">
+        <span className="diff-hunk-text">{hunkText}</span>
+        {hunkActions && withActions && (
+          <span className="diff-hunk-actions">
+            {onUnstageHunk ? (
+              <button
+                type="button"
+                className="pill-btn pill-btn-red diff-hunk-btn tooltip-host"
+                data-tooltip="Unstage this hunk"
+                onClick={() => onUnstageHunk(hunk)}
+              >
+                Unstage Hunk
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="pill-btn pill-btn-red diff-hunk-btn tooltip-host"
+                  data-tooltip="Discard this hunk"
+                  onClick={() => onDiscardHunk?.(hunk)}
+                >
+                  Discard Hunk
+                </button>
+                <button
+                  type="button"
+                  className="pill-btn pill-btn-green diff-hunk-btn tooltip-host"
+                  data-tooltip="Stage this hunk"
+                  onClick={() => onStageHunk?.(hunk)}
+                >
+                  Stage Hunk
+                </button>
+              </>
+            )}
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  // One diff line as a row (unified) or as one side of a split row. `gutters`
+  // picks the line numbers shown; `discard` places the row's "Discard line"
+  // button (in split, only one side of a pair carries it).
+  const lineCell = (
+    index: number,
+    gutters: 'both' | 'old' | 'new',
+    discard: boolean,
+    key?: string | number,
+  ) => {
+    const line = diff.lines[index];
+    const sign = line.kind === 'add' ? '+' : line.kind === 'delete' ? '−' : '';
+    const actionable = lineButtons && line.kind !== 'context';
+    const classes = ['diff-line', `diff-line-${line.kind}`];
+    if (selectedRows.has(index)) classes.push('is-line-selected');
+    if (targetRows.has(index)) classes.push('is-line-target');
+    const gutterProps = actionable
+      ? {
+          className: 'diff-gutter is-selectable',
+          onClick: (event: React.MouseEvent) => selectRow(index, event),
+        }
+      : { className: 'diff-gutter' };
+    const firstNumber = gutters === 'new' ? line.newLine : line.oldLine;
+    return (
+      <div key={key ?? index} className={classes.join(' ')} role={key === undefined ? 'row' : 'cell'}>
+        <span {...gutterProps}>
+          {actionable && lineButton(primaryAction, index)}
+          {firstNumber ?? ''}
+        </span>
+        {gutters === 'both' && <span {...gutterProps}>{line.newLine ?? ''}</span>}
+        <span className="diff-sign" aria-hidden="true">
+          {sign}
+        </span>
+        <span
+          className="diff-code hljs"
+          dangerouslySetInnerHTML={{ __html: highlightLine(line.text, lang) }}
+        />
+        {actionable && discard && linesMode === 'unstaged' && (
+          <span className="diff-line-end">{lineButton('discard', index)}</span>
+        )}
+      </div>
+    );
+  };
+
+  // A split row: the old side's line (or a blank) beside the new side's. A
+  // context line appears on both sides. The discard button rides on the new
+  // side when it's a change there, otherwise on the old side.
+  const changed = (index: number | null) =>
+    index !== null && diff.lines[index].kind !== 'context';
+  const blank = (key: string | number) => (
+    <div key={key} className="diff-line diff-line-empty" role="cell" aria-hidden="true" />
+  );
+  const splitRow = (left: number | null, right: number | null, key: string) => {
+    return (
+      <div key={key} className="diff-split-row" role="row">
+        {left === null ? blank('l') : lineCell(left, 'old', !changed(right), 'l')}
+        {right === null ? blank('r') : lineCell(right, 'new', changed(right), 'r')}
+      </div>
+    );
+  };
+
+  // The floating actions for a multi-line selection.
+  const selectionBar = (
+    lineButtons && selectedRefs.length > 0 && (
+      <div className="diff-selection-bar" role="toolbar" aria-label="Selected lines">
+        <span className="diff-selection-count">
+          {selectedRefs.length} {selectedRefs.length === 1 ? 'line' : 'lines'} selected
+        </span>
+        {linesMode === 'unstaged' ? (
+          <>
+            <button
+              type="button"
+              className="pill-btn pill-btn-red diff-hunk-btn"
+              disabled={lineBusy}
+              onClick={() => onLines?.('discard', selectedRefs)}
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              className="pill-btn pill-btn-green diff-hunk-btn"
+              disabled={lineBusy}
+              onClick={() => onLines?.('stage', selectedRefs)}
+            >
+              Stage
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="pill-btn pill-btn-red diff-hunk-btn"
+            disabled={lineBusy}
+            onClick={() => onLines?.('unstage', selectedRefs)}
+          >
+            Unstage
+          </button>
+        )}
+        <button
+          type="button"
+          className="diff-selection-clear tooltip-host"
+          data-tooltip="Clear selection (Esc)"
+          aria-label="Clear selection"
+          onClick={() => {
+            setSelectedRows(new Set());
+            setAnchorRow(null);
+          }}
+        >
+          <CloseIcon size={10} />
+        </button>
+      </div>
+    )
+  );
+
+  // One side of an unwrapped split: every display row, drawn for that side
+  // only, at the same fixed row heights as the other pane so the two line up.
+  const splitPane = (side: 'old' | 'new') => {
+    const ref = side === 'old' ? oldPaneRef : newPaneRef;
+    const other = side === 'old' ? newPaneRef : oldPaneRef;
+    return (
+      <div
+        className={`diff-scroll diff-split-pane is-${side}`}
+        ref={ref}
+        onScroll={(event) => mirrorScroll(event.currentTarget, other.current)}
+      >
+        <div className="diff-lines" role="table">
+          {displayRows.map((row, i) => {
+            if (row.kind === 'hunk') return hunkRow(row.index, row.hunk, side === 'new', i);
+            if (row.kind === 'line') return null;
+            const index = side === 'old' ? row.left : row.right;
+            if (index === null) return blank(i);
+            const discard = side === 'new' ? changed(row.right) : !changed(row.right);
+            return lineCell(index, side, discard, i);
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const linesClass = ['diff-lines'];
+  if (layout === 'split') linesClass.push('diff-lines-split');
+  if (wrap) linesClass.push('is-wrap');
+  if (layout === 'split' && !wrap) {
+    return (
+      <>
+        <div className="diff-split-panes">
+          {splitPane('old')}
+          {splitPane('new')}
+        </div>
+        {selectionBar}
+      </>
+    );
+  }
   return (
     <>
       {blame !== undefined && (
@@ -844,133 +1240,17 @@ function DiffBody({
         />
       )}
       <div className="diff-scroll" ref={scrollRef} onScroll={sync}>
-        <div className="diff-lines" role="table">
-          {diff.lines.map((line, index) => {
-            if (line.kind === 'hunk') {
-              hunkIndex += 1;
-              const thisHunk = hunkIndex;
-              const rangeEnd = line.text.indexOf('@@', 2);
-              const hunkText = rangeEnd === -1 ? line.text : line.text.slice(0, rangeEnd + 2);
-              return (
-                <div key={index} className="diff-line diff-line-hunk" role="row">
-                  <span className="diff-hunk-text">{hunkText}</span>
-                  {hunkActions && (
-                    <span className="diff-hunk-actions">
-                      {onUnstageHunk ? (
-                        <button
-                          type="button"
-                          className="pill-btn pill-btn-red diff-hunk-btn tooltip-host"
-                          data-tooltip="Unstage this hunk"
-                          onClick={() => onUnstageHunk(thisHunk)}
-                        >
-                          Unstage Hunk
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            className="pill-btn pill-btn-red diff-hunk-btn tooltip-host"
-                            data-tooltip="Discard this hunk"
-                            onClick={() => onDiscardHunk?.(thisHunk)}
-                          >
-                            Discard Hunk
-                          </button>
-                          <button
-                            type="button"
-                            className="pill-btn pill-btn-green diff-hunk-btn tooltip-host"
-                            data-tooltip="Stage this hunk"
-                            onClick={() => onStageHunk?.(thisHunk)}
-                          >
-                            Stage Hunk
-                          </button>
-                        </>
-                      )}
-                    </span>
-                  )}
-                </div>
-              );
-            }
-            const sign = line.kind === 'add' ? '+' : line.kind === 'delete' ? '−' : '';
-            const actionable = lineButtons && line.kind !== 'context';
-            const rowClasses = ['diff-line', `diff-line-${line.kind}`];
-            if (selectedRows.has(index)) rowClasses.push('is-line-selected');
-            if (targetRows.has(index)) rowClasses.push('is-line-target');
-            const gutterProps = actionable
-              ? {
-                  className: 'diff-gutter is-selectable',
-                  onClick: (event: React.MouseEvent) => selectRow(index, event),
-                }
-              : { className: 'diff-gutter' };
-            return (
-              <div key={index} className={rowClasses.join(' ')} role="row">
-                <span {...gutterProps}>
-                  {actionable && lineButton(primaryAction, index)}
-                  {line.oldLine ?? ''}
-                </span>
-                <span {...gutterProps}>{line.newLine ?? ''}</span>
-                <span className="diff-sign" aria-hidden="true">
-                  {sign}
-                </span>
-                <span
-                  className="diff-code hljs"
-                  dangerouslySetInnerHTML={{ __html: highlightLine(line.text, lang) }}
-                />
-                {actionable && linesMode === 'unstaged' && (
-                  <span className="diff-line-end">{lineButton('discard', index)}</span>
-                )}
-              </div>
-            );
-          })}
+        <div className={linesClass.join(' ')} role="table">
+          {displayRows.map((row) =>
+            row.kind === 'hunk'
+              ? hunkRow(row.index, row.hunk)
+              : row.kind === 'line'
+                ? lineCell(row.index, 'both', true)
+                : splitRow(row.left, row.right, `${row.left ?? ''}:${row.right ?? ''}`),
+          )}
         </div>
       </div>
-      {lineButtons && selectedRefs.length > 0 && (
-        <div className="diff-selection-bar" role="toolbar" aria-label="Selected lines">
-          <span className="diff-selection-count">
-            {selectedRefs.length} {selectedRefs.length === 1 ? 'line' : 'lines'} selected
-          </span>
-          {linesMode === 'unstaged' ? (
-            <>
-              <button
-                type="button"
-                className="pill-btn pill-btn-red diff-hunk-btn"
-                disabled={lineBusy}
-                onClick={() => onLines?.('discard', selectedRefs)}
-              >
-                Discard
-              </button>
-              <button
-                type="button"
-                className="pill-btn pill-btn-green diff-hunk-btn"
-                disabled={lineBusy}
-                onClick={() => onLines?.('stage', selectedRefs)}
-              >
-                Stage
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              className="pill-btn pill-btn-red diff-hunk-btn"
-              disabled={lineBusy}
-              onClick={() => onLines?.('unstage', selectedRefs)}
-            >
-              Unstage
-            </button>
-          )}
-          <button
-            type="button"
-            className="diff-selection-clear tooltip-host"
-            data-tooltip="Clear selection (Esc)"
-            aria-label="Clear selection"
-            onClick={() => {
-              setSelectedRows(new Set());
-              setAnchorRow(null);
-            }}
-          >
-            <CloseIcon size={10} />
-          </button>
-        </div>
-      )}
+      {selectionBar}
     </>
   );
 }
@@ -983,9 +1263,10 @@ function DiffBody({
 function FileBody({
   content,
   lang,
+  wrap = false,
   blame,
   onPickRev,
-}: BlameColumn & { content: string[] | null; lang: string | null }) {
+}: BlameColumn & { content: string[] | null; lang: string | null; wrap?: boolean }) {
   const { paneRef, scrollRef, sync, onWheel } = useBlameSync();
   const html = useMemo(
     () => (content ? highlightBuffer(content.join('\n'), lang) : []),
@@ -1016,7 +1297,7 @@ function FileBody({
         />
       )}
       <div className="diff-scroll" ref={scrollRef} onScroll={sync}>
-        <div className="diff-lines diff-lines-file" role="table">
+        <div className={`diff-lines diff-lines-file${wrap ? ' is-wrap' : ''}`} role="table">
           {content.map((_, index) => (
             <div key={index} className="diff-line diff-line-context" role="row">
               <span className="diff-gutter">{index + 1}</span>

@@ -730,12 +730,36 @@ body.is-row-resizing {
   background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
+/* Icon-only toggles (diff layout, whitespace, wrap): square-ish, no label. */
+.diff-viewswitch button.is-icon {
+  min-width: 0;
+  padding: 4px 6px;
+}
+
+.diff-viewswitch button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.diff-viewswitch button:disabled:hover {
+  color: var(--fg-muted);
+  border-color: var(--border);
+}
+
+.diff-viewswitch button.active:disabled:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
 .diff-subnav-end {
   grid-column: 3;
   justify-self: end;
   display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  gap: 10px;
+  /* Wider than the gap inside a group, so the groups read as separate. */
+  gap: 6px 16px;
 }
 
 .diff-steppers {
@@ -1107,6 +1131,73 @@ body.is-row-resizing {
   gap: 4px;
   padding: 3px 8px;
   font-size: 11px;
+}
+
+/* Word wrap: rows fit the pane and grow to hold wrapped code, instead of
+   sizing to the longest line and scrolling sideways. */
+.diff-lines.is-wrap {
+  width: 100%;
+}
+
+.diff-lines.is-wrap .diff-line {
+  width: 100%;
+  height: auto;
+  min-height: var(--diff-row-h);
+}
+
+.diff-lines.is-wrap .diff-code {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-lines.is-wrap .diff-line-hunk {
+  min-height: var(--diff-hunk-h);
+}
+
+/* Split view: each row is an old-side cell beside a new-side cell, each half
+   the pane wide with its own line-number gutter. */
+.diff-split-row {
+  display: flex;
+  width: 100%;
+}
+
+.diff-lines-split .diff-split-row > .diff-line {
+  flex: 1 1 50%;
+  width: 50%;
+  min-width: 0;
+}
+
+.diff-lines-split .diff-split-row > .diff-line + .diff-line {
+  border-left: 1px solid var(--border);
+}
+
+/* Unwrapped split view: old and new as two side-by-side panes, each scrolling
+   sideways on its own (their vertical scroll is mirrored in script). Rows keep
+   the fixed row heights, so the panes stay level. */
+.diff-split-panes {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.diff-split-pane {
+  flex: 1 1 50%;
+  width: 50%;
+}
+
+.diff-split-pane.is-new {
+  border-left: 1px solid var(--border);
+}
+
+/* The blank half beside a line that exists on one side only. */
+.diff-line-empty {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    var(--control-bg) 6px 12px
+  );
 }
 
 /* File view uses a single, slightly wider line-number gutter. */
