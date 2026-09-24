@@ -732,6 +732,24 @@ export interface DiffLine {
   text: string;
 }
 
+/**
+ * One row of a file diff picked for line-level staging: the 0-based hunk index
+ * (in diff order) and the row's index within that hunk's body (context, added
+ * and deleted rows in order — the `@@` header isn't counted).
+ */
+export interface DiffLineRef {
+  hunk: number;
+  row: number;
+}
+
+/** Outcome of a line-level stage/unstage/discard. */
+export interface LinesResult {
+  /** The fresh working-tree status (returned even when the patch was rejected). */
+  status: WorkingStatus;
+  /** Why git rejected the patch (one line), when it did. */
+  error?: string;
+}
+
 /** A single file's diff, parsed into rows for the diff viewer. */
 export interface FileDiff {
   path: string;
@@ -949,6 +967,12 @@ export const RepoChannels = {
   discardHunk: 'repo:discard-hunk',
   /** Renderer -> main (invoke): unstage a single staged hunk; returns fresh status. */
   unstageHunk: 'repo:unstage-hunk',
+  /** Renderer -> main (invoke): stage chosen changed lines of one unstaged hunk; fresh status. */
+  stageLines: 'repo:stage-lines',
+  /** Renderer -> main (invoke): unstage chosen changed lines of one staged hunk; fresh status. */
+  unstageLines: 'repo:unstage-lines',
+  /** Renderer -> main (invoke): discard chosen changed lines from the working tree; fresh status. */
+  discardLines: 'repo:discard-lines',
   /** Renderer -> main (invoke): unstage a file (or all); returns fresh status. */
   unstage: 'repo:unstage',
   /** Renderer -> main (invoke): discard every working-tree change; fresh status. */
@@ -1680,6 +1704,15 @@ export interface RepoApi {
    * status.
    */
   unstageHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
+  /** Stage only the picked changed rows of `file`'s unstaged diff. */
+  stageLines(path: string, file: string, lines: DiffLineRef[]): Promise<LinesResult>;
+  /** Unstage only the picked changed rows of `file`'s staged diff. */
+  unstageLines(path: string, file: string, lines: DiffLineRef[]): Promise<LinesResult>;
+  /**
+   * Discard only the picked changed rows of `file`'s unstaged diff from the
+   * working tree. Irreversible.
+   */
+  discardLines(path: string, file: string, lines: DiffLineRef[]): Promise<LinesResult>;
   /** Unstage `file` (a path), or everything when null. Returns fresh status. */
   unstage(path: string, file: string | null): Promise<WorkingStatus>;
   /**

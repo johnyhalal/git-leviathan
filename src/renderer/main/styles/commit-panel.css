@@ -777,6 +777,8 @@ body.is-row-resizing {
    a fixed height (taller for hunk headers) so the two stay aligned; the code
    pane is the only scroller, and the column follows its vertical scroll. */
 .diff-body {
+  /* Anchors the floating line-selection bar. */
+  position: relative;
   --diff-row-h: 20px;
   --diff-hunk-h: 28px;
   flex: 1 1 auto;
@@ -837,6 +839,133 @@ body.is-row-resizing {
   position: sticky;
   left: 0;
   z-index: 1;
+}
+
+/* Per-line action buttons, revealed when the row is hovered: stage (+) or
+   unstage (−) tucked into the left edge of the first line-number gutter, and
+   a "Discard line" text button pinned to the row's right end (see .diff-line-end). */
+.diff-line-stage {
+  --line-btn-color: #2ea043;
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--line-btn-color);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--line-btn-color) 18%, var(--panel-bg));
+  color: var(--line-btn-color);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.diff-line-stage.is-unstage {
+  --line-btn-color: var(--danger);
+}
+
+/* Discard is a warning action, in the yellow of `.pill-btn-yellow`. */
+.diff-line-stage.is-discard {
+  --line-btn-color: #d29922;
+}
+
+/* A zero-width anchor pinned to the row's right edge: it takes no room (so the
+   line's tint runs the full width) and stays put while the diff scrolls
+   horizontally; the discard button floats over the line from it. */
+.diff-line-end {
+  position: sticky;
+  right: 0;
+  flex: 0 0 0;
+  width: 0;
+}
+
+.diff-line-end .diff-line-stage {
+  left: auto;
+  right: 8px;
+  width: auto;
+  padding: 0 6px;
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.diff-line:hover .diff-line-stage,
+.diff-line-stage:focus-visible {
+  opacity: 1;
+}
+
+.diff-line-stage:disabled {
+  cursor: default;
+}
+
+.diff-line:hover .diff-line-stage:disabled {
+  opacity: 0.4;
+}
+
+/* Changed rows' gutters select lines (click, ⌘/Ctrl-click, Shift-click). */
+.diff-gutter.is-selectable {
+  cursor: pointer;
+}
+
+.diff-line.is-line-selected .diff-gutter {
+  background: color-mix(in srgb, var(--primary) 28%, var(--panel-bg));
+  color: var(--fg);
+}
+
+/* The rows a hovered line button will act on (a paired edit or the selection). */
+.diff-line.is-line-target .diff-code {
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
+.diff-line.is-line-target .diff-gutter {
+  color: var(--fg);
+}
+
+/* Floating actions for a multi-line selection, centered along the bottom. */
+.diff-selection-bar {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
+}
+
+.diff-selection-count {
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.diff-selection-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.diff-selection-clear:hover {
+  color: var(--fg);
+  background: var(--control-bg);
 }
 
 /* The diff's second (new-side) gutter sits right after the first. */
@@ -971,7 +1100,6 @@ body.is-row-resizing {
   display: flex;
   gap: 6px;
   padding: 2px 8px;
-  background: var(--control-bg);
 }
 
 /* Slightly denser than a stock pill, with room for the leading icon. */

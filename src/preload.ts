@@ -36,6 +36,8 @@ import {
   type CloneResult,
   type CommitLogEntry,
   type CommitSearchResult,
+  type DiffLineRef,
+  type LinesResult,
   type CommitDetailData,
   type CommitResult,
   type RebaseInteractivePreview,
@@ -171,6 +173,12 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.discardHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
     unstageHunk: (path: string, file: string, hunkIndex: number) =>
       ipcRenderer.invoke(RepoChannels.unstageHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
+    stageLines: (path: string, file: string, lines: DiffLineRef[]) =>
+      ipcRenderer.invoke(RepoChannels.stageLines, path, file, lines) as Promise<LinesResult>,
+    unstageLines: (path: string, file: string, lines: DiffLineRef[]) =>
+      ipcRenderer.invoke(RepoChannels.unstageLines, path, file, lines) as Promise<LinesResult>,
+    discardLines: (path: string, file: string, lines: DiffLineRef[]) =>
+      ipcRenderer.invoke(RepoChannels.discardLines, path, file, lines) as Promise<LinesResult>,
     unstage: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.unstage, path, file) as Promise<WorkingStatus>,
     discardAll: (path: string) =>

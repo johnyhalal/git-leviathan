@@ -78,6 +78,8 @@ import {
   type SubmoduleAddOptions,
   type CommitLogEntry,
   type CommitSearchResult,
+  type DiffLineRef,
+  type LinesResult,
   type CommitRefDecoration,
   type CommitDetailData,
   type CommitResult,
@@ -2393,10 +2395,20 @@ async function readFileDiff(
  * when the patch has no header or the index is out of range.
  */
 function extractHunkPatch(patch: string, hunkIndex: number): string | null {
+  const split = splitPatchHunks(patch);
+  if (!split || hunkIndex < 0 || hunkIndex >= split.hunks.length) return null;
+  return joinPatch(split.header, split.hunks[hunkIndex]);
+}
+
+/**
+ * Split a file's unified diff into its file header (every line before the
+ * first `@@`) and its hunks (each an `@@` line plus the lines under it). Null
+ * when there's no hunk at all.
+ */
+function splitPatchHunks(patch: string): { header: string[]; hunks: string[][] } | null {
   const lines = patch.split('\n');
   const firstHunk = lines.findIndex((line) => line.startsWith('@@'));
   if (firstHunk === -1) return null;
-  const header = lines.slice(0, firstHunk);
   const hunks: string[][] = [];
   for (const line of lines.slice(firstHunk)) {
     // Each `@@` opens a hunk; every following line (context/+/-/"\ No newline")
@@ -2404,20 +2416,103 @@ function extractHunkPatch(patch: string, hunkIndex: number): string | null {
     if (line.startsWith('@@')) hunks.push([line]);
     else hunks[hunks.length - 1]?.push(line);
   }
-  if (hunkIndex < 0 || hunkIndex >= hunks.length) return null;
-  // git apply requires a trailing newline and no stray blank tail from the split.
-  return [...header, ...hunks[hunkIndex]].join('\n').replace(/\n*$/, '\n');
+  return { header: lines.slice(0, firstHunk), hunks };
 }
 
-/** Run `git apply <args>` with `patch` fed on stdin. Resolves true on success. */
-function runGitApply(cwd: string, args: string[], patch: string): Promise<boolean> {
+/** Join patch lines for `git apply`: one trailing newline, no stray blank tail. */
+function joinPatch(header: string[], hunk: string[]): string {
+  return [...header, ...hunk].join('\n').replace(/\n*$/, '\n');
+}
+
+/**
+ * Carve a patch out of `patch` that applies only the chosen changed lines.
+ * `picks` maps a 0-based hunk index to the rows picked in it — indices into
+ * that hunk's body rows (context/+/- lines in order, skipping "\ No newline"
+ * markers), the same rows the viewer renders under the hunk's header. Hunks
+ * with nothing picked are left out.
+ *
+ * An unpicked change must leave the target untouched, so it's rewritten against
+ * the side the patch is applied to: a forward apply (stage) reads the old side,
+ * so an unpicked `-` becomes context and an unpicked `+` is dropped; a reverse
+ * apply (unstage/discard) reads the new side, so it's the other way round. Each
+ * header's counts are recomputed to match. Null when no picked row is a change
+ * (or the diff no longer has the picked hunks).
+ */
+function extractLinesPatch(
+  patch: string,
+  picks: ReadonlyMap<number, ReadonlySet<number>>,
+  reverse: boolean,
+): string | null {
+  const split = splitPatchHunks(patch);
+  if (!split) return null;
+  const hunks: string[] = [];
+  for (const [hunkIndex, rows] of [...picks].sort(([a], [b]) => a - b)) {
+    const hunk = split.hunks[hunkIndex];
+    if (!hunk) return null;
+    const [heading, ...body] = hunk;
+    const range = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(heading);
+    if (!range) return null;
+
+    const out: string[] = [];
+    let oldCount = 0;
+    let newCount = 0;
+    let row = -1;
+    let picked = false;
+    // Whether the previous row survived, so its "\ No newline" marker goes too.
+    let keptPrev = false;
+    for (const line of body) {
+      const marker = line[0];
+      if (marker === '\\') {
+        if (keptPrev) out.push(line);
+        continue;
+      }
+      if (marker !== ' ' && marker !== '+' && marker !== '-') continue;
+      row += 1;
+      keptPrev = true;
+      if (marker === ' ') {
+        out.push(line);
+        oldCount += 1;
+        newCount += 1;
+      } else if (rows.has(row)) {
+        out.push(line);
+        if (marker === '-') oldCount += 1;
+        else newCount += 1;
+        picked = true;
+      } else if (reverse ? marker === '+' : marker === '-') {
+        out.push(` ${line.slice(1)}`);
+        oldCount += 1;
+        newCount += 1;
+      } else {
+        keptPrev = false;
+      }
+    }
+    if (!picked) continue;
+    const [, oldStart, newStart, section] = range;
+    hunks.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${section}`, ...out);
+  }
+  return hunks.length > 0 ? joinPatch(split.header, hunks) : null;
+}
+
+/**
+ * Run `git apply <args>` with `patch` fed on stdin. Resolves with whether it
+ * applied, plus git's stderr (why it was rejected) on failure.
+ */
+function runGitApply(
+  cwd: string,
+  args: string[],
+  patch: string,
+): Promise<{ ok: boolean; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(gitBin, ['apply', ...args], {
       cwd,
       env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
     });
-    child.on('error', () => resolve(false));
-    child.on('close', (code) => resolve(code === 0));
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (err) => resolve({ ok: false, stderr: err.message }));
+    child.on('close', (code) => resolve({ ok: code === 0, stderr }));
     // A broken pipe (git rejecting the patch early) must not crash the process.
     child.stdin?.on('error', () => {
       /* ignore: the close handler reports the failure via the exit code */
@@ -4221,6 +4316,78 @@ function registerRepoIpc(): void {
     RepoChannels.unstageHunk,
     (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
       applyHunk(repoPath, file, hunkIndex, 'staged', ['--cached', '--reverse']),
+  );
+
+  // Stage/unstage/discard only some changed lines: like `applyHunk`, but the
+  // patch keeps just the picked rows (see extractLinesPatch), and a rejected
+  // patch comes back as an error line rather than failing silently.
+  const applyLines = async (
+    repoPath: unknown,
+    file: unknown,
+    lines: unknown,
+    from: 'staged' | 'unstaged',
+    args: string[],
+  ): Promise<LinesResult> => {
+    if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return { status: emptyStatus };
+    if (typeof file !== 'string' || file.length === 0) {
+      return { status: await readStatus(repoPath) };
+    }
+    const isIndex = (value: unknown): value is number =>
+      typeof value === 'number' && Number.isInteger(value) && value >= 0;
+    if (
+      !Array.isArray(lines) ||
+      lines.length === 0 ||
+      lines.length > 100_000 ||
+      !lines.every(
+        (ref: unknown) =>
+          typeof ref === 'object' &&
+          ref !== null &&
+          isIndex((ref as DiffLineRef).hunk) &&
+          isIndex((ref as DiffLineRef).row),
+      )
+    ) {
+      return { status: await readStatus(repoPath) };
+    }
+    const picks = new Map<number, Set<number>>();
+    for (const { hunk, row } of lines as DiffLineRef[]) {
+      const rows = picks.get(hunk) ?? new Set<number>();
+      rows.add(row);
+      picks.set(hunk, rows);
+    }
+    const rawDiff =
+      from === 'staged'
+        ? await runGit(repoPath, fileDiffArgs({ kind: 'staged' }, file))
+        : await rawUnstagedDiff(repoPath, file);
+    const patch = extractLinesPatch(rawDiff, picks, args.includes('--reverse'));
+    let error: string | undefined;
+    if (patch === null) {
+      error = 'The selected lines are no longer in the diff — it has been refreshed.';
+    } else {
+      const applied = await runGitApply(repoPath, args, patch);
+      if (!applied.ok) {
+        error = gitErrorMessage(applied, 'git rejected the patch for the selected lines.');
+      }
+    }
+    return { status: await readStatus(repoPath), ...(error ? { error } : {}) };
+  };
+
+  ipcMain.handle(
+    RepoChannels.stageLines,
+    (_event, repoPath: unknown, file: unknown, lines: unknown): Promise<LinesResult> =>
+      applyLines(repoPath, file, lines, 'unstaged', ['--cached']),
+  );
+
+  ipcMain.handle(
+    RepoChannels.unstageLines,
+    (_event, repoPath: unknown, file: unknown, lines: unknown): Promise<LinesResult> =>
+      applyLines(repoPath, file, lines, 'staged', ['--cached', '--reverse']),
+  );
+
+  // Discard reverse-applies the picked lines to the working tree (index untouched).
+  ipcMain.handle(
+    RepoChannels.discardLines,
+    (_event, repoPath: unknown, file: unknown, lines: unknown): Promise<LinesResult> =>
+      applyLines(repoPath, file, lines, 'unstaged', ['--reverse']),
   );
 
   ipcMain.handle(

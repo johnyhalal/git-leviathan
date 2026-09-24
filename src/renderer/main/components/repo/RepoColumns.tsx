@@ -473,6 +473,8 @@ export function RepoColumns({
             target={diffTarget}
             onClose={() => setDiffTarget(null)}
             onWorkingStatusChange={onWorkingStatusChange}
+            onError={onError}
+            onRetarget={setDiffTarget}
             onSelectCommit={(hash) => {
               // Close explicitly: selecting the already-selected commit
               // wouldn't trip the stale-diff effect above.

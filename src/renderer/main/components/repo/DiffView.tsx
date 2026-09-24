@@ -3,6 +3,7 @@ import type React from 'react';
 import type {
   BlameLine,
   CommitLogEntry,
+  DiffLineRef,
   DiffSource,
   FileBlame,
   FileDiff,
@@ -80,6 +81,10 @@ interface DiffViewProps {
   onWorkingStatusChange?: (status: WorkingStatus) => void;
   /** Leave the viewer and select this commit in the graph. */
   onSelectCommit?: (hash: string) => void;
+  /** Surface a failure, e.g. git rejecting a line-level stage/discard patch. */
+  onError?: (title: string, message: string) => void;
+  /** Swap the viewer to another target, e.g. the same file's other side. */
+  onRetarget?: (target: DiffTarget) => void;
 }
 
 /**
@@ -104,6 +109,8 @@ export function DiffView({
   onClose,
   onWorkingStatusChange,
   onSelectCommit,
+  onError,
+  onRetarget,
 }: DiffViewProps) {
   const { source, path, status } = target;
   const lang = useMemo(() => languageForPath(path), [path]);
@@ -228,14 +235,27 @@ export function DiffView({
   const atOriginal = rev === '';
   const canStageHunks = atOriginal && source.kind === 'unstaged';
   const canUnstageHunks = atOriginal && source.kind === 'staged';
+  // After a hunk/line action, reload this side's diff. When that emptied it
+  // (the last change was staged, unstaged or discarded), follow the file to the
+  // other side if it still has changes there — as staging a whole file does —
+  // and only close the viewer when the file has no changes left at all.
   const afterHunk = useCallback(
     async (nextStatus: WorkingStatus) => {
       onWorkingStatusChange?.(nextStatus);
       const fresh = await window.api.repo.fileDiff(repoPath, source, path);
-      if (fresh.lines.length === 0) onClose();
-      else setDiff(fresh);
+      if (fresh.lines.length > 0) {
+        setDiff(fresh);
+        return;
+      }
+      const otherKind = source.kind === 'unstaged' ? 'staged' : 'unstaged';
+      const other = nextStatus[otherKind].find((file) => file.path === path);
+      if (other && onRetarget) {
+        onRetarget({ source: { kind: otherKind }, path, status: other.status });
+      } else {
+        onClose();
+      }
     },
-    [onWorkingStatusChange, repoPath, source, path, onClose],
+    [onWorkingStatusChange, repoPath, source, path, onClose, onRetarget],
   );
   const stageHunk = useCallback(
     async (hunkIndex: number) => {
@@ -248,6 +268,52 @@ export function DiffView({
       await afterHunk(await window.api.repo.unstageHunk(repoPath, path, hunkIndex));
     },
     [afterHunk, repoPath, path],
+  );
+  // Line-level stage/unstage/discard. Guarded so a quick second click can't
+  // fire against the pre-refresh diff, whose row indices the first action just
+  // shifted. A rejected patch still refreshes (the status is returned either
+  // way) and surfaces git's reason.
+  const [lineBusy, setLineBusy] = useState(false);
+  const runLines = useCallback(
+    async (action: LineAction, refs: DiffLineRef[]) => {
+      if (lineBusy || refs.length === 0) return;
+      setLineBusy(true);
+      try {
+        const result =
+          action === 'stage'
+            ? await window.api.repo.stageLines(repoPath, path, refs)
+            : action === 'unstage'
+              ? await window.api.repo.unstageLines(repoPath, path, refs)
+              : await window.api.repo.discardLines(repoPath, path, refs);
+        if (result.error) onError?.(LINE_ACTION_FAILED[action], result.error);
+        await afterHunk(result.status);
+      } finally {
+        setLineBusy(false);
+      }
+    },
+    [lineBusy, repoPath, path, onError, afterHunk],
+  );
+  // Discarding is irreversible, so it's confirmed first; stage/unstage run as-is.
+  const requestLines = useCallback(
+    (action: LineAction, refs: DiffLineRef[]) => {
+      if (action !== 'discard') {
+        void runLines(action, refs);
+        return;
+      }
+      const what = refs.length === 1 ? 'this line' : `these ${refs.length} lines`;
+      requestConfirm({
+        message: `Discard ${what}? This cannot be undone.`,
+        actions: [
+          {
+            label: refs.length === 1 ? 'Discard line' : 'Discard lines',
+            busyLabel: 'Discarding…',
+            tone: 'danger',
+            onClick: () => runLines('discard', refs),
+          },
+        ],
+      });
+    },
+    [runLines, requestConfirm],
   );
   const discardHunk = useCallback(
     (hunkIndex: number) => {
@@ -443,6 +509,9 @@ export function DiffView({
               onStageHunk={canStageHunks ? stageHunk : undefined}
               onDiscardHunk={canStageHunks ? discardHunk : undefined}
               onUnstageHunk={canUnstageHunks ? unstageHunk : undefined}
+              linesMode={canStageHunks ? 'unstaged' : canUnstageHunks ? 'staged' : null}
+              onLines={requestLines}
+              lineBusy={lineBusy}
             />
           ) : (
             <FileBody
@@ -466,6 +535,24 @@ export function DiffView({
 interface BlameColumn {
   blame: FileBlame | null | undefined;
   onPickRev: (hash: string) => void;
+}
+
+/** A line-level action on picked diff rows. */
+type LineAction = 'stage' | 'unstage' | 'discard';
+
+/** Toast title per line action when git rejects the patch. */
+const LINE_ACTION_FAILED: Record<LineAction, string> = {
+  stage: 'Couldn’t stage lines',
+  unstage: 'Couldn’t unstage lines',
+  discard: 'Couldn’t discard lines',
+};
+
+/** A diff row's address for line staging, plus its paired edit's row index. */
+interface RowRef {
+  hunk: number;
+  row: number;
+  /** Diff row index of the other half of an edited line, or null. */
+  partner: number | null;
 }
 
 /** One row of the blame column, paired 1:1 with a row of the code pane. */
@@ -551,6 +638,9 @@ function DiffBody({
   onStageHunk,
   onDiscardHunk,
   onUnstageHunk,
+  linesMode = null,
+  onLines,
+  lineBusy = false,
 }: BlameColumn & {
   diff: FileDiff | null;
   lang: string | null;
@@ -559,8 +649,136 @@ function DiffBody({
   onDiscardHunk?: (hunkIndex: number) => void;
   /** Unstage the hunk at this index (staged view). */
   onUnstageHunk?: (hunkIndex: number) => void;
+  /**
+   * Which line-level actions the diff offers: stage + discard for the unstaged
+   * view, unstage for the staged view, none (null) for anything else.
+   */
+  linesMode?: 'unstaged' | 'staged' | null;
+  /** Run a line-level action on the given rows. */
+  onLines?: (action: LineAction, refs: DiffLineRef[]) => void;
+  /** A line action is in flight; the line buttons are disabled meanwhile. */
+  lineBusy?: boolean;
 }) {
   const { paneRef, scrollRef, sync, onWheel } = useBlameSync();
+
+  // Each diff row's address for line staging (null for hunk headers), plus its
+  // "partner": in a block of removed lines directly followed by added lines,
+  // the i-th removed line pairs with the i-th added one — the before/after of
+  // one edited line — so a single click can stage both halves together.
+  const rowRefs = useMemo(() => {
+    const refs: (RowRef | null)[] = [];
+    if (diff === null) return refs;
+    let hunk = -1;
+    let row = -1;
+    let deletes: number[] = [];
+    let adds: number[] = [];
+    const pairUp = () => {
+      for (let i = 0; i < Math.min(deletes.length, adds.length); i++) {
+        (refs[deletes[i]] as RowRef).partner = adds[i];
+        (refs[adds[i]] as RowRef).partner = deletes[i];
+      }
+      deletes = [];
+      adds = [];
+    };
+    diff.lines.forEach((line, index) => {
+      if (line.kind === 'hunk') {
+        pairUp();
+        hunk += 1;
+        row = -1;
+        refs[index] = null;
+        return;
+      }
+      row += 1;
+      refs[index] = { hunk, row, partner: null };
+      if (line.kind === 'delete') {
+        if (adds.length > 0) pairUp();
+        deletes.push(index);
+      } else if (line.kind === 'add') {
+        adds.push(index);
+      } else {
+        pairUp();
+      }
+    });
+    pairUp();
+    return refs;
+  }, [diff]);
+
+  // Multi-line selection (diff row indices), made by clicking the line-number
+  // gutters: plain click selects one row (or clears a lone selection), ⌘/Ctrl
+  // toggles, Shift extends from the anchor. Any new diff invalidates it.
+  const [selectedRows, setSelectedRows] = useState<ReadonlySet<number>>(() => new Set());
+  const [anchorRow, setAnchorRow] = useState<number | null>(null);
+  // Rows the hovered line button would act on, outlined so a paired edit or a
+  // selection shows what one click covers.
+  const [targetRows, setTargetRows] = useState<ReadonlySet<number>>(() => new Set());
+  useEffect(() => {
+    setSelectedRows(new Set());
+    setAnchorRow(null);
+    setTargetRows(new Set());
+  }, [diff, linesMode]);
+
+  // Escape clears a selection.
+  useEffect(() => {
+    if (selectedRows.size === 0) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      setSelectedRows(new Set());
+      setAnchorRow(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedRows]);
+
+  const isChanged = (index: number) => {
+    const kind = diff?.lines[index]?.kind;
+    return kind === 'add' || kind === 'delete';
+  };
+
+  const selectRow = (index: number, event: React.MouseEvent) => {
+    if (event.shiftKey && anchorRow !== null) {
+      const [lo, hi] = anchorRow <= index ? [anchorRow, index] : [index, anchorRow];
+      const next = new Set<number>();
+      for (let i = lo; i <= hi; i++) if (isChanged(i)) next.add(i);
+      setSelectedRows(next);
+      return;
+    }
+    setAnchorRow(index);
+    if (event.metaKey || event.ctrlKey) {
+      setSelectedRows((prev) => {
+        const next = new Set(prev);
+        if (next.has(index)) next.delete(index);
+        else next.add(index);
+        return next;
+      });
+      return;
+    }
+    setSelectedRows((prev) =>
+      prev.size === 1 && prev.has(index) ? new Set() : new Set([index]),
+    );
+  };
+
+  // The rows a line button on `index` acts on: the whole selection when that
+  // row is part of it, otherwise the row plus its paired edit (if any).
+  const targetsFor = (index: number): number[] => {
+    if (selectedRows.has(index)) return [...selectedRows].sort((a, b) => a - b);
+    const partner = rowRefs[index]?.partner;
+    return partner == null ? [index] : [index, partner].sort((a, b) => a - b);
+  };
+
+  const toRefs = (indices: number[]): DiffLineRef[] =>
+    indices.flatMap((i) => {
+      const ref = rowRefs[i];
+      return ref ? [{ hunk: ref.hunk, row: ref.row }] : [];
+    });
+
+  const lineLabel = (action: LineAction, index: number) => {
+    const verb = action === 'stage' ? 'Stage' : action === 'unstage' ? 'Unstage' : 'Discard';
+    if (selectedRows.has(index) && selectedRows.size > 1) {
+      return `${verb} ${selectedRows.size} selected lines`;
+    }
+    if (rowRefs[index]?.partner != null) return `${verb} this change (removed + added line)`;
+    return `${verb} this line`;
+  };
 
   // The blame column's rows, one per diff row. The annotation shows once per
   // run of rows by the same commit; a row without a blame line (delete rows,
@@ -586,6 +804,34 @@ function DiffBody({
   // Hunks are numbered in diff order, matching how the main process re-derives
   // them for `stageHunk`/`discardHunk`; count headers seen so far as we render.
   let hunkIndex = -1;
+  const lineButtons = linesMode !== null && onLines !== undefined;
+  const primaryAction: LineAction = linesMode === 'staged' ? 'unstage' : 'stage';
+  const lineButton = (action: LineAction, index: number) => (
+    <button
+      type="button"
+      className={`diff-line-stage is-${action} tooltip-host`}
+      data-tooltip={lineLabel(action, index)}
+      aria-label={lineLabel(action, index)}
+      disabled={lineBusy}
+      onClick={(event) => {
+        event.stopPropagation();
+        onLines?.(action, toRefs(targetsFor(index)));
+      }}
+      onMouseEnter={() => setTargetRows(new Set(targetsFor(index)))}
+      onMouseLeave={() => setTargetRows(new Set())}
+    >
+      {action === 'stage' ? (
+        <PlusIcon size={10} />
+      ) : action === 'unstage' ? (
+        <MinusIcon size={10} />
+      ) : selectedRows.has(index) && selectedRows.size > 1 ? (
+        `Discard ${selectedRows.size} lines`
+      ) : (
+        'Discard line'
+      )}
+    </button>
+  );
+  const selectedRefs = toRefs([...selectedRows].sort((a, b) => a - b));
   return (
     <>
       {blame !== undefined && (
@@ -645,10 +891,23 @@ function DiffBody({
               );
             }
             const sign = line.kind === 'add' ? '+' : line.kind === 'delete' ? '−' : '';
+            const actionable = lineButtons && line.kind !== 'context';
+            const rowClasses = ['diff-line', `diff-line-${line.kind}`];
+            if (selectedRows.has(index)) rowClasses.push('is-line-selected');
+            if (targetRows.has(index)) rowClasses.push('is-line-target');
+            const gutterProps = actionable
+              ? {
+                  className: 'diff-gutter is-selectable',
+                  onClick: (event: React.MouseEvent) => selectRow(index, event),
+                }
+              : { className: 'diff-gutter' };
             return (
-              <div key={index} className={`diff-line diff-line-${line.kind}`} role="row">
-                <span className="diff-gutter">{line.oldLine ?? ''}</span>
-                <span className="diff-gutter">{line.newLine ?? ''}</span>
+              <div key={index} className={rowClasses.join(' ')} role="row">
+                <span {...gutterProps}>
+                  {actionable && lineButton(primaryAction, index)}
+                  {line.oldLine ?? ''}
+                </span>
+                <span {...gutterProps}>{line.newLine ?? ''}</span>
                 <span className="diff-sign" aria-hidden="true">
                   {sign}
                 </span>
@@ -656,11 +915,62 @@ function DiffBody({
                   className="diff-code hljs"
                   dangerouslySetInnerHTML={{ __html: highlightLine(line.text, lang) }}
                 />
+                {actionable && linesMode === 'unstaged' && (
+                  <span className="diff-line-end">{lineButton('discard', index)}</span>
+                )}
               </div>
             );
           })}
         </div>
       </div>
+      {lineButtons && selectedRefs.length > 0 && (
+        <div className="diff-selection-bar" role="toolbar" aria-label="Selected lines">
+          <span className="diff-selection-count">
+            {selectedRefs.length} {selectedRefs.length === 1 ? 'line' : 'lines'} selected
+          </span>
+          {linesMode === 'unstaged' ? (
+            <>
+              <button
+                type="button"
+                className="pill-btn pill-btn-red diff-hunk-btn"
+                disabled={lineBusy}
+                onClick={() => onLines?.('discard', selectedRefs)}
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                className="pill-btn pill-btn-green diff-hunk-btn"
+                disabled={lineBusy}
+                onClick={() => onLines?.('stage', selectedRefs)}
+              >
+                Stage
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="pill-btn pill-btn-red diff-hunk-btn"
+              disabled={lineBusy}
+              onClick={() => onLines?.('unstage', selectedRefs)}
+            >
+              Unstage
+            </button>
+          )}
+          <button
+            type="button"
+            className="diff-selection-clear tooltip-host"
+            data-tooltip="Clear selection (Esc)"
+            aria-label="Clear selection"
+            onClick={() => {
+              setSelectedRows(new Set());
+              setAnchorRow(null);
+            }}
+          >
+            <CloseIcon size={10} />
+          </button>
+        </div>
+      )}
     </>
   );
 }
