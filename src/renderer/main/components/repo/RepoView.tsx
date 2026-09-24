@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CommitLogEntry,
+  CommitSearchResult,
   GitflowConfig,
   GitflowConfigResult,
   GitflowKind,
@@ -18,6 +19,7 @@ import type {
 } from '../../../../types/ipc';
 import { WORKING_TREE_HASH } from '../../../../types/ipc';
 import { RepoToolbar } from './RepoToolbar';
+import { CommitSearchBar } from './CommitSearchBar';
 import { RepoSettingsDialog, type RepoSettingsTabId } from './RepoSettingsDialog';
 import { RepoColumns } from './RepoColumns';
 import { MergeBanner } from './MergeBanner';
@@ -135,6 +137,23 @@ export function RepoView({
   // resolver only on the transition into conflicts (not on every refresh).
   const hadMergeRef = useRef(false);
 
+  // Commit search: the floating bar's open state and query, the whole-history
+  // matches for that query, and which match is focused (-1 = none).
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResult, setSearchResult] = useState<CommitSearchResult | null>(null);
+  const [searchIndex, setSearchIndex] = useState(-1);
+  const [searching, setSearching] = useState(false);
+  // Bumped to re-focus the search input (a repeat ⌘F while it's open).
+  const [searchFocusToken, setSearchFocusToken] = useState(0);
+  // The match RepoColumns should select once it's loaded; the token makes a
+  // repeat jump to the same hash still count as a new request.
+  const [searchFocus, setSearchFocus] = useState<{ hash: string; token: number } | null>(null);
+  // Sequence numbers that let a newer search / jump supersede an older one
+  // whose (async) result lands late.
+  const searchSeqRef = useRef(0);
+  const searchJumpSeqRef = useRef(0);
+
   // Swap in a fresh merge state, opening the resolver the moment a repo first
   // enters a conflicted operation and closing it once everything is resolved.
   const applyMergeState = useCallback((next: MergeState | null) => {
@@ -170,6 +189,14 @@ export function RepoView({
     setTaggingAt(null);
     setResolverOpen(false);
     hadMergeRef.current = false;
+    // Search results belong to the previous repo.
+    searchSeqRef.current += 1;
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchResult(null);
+    setSearchIndex(-1);
+    setSearching(false);
+    setSearchFocus(null);
     void window.api.repo.commitDraft(repoPath).then((draft) => {
       if (!live) return;
       // Keep a merge message prefilled while the draft was loading (the message
@@ -236,6 +263,110 @@ export function RepoView({
     setHasMore(nextCommits.length >= nextLimit);
     setLoadingMore(false);
   }, [repoPath, hasMore, loadingMore]);
+
+  // Grow the loaded page until it holds at least `count` real commits, so a
+  // search match further down the history is in the list before it's selected.
+  // Rounds up to whole pages to keep pagination aligned with `loadMore`.
+  const ensureLoaded = useCallback(
+    async (count: number) => {
+      if (count <= loadedCountRef.current) return;
+      const nextLimit = Math.ceil(count / PAGE_SIZE) * PAGE_SIZE;
+      setLoadingMore(true);
+      const nextCommits = await window.api.repo.log(repoPath, nextLimit);
+      setLoadingMore(false);
+      // A larger read may have landed meanwhile; never shrink the list under it.
+      if (nextLimit < loadedCountRef.current) return;
+      loadedCountRef.current = nextLimit;
+      setCommits(nextCommits);
+      setHasMore(nextCommits.length >= nextLimit);
+    },
+    [repoPath],
+  );
+
+  // Focus match `index` (wrapping around either end) of `result`: load the log
+  // far enough to include it, then ask RepoColumns to select it — which scrolls
+  // it into view and closes any open diff.
+  const goToMatch = useCallback(
+    async (result: CommitSearchResult, index: number) => {
+      const total = result.hashes.length;
+      if (total === 0) return;
+      const wrapped = ((index % total) + total) % total;
+      const seq = ++searchJumpSeqRef.current;
+      setSearchIndex(wrapped);
+      await ensureLoaded(result.positions[wrapped] + 1);
+      if (seq !== searchJumpSeqRef.current) return;
+      setSearchFocus((prev) => ({ hash: result.hashes[wrapped], token: (prev?.token ?? 0) + 1 }));
+    },
+    [ensureLoaded],
+  );
+
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    setSearchFocusToken((token) => token + 1);
+  }, []);
+
+  const closeSearch = useCallback(() => {
+    searchSeqRef.current += 1;
+    searchJumpSeqRef.current += 1;
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchResult(null);
+    setSearchIndex(-1);
+    setSearching(false);
+    setSearchFocus(null);
+  }, []);
+
+  // Run the search (debounced) as the query changes, then jump to the first
+  // match. Superseded requests are dropped via the sequence number.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const query = searchQuery.trim();
+    const seq = ++searchSeqRef.current;
+    if (!query) {
+      searchJumpSeqRef.current += 1;
+      setSearchResult(null);
+      setSearchIndex(-1);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const handle = window.setTimeout(() => {
+      void window.api.repo.search(repoPath, query).then((result) => {
+        if (seq !== searchSeqRef.current) return;
+        setSearching(false);
+        setSearchResult(result);
+        setSearchIndex(-1);
+        void goToMatch(result, 0);
+      });
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [searchOpen, searchQuery, repoPath, goToMatch]);
+
+  // History moved under an open search (a commit, pull, fetch or external
+  // change re-read the refs): re-run it quietly so the matches stay current,
+  // keeping the focused match if it survived rather than jumping back to the
+  // first one.
+  const searchStateRef = useRef({ searchQuery, searchResult, searchIndex });
+  searchStateRef.current = { searchQuery, searchResult, searchIndex };
+  useEffect(() => {
+    const { searchQuery: raw, searchResult: prev, searchIndex: index } = searchStateRef.current;
+    const query = raw.trim();
+    if (!prev || !query) return;
+    const focused = index >= 0 ? prev.hashes[index] : undefined;
+    const seq = ++searchSeqRef.current;
+    void window.api.repo.search(repoPath, query).then((result) => {
+      if (seq !== searchSeqRef.current) return;
+      setSearchResult(result);
+      setSearchIndex(focused ? result.hashes.indexOf(focused) : -1);
+    });
+  }, [refs, repoPath]);
+
+  // Undefined until a search has returned, so the list only dims rows while
+  // there's a result set to show.
+  const searchMatches = useMemo(
+    () => (searchResult ? new Set(searchResult.hashes) : undefined),
+    [searchResult],
+  );
 
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
 
@@ -530,8 +661,16 @@ export function RepoView({
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-      if (event.repeat || isEditable(event.target)) return;
       const key = event.key.toLowerCase();
+      // Cmd/Ctrl+F opens commit search from anywhere — even a text field, since
+      // no field here has its own find — unless a dialog is up over the view.
+      if (key === 'f' && !event.shiftKey) {
+        if (document.querySelector('[role="dialog"]')) return;
+        event.preventDefault();
+        openSearch();
+        return;
+      }
+      if (event.repeat || isEditable(event.target)) return;
       const wantsUndo = key === 'z' && !event.shiftKey;
       const wantsRedo = (key === 'z' && event.shiftKey) || key === 'r' || key === 'y';
       if (!wantsUndo && !wantsRedo) return;
@@ -541,7 +680,7 @@ export function RepoView({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [undo, redo, undoRedo.undo, undoRedo.redo]);
+  }, [undo, redo, undoRedo.undo, undoRedo.redo, openSearch]);
 
   const stashPush = useCallback(
     () =>
@@ -1128,6 +1267,24 @@ export function RepoView({
           undoLabel={undoRedo.undo}
           redoLabel={undoRedo.redo}
           onOpenRepoSettings={() => openRepoSettings()}
+          searchOpen={searchOpen}
+          onToggleSearch={() => (searchOpen ? closeSearch() : openSearch())}
+          searchBar={
+            <CommitSearchBar
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              current={searchIndex}
+              total={searchResult?.hashes.length ?? 0}
+              truncated={searchResult?.truncated ?? false}
+              searching={searching}
+              onPrev={() =>
+                searchResult && void goToMatch(searchResult, searchIndex < 0 ? -1 : searchIndex - 1)
+              }
+              onNext={() => searchResult && void goToMatch(searchResult, searchIndex + 1)}
+              onClose={closeSearch}
+              focusToken={searchFocusToken}
+            />
+          }
         />
         {mergeState && (
           <MergeBanner
@@ -1144,6 +1301,8 @@ export function RepoView({
           branch={currentBranch}
           refs={refs}
           commits={displayCommits}
+          searchMatches={searchMatches}
+          searchFocus={searchFocus}
           workingStatus={workingStatus}
           onWorkingStatusChange={setWorkingStatus}
           conflicts={mergeState?.conflicts ?? []}

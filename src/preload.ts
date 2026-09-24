@@ -35,6 +35,7 @@ import {
   type CloneRequest,
   type CloneResult,
   type CommitLogEntry,
+  type CommitSearchResult,
   type CommitDetailData,
   type CommitResult,
   type RebaseInteractivePreview,
@@ -144,6 +145,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.listRefs, path) as Promise<RepoRefs>,
     log: (path: string, limit?: number) =>
       ipcRenderer.invoke(RepoChannels.log, path, limit) as Promise<CommitLogEntry[]>,
+    search: (path: string, query: string) =>
+      ipcRenderer.invoke(RepoChannels.search, path, query) as Promise<CommitSearchResult>,
     commitFiles: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.commitFiles, path, hash) as Promise<FileChange[]>,
     commitTree: (path: string, hash: string) =>

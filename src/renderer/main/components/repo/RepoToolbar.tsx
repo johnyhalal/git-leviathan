@@ -1,5 +1,6 @@
+import type { ReactNode } from 'react';
 import type { PullMode } from '../../../../types/ipc';
-import { PushIcon, StashIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon, FolderCogIcon } from '../../../../../assets/icons';
+import { PushIcon, StashIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon, FolderCogIcon, SearchIcon } from '../../../../../assets/icons';
 import { BranchSelect } from './BranchSelect';
 import { PullAction } from './PullAction';
 import { useConfirm } from '../ConfirmBar';
@@ -51,6 +52,12 @@ interface RepoToolbarProps {
   redoLabel: string | null;
   /** Open the per-repository settings dialog (commit identity, remotes). */
   onOpenRepoSettings: () => void;
+  /** Whether the commit-search bar is open. */
+  searchOpen: boolean;
+  /** Open the commit-search bar, or close it when it's already open. */
+  onToggleSearch: () => void;
+  /** The commit-search bar, floated beside the magnifier while `searchOpen`. */
+  searchBar: ReactNode;
 }
 
 /**
@@ -78,6 +85,9 @@ export function RepoToolbar({
   undoLabel,
   redoLabel,
   onOpenRepoSettings,
+  searchOpen,
+  onToggleSearch,
+  searchBar,
 }: RepoToolbarProps) {
   const requestConfirm = useConfirm();
 
@@ -183,6 +193,17 @@ export function RepoToolbar({
       </div>
 
       <div className="repo-toolbar-right">
+        {searchOpen && searchBar}
+        <button
+          type="button"
+          className={`repo-settings-button tooltip-host${searchOpen ? ' is-active' : ''}`}
+          data-tooltip={`Search commits (${mod}F)`}
+          aria-label="Search commits"
+          aria-pressed={searchOpen}
+          onClick={onToggleSearch}
+        >
+          <SearchIcon size={20} />
+        </button>
         <button
           type="button"
           className="repo-settings-button tooltip-host"

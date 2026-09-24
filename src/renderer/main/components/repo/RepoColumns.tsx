@@ -25,6 +25,13 @@ interface RepoColumnsProps {
   branch?: string;
   refs: RepoRefs | null;
   commits: CommitLogEntry[] | null;
+  /** Hashes matching the open commit search; the list dims every other row. */
+  searchMatches?: ReadonlySet<string>;
+  /**
+   * A search match to select once it's in `commits` (RepoView loads pages until
+   * it is). A new `token` is a new request, even for the same hash.
+   */
+  searchFocus?: { hash: string; token: number } | null;
   /** The shared working-tree status (staged/unstaged), or null while loading. */
   workingStatus: WorkingStatus | null;
   /** Push a fresh working-tree status up (after stage/unstage/commit). */
@@ -174,6 +181,8 @@ export function RepoColumns({
   branch,
   refs,
   commits,
+  searchMatches,
+  searchFocus,
   workingStatus,
   onWorkingStatusChange,
   conflicts,
@@ -328,6 +337,16 @@ export function RepoColumns({
     }
   }, [commits, selectSingle]);
 
+  // Select the focused search match once its page has loaded — once per
+  // request token, so later reloads never yank the selection back to it.
+  const handledSearchToken = useRef<number | null>(null);
+  useEffect(() => {
+    if (!searchFocus || handledSearchToken.current === searchFocus.token) return;
+    if (!commits?.some((commit) => commit.hash === searchFocus.hash)) return;
+    handledSearchToken.current = searchFocus.token;
+    selectSingle(searchFocus.hash);
+  }, [searchFocus, commits, selectSingle]);
+
   // Select a commit from a mouse click in the list, honouring the modifier keys:
   //   • Shift  — extend a contiguous range from the anchor to the clicked row.
   //   • ⌘/Ctrl — toggle the clicked row in/out of the current selection.
@@ -466,6 +485,7 @@ export function RepoColumns({
             commits={commits}
             selectedHash={selectedHash}
             selectedHashes={selectedHashes}
+            searchMatches={searchMatches}
             currentBranch={branch}
             remotes={refs?.remotes}
             workingStatus={workingStatus}

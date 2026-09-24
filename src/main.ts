@@ -77,6 +77,7 @@ import {
   type SubmoduleState,
   type SubmoduleAddOptions,
   type CommitLogEntry,
+  type CommitSearchResult,
   type CommitRefDecoration,
   type CommitDetailData,
   type CommitResult,
@@ -2152,6 +2153,46 @@ async function readLog(cwd: string, limit: number): Promise<CommitLogEntry[]> {
   return mergeStashes(commits, stashes);
 }
 
+/** Most matches a commit search returns; more than this sets `truncated`. */
+const MAX_SEARCH_RESULTS = 1000;
+/** Longest query a commit search accepts (longer input is cut). */
+const MAX_SEARCH_QUERY = 200;
+
+/**
+ * Search the whole history for `query`, matched case-insensitively as a fixed
+ * string against the commit message, the author name/email, and hash prefixes.
+ * Every walk uses the same flags as {@link readLogCommits}, so a match's index
+ * in the full `rev-list` is exactly the `--max-count` the graph needs to load
+ * it. git ANDs `--grep` with `--author`, so they run as separate walks whose
+ * hits are unioned here.
+ */
+async function searchLog(cwd: string, query: string): Promise<CommitSearchResult> {
+  const walk = ['--exclude=refs/stash', '--all', '--date-order'];
+  const [all, byMessage, byAuthor] = await Promise.all([
+    runGit(cwd, ['rev-list', ...walk]),
+    runGit(cwd, ['log', ...walk, '-i', '-F', `--grep=${query}`, '--format=%H']),
+    runGit(cwd, ['log', ...walk, '-i', '-F', `--author=${query}`, '--format=%H']),
+  ]);
+  const order = nonEmptyLines(all);
+  const matched = new Set([...nonEmptyLines(byMessage), ...nonEmptyLines(byAuthor)]);
+  const hashPrefix = /^[0-9a-f]{4,40}$/i.test(query) ? query.toLowerCase() : null;
+
+  const hashes: string[] = [];
+  const positions: number[] = [];
+  let truncated = false;
+  for (let index = 0; index < order.length; index++) {
+    const hash = order[index];
+    if (!matched.has(hash) && !(hashPrefix && hash.startsWith(hashPrefix))) continue;
+    if (hashes.length === MAX_SEARCH_RESULTS) {
+      truncated = true;
+      break;
+    }
+    hashes.push(hash);
+    positions.push(index);
+  }
+  return { hashes, positions, truncated };
+}
+
 function mapFileStatus(code: string): FileStatus {
   switch (code) {
     case 'A':
@@ -3949,6 +3990,18 @@ function registerRepoIpc(): void {
         };
       }
       return readRefs(repoPath);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.search,
+    async (_event, repoPath: unknown, query: unknown): Promise<CommitSearchResult> => {
+      const none: CommitSearchResult = { hashes: [], positions: [], truncated: false };
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return none;
+      if (typeof query !== 'string') return none;
+      const trimmed = query.trim().slice(0, MAX_SEARCH_QUERY);
+      if (!trimmed) return none;
+      return searchLog(repoPath, trimmed);
     },
   );
 

@@ -566,6 +566,20 @@ export interface CommitRefDecoration {
 }
 
 /** One commit in the history, with the parent links the graph is drawn from. */
+/** Result of a {@link RepoChannels.search} over the whole commit history. */
+export interface CommitSearchResult {
+  /** Matching commit hashes, in graph (`--date-order`) order, newest first. */
+  hashes: string[];
+  /**
+   * Each match's 0-based index among real commits in that order — i.e. the
+   * log needs `--max-count` of at least `position + 1` to include it. Parallel
+   * to `hashes`.
+   */
+  positions: number[];
+  /** True when more matches existed than were returned and the list was cut. */
+  truncated: boolean;
+}
+
 export interface CommitLogEntry {
   /** Full 40-char hash. */
   hash: string;
@@ -909,6 +923,8 @@ export const RepoChannels = {
   listRefs: 'repo:list-refs',
   /** Renderer -> main (invoke): read commit history (newest first). */
   log: 'repo:log',
+  /** Renderer -> main (invoke): search the whole history by message, author or hash prefix. */
+  search: 'repo:search',
   /** Renderer -> main (invoke): read the files changed by a single commit. */
   commitFiles: 'repo:commit-files',
   /** Renderer -> main (invoke): list every file in a commit's tree snapshot. */
@@ -1600,6 +1616,12 @@ export interface RepoApi {
    * `limit` commits (default applied by the main process).
    */
   log(path: string, limit?: number): Promise<CommitLogEntry[]>;
+  /**
+   * Search the whole commit history (not just the loaded page) for `query`,
+   * matched case-insensitively against the message, the author name/email, and
+   * hash prefixes. Resolves with no matches for an empty query or a non-repo.
+   */
+  search(path: string, query: string): Promise<CommitSearchResult>;
   /** Read the files changed by the commit `hash` (vs its first parent). */
   commitFiles(path: string, hash: string): Promise<FileChange[]>;
   /**
