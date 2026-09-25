@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from 'react';
-import type { PullMode } from '../../../../types/ipc';
-import { PushIcon, StashIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon, FolderCogIcon, SearchIcon, ExternalIcon } from '../../../../../assets/icons';
+import type { PullMode, StashPushOptions } from '../../../../types/ipc';
+import { PushIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon, FolderCogIcon, SearchIcon, ExternalIcon } from '../../../../../assets/icons';
 import { BranchSelect } from './BranchSelect';
 import { PullAction } from './PullAction';
+import { StashAction } from './StashAction';
 import { useConfirm } from '../ConfirmBar';
 import { useCommands } from '../../commands/CommandRegistry';
 import { withShortcut } from '../../commands/keys';
@@ -37,9 +38,11 @@ interface RepoToolbarProps {
   /** Whether a pull is currently in flight (disables the button). */
   pulling: boolean;
   /** Stash the working tree's uncommitted changes (`git stash push`). */
-  onStash: () => void;
+  onStash: (options?: StashPushOptions) => void;
   /** Whether there are uncommitted changes to stash (enables the Stash button). */
   canStash: boolean;
+  /** Whether anything is staged (enables "stash staged changes only"). */
+  hasStaged: boolean;
   /** Whether the repo has at least one stash (enables the Pop button). */
   hasStash: boolean;
   /** Apply & drop the latest stash (`git stash pop stash@{0}`). */
@@ -83,6 +86,7 @@ export function RepoToolbar({
   pulling,
   onStash,
   canStash,
+  hasStaged,
   hasStash,
   onPop,
   onBranch,
@@ -182,16 +186,7 @@ export function RepoToolbar({
           <span className="repo-action-label">Branch</span>
           <BranchIcon size={18} />
         </button>
-        <button
-          type="button"
-          className={`repo-action tooltip-host${canStash ? '' : ' is-disabled'}`}
-          data-tooltip={canStash ? withShortcut('Stash your uncommitted changes', 'repo.stash') : 'No changes to stash'}
-          onClick={() => canStash && onStash()}
-          aria-disabled={!canStash}
-        >
-          <span className="repo-action-label">Stash</span>
-          <StashIcon size={18} />
-        </button>
+        <StashAction onStash={onStash} canStash={canStash} hasStaged={hasStaged} branch={branch} />
         <button
           type="button"
           className={`repo-action tooltip-host${hasStash ? '' : ' is-disabled'}`}

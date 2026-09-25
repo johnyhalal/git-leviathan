@@ -20,6 +20,7 @@ import {
   type ResolveBlockResult,
   type CheckoutResult,
   type RefsMutationResult,
+  type StashPushOptions,
   type UndoRedoState,
   type GitflowKind,
   type GitflowConfig,
@@ -327,8 +328,8 @@ const api: ExposedApi = {
         localBranch,
         remoteBranch,
       ) as Promise<CommitResult>,
-    stashPush: (path: string) =>
-      ipcRenderer.invoke(RepoChannels.stashPush, path) as Promise<RefsMutationResult>,
+    stashPush: (path: string, options?: StashPushOptions) =>
+      ipcRenderer.invoke(RepoChannels.stashPush, path, options) as Promise<RefsMutationResult>,
     stashApply: (path: string, index: number) =>
       ipcRenderer.invoke(RepoChannels.stashApply, path, index) as Promise<RefsMutationResult>,
     stashPop: (path: string, index: number) =>

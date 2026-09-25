@@ -8,6 +8,7 @@ import type {
   RepoRefs,
   ResetMode,
   ResetPreview,
+  StashPushOptions,
   WorkingStatus,
 } from '../../../../types/ipc';
 import { RepoSidebar } from './RepoSidebar';
@@ -59,6 +60,11 @@ interface RepoColumnsProps {
    * pane to the commit list.
    */
   closeDiffToken: number;
+  /**
+   * The working-tree status read right after a stash. When it changes, an open
+   * staged/unstaged diff closes if its file no longer has changes on that side.
+   */
+  stashedStatus: WorkingStatus | null;
   /**
    * Check out a branch (double-clicking it in the sidebar). Pass `remote` for a
    * remote branch so a tracking branch is created off that specific remote.
@@ -129,6 +135,8 @@ interface RepoColumnsProps {
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
   onStashDrop: (index: number) => void;
+  /** Stash working-tree changes with the given options (`git stash push`). */
+  onStash: (options?: StashPushOptions) => Promise<unknown>;
   /** A worktree was added via the dialog: refs should reload. */
   onWorktreeAdded: () => void;
   /** Remove the worktree at `path`; resolves whether it needs a forced retry. */
@@ -199,6 +207,7 @@ export function RepoColumns({
   onLoadMore,
   onCommitted,
   closeDiffToken,
+  stashedStatus,
   onCheckout,
   creatingBranch,
   onCreateBranch,
@@ -233,6 +242,7 @@ export function RepoColumns({
   onStashApply,
   onStashPop,
   onStashDrop,
+  onStash,
   onWorktreeAdded,
   onWorktreeRemove,
   onWorktreeLock,
@@ -288,6 +298,16 @@ export function RepoColumns({
   useEffect(() => {
     setDiffTarget(null);
   }, [closeDiffToken]);
+
+  // A stash just landed: close a working-tree diff whose file it stashed.
+  useEffect(() => {
+    if (!stashedStatus) return;
+    setDiffTarget((target) => {
+      const kind = target?.source.kind;
+      if (kind !== 'staged' && kind !== 'unstaged') return target;
+      return stashedStatus[kind].some((file) => file.path === target?.path) ? target : null;
+    });
+  }, [stashedStatus]);
 
   // On opening a repo, preselect the latest real commit — skipping the synthetic
   // working-tree row and any stash rows. Keyed on repoPath so it runs once per
@@ -558,6 +578,7 @@ export function RepoColumns({
           activeDiff={diffTarget}
           onError={onError}
           onOpenSettings={onOpenSettings}
+          onStash={onStash}
         />
       </div>
     </div>

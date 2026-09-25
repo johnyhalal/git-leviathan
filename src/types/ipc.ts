@@ -379,6 +379,20 @@ export interface StashInfo {
   branch?: string;
 }
 
+/** Options for `git stash push`; every field is optional. */
+export interface StashPushOptions {
+  /** Stash message (`-m`). Empty or missing gives the default "WIP on <branch>". */
+  message?: string;
+  /** Also stash untracked files (`--include-untracked`). Default true. */
+  includeUntracked?: boolean;
+  /** Leave the staged changes in place (`--keep-index`). */
+  keepIndex?: boolean;
+  /** Stash only the staged changes (`--staged`); ignores keepIndex and includeUntracked. */
+  stagedOnly?: boolean;
+  /** Limit the stash to these repo-relative paths (a literal pathspec after `--`). */
+  paths?: string[];
+}
+
 /** A linked working tree from `git worktree list`. */
 export interface WorktreeInfo {
   /** Absolute path of the worktree's working directory. */
@@ -2207,11 +2221,13 @@ export interface RepoApi {
     remoteBranch: string,
   ): Promise<CommitResult>;
   /**
-   * Stash the working tree's uncommitted changes (`git stash push`, including
-   * untracked files). Resolves with fresh refs, or an error (e.g. when there is
-   * nothing to stash).
+   * Stash the working tree's uncommitted changes (`git stash push`). By default
+   * this includes untracked files and uses a "WIP on <branch>" message; `options`
+   * sets a message, keeps or stashes only the staged changes, leaves untracked
+   * files out, or limits the stash to some paths. Resolves with fresh refs, or
+   * an error (e.g. when there is nothing to stash).
    */
-  stashPush(path: string): Promise<RefsMutationResult>;
+  stashPush(path: string, options?: StashPushOptions): Promise<RefsMutationResult>;
   /**
    * Apply the stash at `index` while keeping it in the stash list
    * (`git stash apply stash@{index}`). Resolves with fresh refs, or an error

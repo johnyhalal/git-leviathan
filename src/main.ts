@@ -79,6 +79,7 @@ import {
   type LfsStatus,
   type LfsResult,
   type StashInfo,
+  type StashPushOptions,
   type WorktreeInfo,
   type WorktreeAddOptions,
   type SubmoduleInfo,
@@ -1531,6 +1532,43 @@ function isLfsPattern(value: unknown): value is string {
 }
 
 const PULL_MODES: PullMode[] = ['ff', 'ff-only', 'rebase', 'fetch-all'];
+
+/**
+ * Validate the untrusted `stashPush` options from IPC: `undefined` means the
+ * defaults; otherwise every present field must have the right type. Returns
+ * null when anything is malformed.
+ */
+function asStashPushOptions(value: unknown): StashPushOptions | null {
+  if (value === undefined) return {};
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const { message, includeUntracked, keepIndex, stagedOnly, paths } = value as Record<
+    string,
+    unknown
+  >;
+  const optionalBool = (flag: unknown) => flag === undefined || typeof flag === 'boolean';
+  if (message !== undefined && (typeof message !== 'string' || message.length > 1000)) {
+    return null;
+  }
+  if (!optionalBool(includeUntracked) || !optionalBool(keepIndex) || !optionalBool(stagedOnly)) {
+    return null;
+  }
+  if (
+    paths !== undefined &&
+    (!Array.isArray(paths) ||
+      paths.length === 0 ||
+      paths.length > 1000 ||
+      !paths.every((p) => typeof p === 'string' && p.length > 0 && !p.includes('\0')))
+  ) {
+    return null;
+  }
+  return {
+    message: message as string | undefined,
+    includeUntracked: includeUntracked as boolean | undefined,
+    keepIndex: keepIndex as boolean | undefined,
+    stagedOnly: stagedOnly as boolean | undefined,
+    paths: paths as string[] | undefined,
+  };
+}
 
 /**
  * Run a sequence of git commands in `cwd`, stopping at the first failure, then
@@ -5560,16 +5598,36 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.stashPush,
-    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+    async (_event, repoPath: unknown, rawOptions: unknown): Promise<RefsMutationResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
       }
+      const options = asStashPushOptions(rawOptions);
+      if (!options) return { status: 'error', message: 'Invalid stash options.' };
+      const args = ['stash', 'push'];
+      if (options.stagedOnly) {
+        args.push('--staged');
+      } else {
+        if (options.includeUntracked !== false) args.push('--include-untracked');
+        if (options.keepIndex) args.push('--keep-index');
+      }
       // Default the stash message to "WIP on <branch>". On a detached HEAD there
       // is no branch, so omit -m and let git use its own default message.
-      const branch = await currentBranchName(repoPath);
-      const args = ['stash', 'push', '--include-untracked'];
-      if (branch) args.push('-m', `WIP on ${branch}`);
-      return mutateRepo(repoPath, [args], 'Could not stash your changes.');
+      const message = options.message?.trim();
+      if (message) {
+        args.push('-m', message);
+      } else {
+        const branch = await currentBranchName(repoPath);
+        if (branch) args.push('-m', `WIP on ${branch}`);
+      }
+      // Literal pathspecs so a file named e.g. `*.ts` stashes just that file.
+      if (options.paths) args.push('--', ...options.paths);
+      return mutateRepo(
+        repoPath,
+        [args],
+        'Could not stash your changes.',
+        options.paths ? { GIT_LITERAL_PATHSPECS: '1' } : undefined,
+      );
     },
   );
 

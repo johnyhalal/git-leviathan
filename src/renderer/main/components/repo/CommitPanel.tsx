@@ -7,6 +7,7 @@ import type {
   DiffSource,
   FileChange,
   FileStatus,
+  StashPushOptions,
   WorkingStatus,
 } from '../../../../types/ipc';
 import type { DiffTarget } from './DiffView';
@@ -1241,6 +1242,8 @@ interface WorkingChangesProps {
   onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
+  /** Stash working-tree changes with the given options (`git stash push`). */
+  onStash: (options?: StashPushOptions) => Promise<unknown>;
 }
 
 /** Working-tree staging + commit, backed by real git status/add/reset/commit. */
@@ -1260,6 +1263,7 @@ function WorkingChanges({
   activeDiff,
   onError,
   onOpenSettings,
+  onStash,
 }: WorkingChangesProps) {
   const [busy, setBusy] = useState(false);
   // What the in-flight commit is doing, so the button can say so — a slow
@@ -1409,6 +1413,32 @@ function WorkingChanges({
       });
     },
     [requestConfirm, repoPath, activeDiff, onStatusChange, onCloseDiff],
+  );
+
+  // Stash just this file's changes (staged and unstaged), with an optional
+  // message collected in the confirm bar.
+  const stashFile = useCallback(
+    (file: DisplayFile) => {
+      requestConfirm({
+        message: `Stash changes to “${file.path}”?`,
+        input: {
+          placeholder: branch ? `WIP on ${branch}` : 'Stash message',
+          ariaLabel: 'Stash message',
+        },
+        actions: [
+          {
+            label: 'Stash',
+            busyLabel: 'Stashing…',
+            tone: 'primary',
+            // RepoView closes the file's diff once the stash lands.
+            onClick: async (message) => {
+              await onStash({ message, paths: [file.path] });
+            },
+          },
+        ],
+      });
+    },
+    [requestConfirm, branch, onStash],
   );
 
   // The three "Ignore" submenu rows for a file: the file itself, its extension,
@@ -1897,6 +1927,7 @@ function WorkingChanges({
             'separator',
             { label: 'Ignore', submenu: ignoreSubmenu(fileMenu.file) },
             { label: 'Discard changes', danger: true, onClick: () => discardFile(fileMenu.file) },
+            { label: 'Stash file…', onClick: () => stashFile(fileMenu.file) },
             'separator',
             ...openMenuItems(editorName, repoPath, fileMenu.file.path),
             'separator',
@@ -1947,6 +1978,8 @@ interface CommitPanelProps {
   onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
+  /** Stash working-tree changes with the given options (`git stash push`). */
+  onStash: (options?: StashPushOptions) => Promise<unknown>;
 }
 
 /**
@@ -1973,6 +2006,7 @@ export function CommitPanel({
   activeDiff,
   onError,
   onOpenSettings,
+  onStash,
 }: CommitPanelProps) {
   // 2+ selected commits → the multi-commit boxes view, regardless of which one is
   // focused. A single (or zero) selection keeps the rich detail / staging views.
@@ -2017,6 +2051,7 @@ export function CommitPanel({
       activeDiff={activeDiff}
       onError={onError}
       onOpenSettings={onOpenSettings}
+      onStash={onStash}
     />
   );
 }

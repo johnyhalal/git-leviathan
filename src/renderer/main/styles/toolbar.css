@@ -551,8 +551,13 @@
   cursor: pointer;
 }
 
-.pull-action-option:hover {
+.pull-action-option:hover:not(:disabled) {
   background: var(--control-bg);
+}
+
+.pull-action-option:disabled {
+  color: var(--fg-muted);
+  cursor: default;
 }
 
 .pull-action-option.is-current {

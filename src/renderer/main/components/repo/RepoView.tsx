@@ -14,6 +14,7 @@ import type {
   RepoInfo,
   RepoRefs,
   ResetMode,
+  StashPushOptions,
   UndoRedoState,
   WorkingStatus,
 } from '../../../../types/ipc';
@@ -97,6 +98,9 @@ export function RepoView({
   // can rewrite the file it was showing).
   const [closeDiffToken, setCloseDiffToken] = useState(0);
   const closeDiff = useCallback(() => setCloseDiffToken((token) => token + 1), []);
+  // The working-tree status read right after a stash, so RepoColumns can close
+  // an open working-tree diff whose file the stash just took away.
+  const [stashedStatus, setStashedStatus] = useState<WorkingStatus | null>(null);
   // True while a push is in flight, to disable the toolbar button.
   const [pushing, setPushing] = useState(false);
   // True while a pull/fetch is in flight, to disable the toolbar button.
@@ -651,8 +655,13 @@ export function RepoView({
   );
 
   const stashPush = useCallback(
-    () =>
-      runMutation('Stash failed', () => window.api.repo.stashPush(repoPath)),
+    async (options?: StashPushOptions) => {
+      const result = await runMutation('Stash failed', () =>
+        window.api.repo.stashPush(repoPath, options),
+      );
+      if (result.status === 'ok') setStashedStatus(await window.api.repo.status(repoPath));
+      return result;
+    },
     [repoPath, runMutation],
   );
 
@@ -1274,8 +1283,9 @@ export function RepoView({
           pushing={pushing}
           onPull={(mode) => void pull(mode)}
           pulling={pulling}
-          onStash={() => void stashPush()}
+          onStash={(options) => void stashPush(options)}
           canStash={hasChanges}
+          hasStaged={(workingStatus?.staged.length ?? 0) > 0}
           hasStash={(refs?.stashes.length ?? 0) > 0}
           onPop={() => void stashPop(0)}
           onBranch={() => setCreatingBranch((on) => !on)}
@@ -1332,6 +1342,7 @@ export function RepoView({
           onLoadMore={() => void loadMore()}
           onCommitted={reload}
           closeDiffToken={closeDiffToken}
+          stashedStatus={stashedStatus}
           onCheckout={(branch, remote) => void checkout(branch, remote)}
           creatingBranch={creatingBranch}
           onCreateBranch={(name) => void createBranch(name)}
@@ -1366,6 +1377,7 @@ export function RepoView({
           onStashApply={(index) => void stashApply(index)}
           onStashPop={(index) => void stashPop(index)}
           onStashDrop={(index) => void stashDrop(index)}
+          onStash={stashPush}
           onWorktreeAdded={reload}
           onWorktreeRemove={worktreeRemove}
           onWorktreeLock={(path, lock, reason) => void worktreeLock(path, lock, reason)}
