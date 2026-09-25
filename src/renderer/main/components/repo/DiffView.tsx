@@ -146,7 +146,7 @@ interface DiffViewProps {
  * The center-column file viewer that swaps in over the commit list when a file
  * is selected. A header (path + close) sits over a secondary nav (a file/diff
  * mode switch, the viewed-revision label, blame/history toggles, and
- * older/newer revision steppers) over the body.
+ * previous/next hunk steppers) over the body.
  *
  * Blame and history are independent overlays on whichever mode is showing:
  * history opens a sidebar listing the commits that touched the file, and blame
@@ -154,9 +154,9 @@ interface DiffViewProps {
  *
  * The viewer tracks a `rev` — the revision the file is shown at. It starts at
  * the commit the file was opened from (or the working tree for a staged/unstaged
- * change); picking a commit in the history sidebar, clicking a blame block, or
- * the revision steppers move it through the file's own history, and closing the
- * history sidebar returns to the original revision.
+ * change); picking a commit in the history sidebar or clicking a blame block
+ * moves it through the file's own history, and closing the history sidebar
+ * returns to the original revision.
  */
 export function DiffView({
   repoPath,
@@ -207,16 +207,20 @@ export function DiffView({
 
   // The revision the file is viewed at: '' means the working tree / the original
   // source (a staged/unstaged/range change), a hash means that commit. Opening
-  // from a commit's file starts there so the stepper and blame have an anchor.
+  // from a commit's file starts there so the history list and blame have an anchor.
   const initialRev = source.kind === 'commit' ? source.hash : '';
   const [rev, setRev] = useState(initialRev);
 
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [content, setContent] = useState<string[] | null>(null);
   const [blame, setBlame] = useState<FileBlame | null>(null);
-  // The file's history (commits that touched it), for the timeline + steppers.
-  // Fetched once per file; null while loading.
+  // The file's history (commits that touched it), for the timeline + revision
+  // label. Fetched once per file; null while loading.
   const [history, setHistory] = useState<CommitLogEntry[] | null>(null);
+  // Hunk stepping: the diff body registers its jump function here and reports
+  // whether there's a hunk above/below the current scroll position.
+  const hunkNav = useRef<((dir: -1 | 1) => void) | null>(null);
+  const [hunkNavState, setHunkNavState] = useState<HunkNavState>(NO_HUNK_NAV);
 
   // The diff source for the *viewed* revision: the original source at the
   // working tree, otherwise that commit against its parent.
@@ -266,7 +270,7 @@ export function DiffView({
   }, [diffOptions]);
 
   // Load the file's history once per file — it powers both the timeline and the
-  // older/newer steppers, so it's fetched eagerly rather than only in history mode.
+  // viewed-revision label, so it's fetched eagerly rather than only in history mode.
   useEffect(() => {
     let live = true;
     setHistory(null);
@@ -425,28 +429,9 @@ export function DiffView({
     [requestConfirm, afterHunk, repoPath, path, diffOptions],
   );
 
-  // Revision stepping through the file's history list. Index of the viewed rev
-  // (-1 when at the working tree). "Older" walks down the list; "newer" walks up,
-  // stepping back to the working tree when the file was opened from there.
-  const revList = history ?? [];
-  const revIndex = rev === '' ? -1 : revList.findIndex((commit) => commit.hash === rev);
-  const opensFromWorking = source.kind !== 'commit';
-  const olderRev = (): string | null => {
-    if (rev === '') return revList[0]?.hash ?? null;
-    if (revIndex === -1) return null;
-    return revList[revIndex + 1]?.hash ?? null;
-  };
-  const newerRev = (): string | null => {
-    if (rev === '') return null;
-    if (revIndex <= 0) return opensFromWorking ? '' : null;
-    return revList[revIndex - 1]?.hash ?? null;
-  };
-  const older = olderRev();
-  const newer = newerRev();
-
-  // Jump to a specific revision (from the history list, a blame block, or a
-  // stepper). Browsing revisions shows the history sidebar so the viewed
-  // revision is visible and closing it is the way back to the original.
+  // Jump to a specific revision (from the history list or a blame block).
+  // Browsing revisions shows the history sidebar so the viewed revision is
+  // visible and closing it is the way back to the original.
   const pickRev = (hash: string) => {
     setRev(hash);
     setShowHistory(true);
@@ -472,14 +457,20 @@ export function DiffView({
     if (history.length > 0) setRev(history[0].hash);
   }, [selectFirstOnLoad, history]);
 
-  // A short label for the viewed revision, shown between the mode switch and the
-  // steppers.
+  // A short label for the viewed revision, shown before the mode switch.
   const revLabel =
     rev === ''
       ? source.kind === 'range'
         ? 'Range'
         : 'Working tree'
-      : revList.find((commit) => commit.hash === rev)?.shortHash ?? rev.slice(0, 7);
+      : history?.find((commit) => commit.hash === rev)?.shortHash ?? rev.slice(0, 7);
+
+  // The hunk steppers only apply to the diff; in the hunk layout they stop at
+  // each hunk, in the whole-file layouts (one hunk) at each run of changes.
+  const hunkStops = prefs.layout === 'hunks' ? 'hunk' : 'change';
+  const hunkWord = hunkStops === 'hunk' ? 'hunk' : 'change';
+  const canPrevHunk = mode === 'diff' && hunkNavState.prev;
+  const canNextHunk = mode === 'diff' && hunkNavState.next;
 
   return (
     <div className="diff-view">
@@ -553,20 +544,20 @@ export function DiffView({
             <button
               type="button"
               className="diff-step diff-step-prev tooltip-host"
-              data-tooltip="Older revision"
-              aria-label="Older revision"
-              disabled={older === null}
-              onClick={() => older !== null && pickRev(older)}
+              data-tooltip={`Previous ${hunkWord}`}
+              aria-label={`Previous ${hunkWord}`}
+              disabled={!canPrevHunk}
+              onClick={() => hunkNav.current?.(-1)}
             >
               <ChevronDownIcon size={14} />
             </button>
             <button
               type="button"
               className="diff-step diff-step-next tooltip-host"
-              data-tooltip="Newer revision"
-              aria-label="Newer revision"
-              disabled={newer === null}
-              onClick={() => newer !== null && pickRev(newer)}
+              data-tooltip={`Next ${hunkWord}`}
+              aria-label={`Next ${hunkWord}`}
+              disabled={!canNextHunk}
+              onClick={() => hunkNav.current?.(1)}
             >
               <ChevronDownIcon size={14} />
             </button>
@@ -653,6 +644,9 @@ export function DiffView({
               linesMode={canStageHunks ? 'unstaged' : canUnstageHunks ? 'staged' : null}
               onLines={requestLines}
               lineBusy={lineBusy}
+              navStops={hunkStops}
+              navRef={hunkNav}
+              onNavState={setHunkNavState}
             />
           ) : (
             <FileBody
@@ -696,6 +690,17 @@ interface RowRef {
   /** Diff row index of the other half of an edited line, or null. */
   partner: number | null;
 }
+
+/** Whether the diff has a hunk stop above / below its current scroll position. */
+interface HunkNavState {
+  prev: boolean;
+  next: boolean;
+}
+
+const NO_HUNK_NAV: HunkNavState = { prev: false, next: false };
+
+/** Rows of context shown above a run of changes the steppers jump to. */
+const CHANGE_STOP_CONTEXT = 3;
 
 /** A row the diff body draws (see DiffBody's `displayRows`). */
 type DisplayRow =
@@ -793,6 +798,9 @@ function DiffBody({
   linesMode = null,
   onLines,
   lineBusy = false,
+  navStops = 'hunk',
+  navRef,
+  onNavState,
 }: BlameColumn & {
   diff: FileDiff | null;
   lang: string | null;
@@ -814,6 +822,12 @@ function DiffBody({
   onLines?: (action: LineAction, refs: DiffLineRef[]) => void;
   /** A line action is in flight; the line buttons are disabled meanwhile. */
   lineBusy?: boolean;
+  /** Where the hunk steppers stop: each `@@` header, or each run of changes. */
+  navStops?: 'hunk' | 'change';
+  /** Receives the function that scrolls to the previous (-1) / next (1) stop. */
+  navRef?: React.RefObject<((dir: -1 | 1) => void) | null>;
+  /** Told whether a stop lies above / below the current scroll position. */
+  onNavState?: (state: HunkNavState) => void;
 }) {
   const { paneRef, scrollRef, sync, onWheel } = useBlameSync();
   // Unwrapped split view renders old and new as two panes, each scrolling
@@ -902,6 +916,84 @@ function DiffBody({
     flush();
     return rows;
   }, [diff, layout]);
+
+  // The display rows the hunk steppers land on: each hunk header, or — in the
+  // whole-file layouts, where the diff is one hunk — a few rows of context above
+  // the start of each run of changed rows.
+  const navTargets = useMemo(() => {
+    if (diff === null) return [];
+    if (navStops === 'hunk') {
+      return displayRows.flatMap((row, i) => (row.kind === 'hunk' ? [i] : []));
+    }
+    const changedIndex = (index: number | null) =>
+      index !== null && diff.lines[index].kind !== 'context';
+    const isChange = (row: DisplayRow) =>
+      row.kind === 'line'
+        ? changedIndex(row.index)
+        : row.kind === 'pair' && (changedIndex(row.left) || changedIndex(row.right));
+    const targets: number[] = [];
+    displayRows.forEach((row, i) => {
+      if (isChange(row) && (i === 0 || !isChange(displayRows[i - 1]))) {
+        targets.push(Math.max(0, i - CHANGE_STOP_CONTEXT));
+      }
+    });
+    return targets;
+  }, [diff, displayRows, navStops]);
+
+  // The element the rows scroll in: the pane, or the new side of an unwrapped
+  // split (the old side mirrors it). Its `.diff-lines` children are the display
+  // rows, one element each.
+  const navScroller = () => (layout === 'split' && !wrap ? newPaneRef.current : scrollRef.current);
+  // The scrollTop that brings each stop to the top, clamped to what the pane
+  // can actually scroll to (stops near the end all land at the bottom).
+  const navOffsets = (scroller: HTMLElement): number[] => {
+    const rows = scroller.querySelector(':scope > .diff-lines')?.children;
+    if (!rows) return [];
+    const base = scroller.getBoundingClientRect().top - scroller.scrollTop;
+    const max = scroller.scrollHeight - scroller.clientHeight;
+    return navTargets.flatMap((i) => {
+      const row = rows[i];
+      if (!row) return [];
+      return [Math.min(max, Math.max(0, Math.round(row.getBoundingClientRect().top - base)))];
+    });
+  };
+  const navState = useRef<HunkNavState>(NO_HUNK_NAV);
+  const reportNav = () => {
+    const scroller = navScroller();
+    const offsets = scroller ? navOffsets(scroller) : [];
+    const top = scroller?.scrollTop ?? 0;
+    const next = {
+      prev: offsets.some((offset) => offset < top - 1),
+      next: offsets.some((offset) => offset > top + 1),
+    };
+    if (next.prev === navState.current.prev && next.next === navState.current.next) return;
+    navState.current = next;
+    onNavState?.(next);
+  };
+  const jumpToStop = (dir: -1 | 1) => {
+    const scroller = navScroller();
+    if (!scroller) return;
+    const top = scroller.scrollTop;
+    const offsets = navOffsets(scroller);
+    const target =
+      dir === 1
+        ? offsets.find((offset) => offset > top + 1)
+        : offsets.findLast((offset) => offset < top - 1);
+    if (target !== undefined) scroller.scrollTop = target;
+  };
+  // Re-publish the jump function and re-check the stops after every render (a
+  // new diff, layout, or wrap moves them); scrolling re-checks too.
+  useLayoutEffect(() => {
+    if (navRef) navRef.current = jumpToStop;
+    reportNav();
+  });
+  useEffect(
+    () => () => {
+      if (navRef) navRef.current = null;
+      onNavState?.(NO_HUNK_NAV);
+    },
+    [navRef, onNavState],
+  );
 
   // Multi-line selection (diff row indices), made by clicking the line-number
   // gutters: plain click selects one row (or clears a lone selection), ⌘/Ctrl
@@ -1198,7 +1290,10 @@ function DiffBody({
       <div
         className={`diff-scroll diff-split-pane is-${side}`}
         ref={ref}
-        onScroll={(event) => mirrorScroll(event.currentTarget, other.current)}
+        onScroll={(event) => {
+          mirrorScroll(event.currentTarget, other.current);
+          reportNav();
+        }}
       >
         <div className="diff-lines" role="table">
           {displayRows.map((row, i) => {
@@ -1239,7 +1334,14 @@ function DiffBody({
           onPickRev={onPickRev}
         />
       )}
-      <div className="diff-scroll" ref={scrollRef} onScroll={sync}>
+      <div
+        className="diff-scroll"
+        ref={scrollRef}
+        onScroll={() => {
+          sync();
+          reportNav();
+        }}
+      >
         <div className={linesClass.join(' ')} role="table">
           {displayRows.map((row) =>
             row.kind === 'hunk'
