@@ -26,6 +26,7 @@ import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
 import { CommitPlanEditor } from './CommitPlanEditor';
 import { ConfirmProvider } from '../ConfirmBar';
+import { useCommands } from '../../commands/CommandRegistry';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 import type { SubmoduleDeinitOutcome } from './SubmoduleContextMenu';
 
@@ -648,40 +649,6 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
-  // Keyboard shortcuts for the toolbar's undo/redo: Cmd/Ctrl+Z undoes,
-  // Cmd/Ctrl+R (and the conventional Cmd/Ctrl+Shift+Z / Ctrl+Y) redoes. Typing
-  // in a field keeps its native text undo — git history is only touched when
-  // focus is outside an editor. The reload accelerator is dropped from the app
-  // menu in the main process so Cmd/Ctrl+R reaches the page at all.
-  useEffect(() => {
-    const isEditable = (node: EventTarget | null) => {
-      const el = node as HTMLElement | null;
-      if (!el || typeof el.closest !== 'function') return false;
-      return Boolean(el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]'));
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-      const key = event.key.toLowerCase();
-      // Cmd/Ctrl+F opens commit search from anywhere — even a text field, since
-      // no field here has its own find — unless a dialog is up over the view.
-      if (key === 'f' && !event.shiftKey) {
-        if (document.querySelector('[role="dialog"]')) return;
-        event.preventDefault();
-        openSearch();
-        return;
-      }
-      if (event.repeat || isEditable(event.target)) return;
-      const wantsUndo = key === 'z' && !event.shiftKey;
-      const wantsRedo = (key === 'z' && event.shiftKey) || key === 'r' || key === 'y';
-      if (!wantsUndo && !wantsRedo) return;
-      event.preventDefault();
-      if (wantsUndo && undoRedo.undo) void undo();
-      else if (wantsRedo && undoRedo.redo) void redo();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [undo, redo, undoRedo.undo, undoRedo.redo, openSearch]);
-
   const stashPush = useCallback(
     () =>
       runMutation('Stash failed', () => window.api.repo.stashPush(repoPath)),
@@ -1263,6 +1230,31 @@ export function RepoView({
 
   const branchLabel =
     refs === null ? 'Loading…' : currentBranch ?? 'HEAD (detached)';
+
+  // Repository commands for the menu, palette and keyboard. Undo/redo keep
+  // their text-aware behaviour: typing in a field gets the field's own undo,
+  // and git history is only touched when focus is outside an editor. Pull and
+  // push register from the toolbar, which owns their mode and publish confirm.
+  const loaded = refs !== null;
+  useCommands([
+    { id: 'repo.undo', run: () => void undo(), enabled: !!undoRedo.undo, allowInEditable: false },
+    { id: 'repo.redo', run: () => void redo(), enabled: !!undoRedo.redo, allowInEditable: false },
+    { id: 'repo.search', run: openSearch },
+    { id: 'repo.fetch', run: () => void pull('fetch-all'), enabled: loaded && !pulling },
+    { id: 'repo.branch', run: () => setCreatingBranch(true), enabled: loaded },
+    { id: 'repo.stash', run: () => void stashPush(), enabled: hasChanges },
+    { id: 'repo.pop', run: () => void stashPop(0), enabled: (refs?.stashes.length ?? 0) > 0 },
+    { id: 'repo.resolve', run: () => openResolver(null), enabled: !!mergeState },
+    { id: 'repo.settings', run: () => openRepoSettings() },
+    ...branchNames
+      .filter((name) => name !== currentBranch)
+      .map((name) => ({
+        id: `checkout:${name}`,
+        label: `Checkout ${name}`,
+        category: 'Branches',
+        run: () => void checkout(name),
+      })),
+  ]);
 
   return (
     <div className="repo-view">

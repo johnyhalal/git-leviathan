@@ -3,10 +3,12 @@ import {
   AppChannels,
   ClaudeChannels,
   IntegrationChannels,
+  MenuChannels,
   RepoChannels,
   SigningChannels,
   ThemeChannels,
   UpdateChannels,
+  type AppCommandId,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -660,6 +662,16 @@ const api: ExposedApi = {
         ipcRenderer.removeListener(UpdateChannels.found, listener);
       };
     },
+  },
+  menu: {
+    onCommand: (callback: (id: AppCommandId) => void) => {
+      const listener = (_event: IpcRendererEvent, id: AppCommandId) => callback(id);
+      ipcRenderer.on(MenuChannels.command, listener);
+      return () => {
+        ipcRenderer.removeListener(MenuChannels.command, listener);
+      };
+    },
+    setEnabled: (ids: AppCommandId[]) => ipcRenderer.send(MenuChannels.setEnabled, ids),
   },
 };
 

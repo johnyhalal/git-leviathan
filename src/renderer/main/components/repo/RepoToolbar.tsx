@@ -4,6 +4,8 @@ import { PushIcon, StashIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon, FolderCog
 import { BranchSelect } from './BranchSelect';
 import { PullAction } from './PullAction';
 import { useConfirm } from '../ConfirmBar';
+import { useCommands } from '../../commands/CommandRegistry';
+import { withShortcut } from '../../commands/keys';
 
 interface RepoToolbarProps {
   /** The checked-out branch name (from the real repo). */
@@ -117,8 +119,9 @@ export function RepoToolbar({
     });
   };
 
-  // Shown in the undo/redo tooltips so the shortcuts are discoverable.
-  const mod = window.api.platform === 'darwin' ? '⌘' : 'Ctrl+';
+  // Registered here, not in RepoView, so a menu or palette push on a branch with
+  // no upstream raises the same publish confirm as the button.
+  useCommands([{ id: 'repo.push', run: () => void handlePush(), enabled: !pushing }]);
 
   return (
     <div className="repo-toolbar">
@@ -130,7 +133,7 @@ export function RepoToolbar({
         <button
           type="button"
           className={`repo-action tooltip-host${undoLabel ? '' : ' is-disabled'}`}
-          data-tooltip={`${undoLabel ? `Undo ${undoLabel}` : 'Nothing to undo'} (${mod}Z)`}
+          data-tooltip={withShortcut(undoLabel ? `Undo ${undoLabel}` : 'Nothing to undo', 'repo.undo')}
           aria-label={undoLabel ? `Undo ${undoLabel}` : 'Nothing to undo'}
           onClick={() => undoLabel && onUndo()}
           aria-disabled={!undoLabel}
@@ -141,7 +144,7 @@ export function RepoToolbar({
         <button
           type="button"
           className={`repo-action tooltip-host${redoLabel ? '' : ' is-disabled'}`}
-          data-tooltip={`${redoLabel ? `Redo ${redoLabel}` : 'Nothing to redo'} (${mod}R)`}
+          data-tooltip={withShortcut(redoLabel ? `Redo ${redoLabel}` : 'Nothing to redo', 'repo.redo')}
           aria-label={redoLabel ? `Redo ${redoLabel}` : 'Nothing to redo'}
           onClick={() => redoLabel && onRedo()}
           aria-disabled={!redoLabel}
@@ -153,7 +156,7 @@ export function RepoToolbar({
         <button
           type="button"
           className="repo-action tooltip-host"
-          data-tooltip="Push commits to the remote"
+          data-tooltip={withShortcut('Push commits to the remote', 'repo.push')}
           onClick={() => void handlePush()}
           disabled={pushing}
         >
@@ -163,7 +166,7 @@ export function RepoToolbar({
         <button
             type="button"
             className={`repo-action tooltip-host${branching ? ' is-active' : ''}`}
-            data-tooltip="Create a branch at the current commit"
+            data-tooltip={withShortcut('Create a branch at the current commit', 'repo.branch')}
             onClick={onBranch}
             aria-pressed={branching}
         >
@@ -173,7 +176,7 @@ export function RepoToolbar({
         <button
           type="button"
           className={`repo-action tooltip-host${canStash ? '' : ' is-disabled'}`}
-          data-tooltip={canStash ? 'Stash your uncommitted changes' : 'No changes to stash'}
+          data-tooltip={canStash ? withShortcut('Stash your uncommitted changes', 'repo.stash') : 'No changes to stash'}
           onClick={() => canStash && onStash()}
           aria-disabled={!canStash}
         >
@@ -197,7 +200,7 @@ export function RepoToolbar({
         <button
           type="button"
           className={`repo-settings-button tooltip-host${searchOpen ? ' is-active' : ''}`}
-          data-tooltip={`Search commits (${mod}F)`}
+          data-tooltip={withShortcut('Search commits', 'repo.search')}
           aria-label="Search commits"
           aria-pressed={searchOpen}
           onClick={onToggleSearch}

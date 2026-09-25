@@ -33,14 +33,18 @@ import {
   type TokenUsage,
 } from './claude';
 import {
+  APP_COMMANDS,
+  APP_COMMAND_IDS,
   AppChannels,
   ClaudeChannels,
   IntegrationChannels,
+  MenuChannels,
   RepoChannels,
   SigningChannels,
   ThemeChannels,
   UpdateChannels,
   GLOBAL_ACTIVITY_PATH,
+  type AppCommandMenu,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -9228,38 +9232,105 @@ function registerUpdateIpc(): void {
 }
 
 /**
- * The application menu. It's the stock roles-based menu with one deliberate
+ * The application menu. Built from the shared `APP_COMMANDS` table: each app
+ * command with a `menu` becomes an item carrying its accelerator, and choosing
+ * it (or pressing the key) forwards the command id to the focused window's
+ * renderer, which runs it. The rest are the stock roles, with one deliberate
  * omission: the plain Reload item's `CmdOrCtrl+R` accelerator. That accelerator
  * is swallowed by the menu before the page ever sees the key, and the repo view
  * binds Cmd/Ctrl+R to "redo" — so reloading keeps only its Shift variant
- * (`forceReload`), which nothing else wants.
+ * (`forceReload`), which nothing else wants. Close Window likewise moves to
+ * Cmd/Ctrl+Shift+W so Cmd/Ctrl+W can close a tab.
  */
 function installAppMenu(): void {
   const isMac = process.platform === 'darwin';
+  const commandItems = (menu: AppCommandMenu): MenuItemConstructorOptions[] =>
+    APP_COMMANDS.filter((spec) => spec.menu === menu).map((spec) => ({
+      id: spec.id,
+      label: spec.label,
+      accelerator: spec.accelerator,
+      // Repo commands wait for the renderer to report an open repository.
+      enabled: !spec.repo,
+      click: () => {
+        const win = BrowserWindow.getFocusedWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(MenuChannels.command, spec.id);
+      },
+    }));
+  const separator: MenuItemConstructorOptions = { type: 'separator' };
   const template: MenuItemConstructorOptions[] = [
-    ...(isMac ? ([{ role: 'appMenu' }] as MenuItemConstructorOptions[]) : []),
-    { role: 'fileMenu' },
+    ...(isMac
+      ? ([
+          {
+            role: 'appMenu',
+            submenu: [
+              { role: 'about' },
+              separator,
+              ...commandItems('app'),
+              separator,
+              { role: 'services' },
+              separator,
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              separator,
+              { role: 'quit' },
+            ],
+          },
+        ] as MenuItemConstructorOptions[])
+      : []),
+    {
+      label: 'File',
+      submenu: [
+        ...commandItems('file'),
+        { role: 'close', label: 'Close Window', accelerator: 'CmdOrCtrl+Shift+W' },
+        ...(isMac ? [] : [separator, ...commandItems('app'), separator, { role: 'quit' } as MenuItemConstructorOptions]),
+      ],
+    },
     { role: 'editMenu' },
     {
       label: 'View',
       submenu: [
+        ...commandItems('view'),
+        separator,
         ...(app.isPackaged
           ? []
           : ([
               { role: 'forceReload' },
               { role: 'toggleDevTools' },
-              { type: 'separator' },
+              separator,
             ] as MenuItemConstructorOptions[])),
         { role: 'resetZoom' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },
-        { type: 'separator' },
+        separator,
         { role: 'togglefullscreen' },
       ],
     },
+    { label: 'Repository', submenu: commandItems('repository') },
     { role: 'windowMenu' },
+    { role: 'help', submenu: commandItems('help') },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/**
+ * The renderer reports which commands can run right now (a repository is open,
+ * there's a stash to pop, …); grey out every menu command that isn't among them.
+ */
+function registerMenuIpc(): void {
+  ipcMain.on(MenuChannels.setEnabled, (_event, ids: unknown): void => {
+    if (!Array.isArray(ids)) return;
+    const enabled = new Set(
+      ids.filter((id): id is string => typeof id === 'string' && APP_COMMAND_IDS.has(id)),
+    );
+    const menu = Menu.getApplicationMenu();
+    if (!menu) return;
+    for (const spec of APP_COMMANDS) {
+      if (!spec.menu) continue;
+      const item = menu.getMenuItemById(spec.id);
+      if (item) item.enabled = enabled.has(spec.id);
+    }
+  });
 }
 
 app.on('ready', () => {
@@ -9280,6 +9351,7 @@ app.on('ready', () => {
   registerSigningIpc();
   registerAppIpc();
   registerUpdateIpc();
+  registerMenuIpc();
   // Configure anonymous usage analytics (on by default) and record the launch.
   configureTelemetry({ isEnabled: telemetryEnabled, userId: ensureTelemetryId() });
   trackEvent('app_opened');

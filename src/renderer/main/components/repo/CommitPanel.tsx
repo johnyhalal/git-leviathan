@@ -14,6 +14,7 @@ import { FileContextMenu, type FileMenuItem } from './FileContextMenu';
 import { useConfirm, type ConfirmAction } from '../ConfirmBar';
 import { CopyButton } from '../CopyButton';
 import { formatDateTime, useDateFormat } from '../../dateFormat';
+import { formatAccelerator } from '../../commands/keys';
 import {
   CertificateIcon,
   ChevronDownIcon,
@@ -1747,7 +1748,15 @@ function WorkingChanges({
       </div>
 
       <div className="commit-message-box">
-        <div className="commit-message-fields">
+        {/* ⌘/Ctrl+Enter in the summary or description commits, like the button. */}
+        <div
+          className="commit-message-fields"
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+            event.preventDefault();
+            if (canCommit) void commit();
+          }}
+        >
           <div className="commit-message-subject-row commit-message-subject-row--generate">
             <input
               className="commit-message-subject"
@@ -1815,7 +1824,8 @@ function WorkingChanges({
         </div>
         <button
           type="button"
-          className="commit-submit"
+          className="commit-submit tooltip-host"
+          data-tooltip={`${amendCommit ? 'Amend' : 'Commit'} (${formatAccelerator('CmdOrCtrl+Enter')})`}
           disabled={!canCommit}
           aria-busy={busy}
           onClick={() => void commit()}

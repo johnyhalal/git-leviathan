@@ -67,6 +67,96 @@ export const AppChannels = {
   focused: 'app:focused',
 } as const;
 
+export const MenuChannels = {
+  /** Main -> renderer (send): a native menu item (or its accelerator) was chosen. */
+  command: 'menu:command',
+  /** Renderer -> main (send): the command ids that can run right now. */
+  setEnabled: 'menu:set-enabled',
+} as const;
+
+/**
+ * Every named app command. Dynamic palette entries (a branch to check out, a tab
+ * to switch to) aren't listed here — they're registered ad hoc by the renderer.
+ */
+export type AppCommandId =
+  | 'palette'
+  | 'settings'
+  | 'feedback'
+  | 'tab.new'
+  | 'tab.close'
+  | 'tab.next'
+  | 'tab.prev'
+  | 'tab.goto'
+  | 'repo.open'
+  | 'repo.clone'
+  | 'repo.fetch'
+  | 'repo.pull'
+  | 'repo.push'
+  | 'repo.branch'
+  | 'repo.stash'
+  | 'repo.pop'
+  | 'repo.search'
+  | 'repo.undo'
+  | 'repo.redo'
+  | 'repo.resolve'
+  | 'repo.settings';
+
+export type AppCommandCategory = 'App' | 'Tabs' | 'Repository';
+
+/** Which native menu an app command lives in, when it has one. */
+export type AppCommandMenu = 'app' | 'file' | 'view' | 'repository' | 'help';
+
+export interface AppCommandSpec {
+  id: AppCommandId;
+  label: string;
+  category: AppCommandCategory;
+  /** The primary shortcut, in Electron accelerator syntax (e.g. `CmdOrCtrl+Shift+P`). */
+  accelerator?: string;
+  /** Extra shortcuts, always handled in the page (a menu item takes only one). */
+  aliases?: string[];
+  /**
+   * The native menu the command appears in. A command with a menu is
+   * dispatched by the menu — its accelerator is registered there, so the key
+   * never reaches the page. Without one, the renderer's keydown listener
+   * handles the shortcut (for keys that must stay text-aware, like git undo).
+   */
+  menu?: AppCommandMenu;
+  /** Scoped to an open repository — greyed out in the menu otherwise. */
+  repo?: boolean;
+}
+
+/**
+ * The single shortcut table: drives the native menu, the command palette, the
+ * shortcut hints in tooltips and the Settings shortcut list. The set is fixed —
+ * every key here avoids text-editing combos and Alt (AltGr on many layouts),
+ * since a menu accelerator fires even while a text field has focus.
+ */
+export const APP_COMMANDS: readonly AppCommandSpec[] = [
+  { id: 'palette', label: 'Command Palette…', category: 'App', accelerator: 'CmdOrCtrl+P', aliases: ['CmdOrCtrl+K'], menu: 'view' },
+  { id: 'settings', label: 'Settings…', category: 'App', accelerator: 'CmdOrCtrl+,', menu: 'app' },
+  { id: 'feedback', label: 'Send Feedback…', category: 'App', menu: 'help' },
+  { id: 'tab.new', label: 'New Tab', category: 'Tabs', accelerator: 'CmdOrCtrl+T', menu: 'file' },
+  { id: 'repo.open', label: 'Open Repository…', category: 'Tabs', accelerator: 'CmdOrCtrl+O', menu: 'file' },
+  { id: 'repo.clone', label: 'Clone Repository…', category: 'Tabs', menu: 'file' },
+  { id: 'tab.close', label: 'Close Tab', category: 'Tabs', accelerator: 'CmdOrCtrl+W', menu: 'file' },
+  { id: 'tab.next', label: 'Next Tab', category: 'Tabs', accelerator: 'Ctrl+Tab', aliases: ['CmdOrCtrl+Shift+]'] },
+  { id: 'tab.prev', label: 'Previous Tab', category: 'Tabs', accelerator: 'Ctrl+Shift+Tab', aliases: ['CmdOrCtrl+Shift+['] },
+  { id: 'tab.goto', label: 'Go to Tab 1–9', category: 'Tabs', accelerator: 'CmdOrCtrl+1' },
+  { id: 'repo.fetch', label: 'Fetch All', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+F', menu: 'repository', repo: true },
+  { id: 'repo.pull', label: 'Pull', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+L', menu: 'repository', repo: true },
+  { id: 'repo.push', label: 'Push', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+P', menu: 'repository', repo: true },
+  { id: 'repo.branch', label: 'New Branch…', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+B', menu: 'repository', repo: true },
+  { id: 'repo.stash', label: 'Stash Changes', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+S', menu: 'repository', repo: true },
+  { id: 'repo.pop', label: 'Pop Stash', category: 'Repository', menu: 'repository', repo: true },
+  { id: 'repo.search', label: 'Find Commit…', category: 'Repository', accelerator: 'CmdOrCtrl+F', menu: 'repository', repo: true },
+  { id: 'repo.undo', label: 'Undo', category: 'Repository', accelerator: 'CmdOrCtrl+Z', repo: true },
+  { id: 'repo.redo', label: 'Redo', category: 'Repository', accelerator: 'CmdOrCtrl+R', aliases: ['CmdOrCtrl+Shift+Z', 'CmdOrCtrl+Y'], repo: true },
+  { id: 'repo.resolve', label: 'Resolve Conflicts…', category: 'Repository', menu: 'repository', repo: true },
+  { id: 'repo.settings', label: 'Repository Settings…', category: 'Repository', menu: 'repository', repo: true },
+];
+
+export const APP_COMMAND_IDS: ReadonlySet<string> = new Set(APP_COMMANDS.map((c) => c.id));
+
 export const UpdateChannels = {
   /** Renderer -> main (invoke): resolve a newer release, or null. */
   check: 'update:check',
@@ -1662,6 +1752,13 @@ export interface AppApi {
   onWindowFocus(callback: () => void): () => void;
 }
 
+export interface MenuApi {
+  /** Subscribe to native menu picks (by command id). Returns an unsubscribe function. */
+  onCommand(callback: (id: AppCommandId) => void): () => void;
+  /** Report which commands can run now, so the menu greys out the rest. */
+  setEnabled(ids: AppCommandId[]): void;
+}
+
 export interface RepoApi {
   /**
    * Show the native folder picker and open the chosen directory as a git
@@ -2489,4 +2586,5 @@ export interface ExposedApi {
   claude: ClaudeApi;
   signing: SigningApi;
   update: UpdateApi;
+  menu: MenuApi;
 }

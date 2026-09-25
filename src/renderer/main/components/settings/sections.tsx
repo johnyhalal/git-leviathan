@@ -3,6 +3,7 @@ import { GeneralPanel } from './panels/GeneralPanel';
 import { AppearancePanel } from './panels/AppearancePanel';
 import { IntegrationsPanel } from './panels/IntegrationsPanel';
 import { CommitSigningPanel } from './panels/CommitSigningPanel';
+import { ShortcutsPanel } from './panels/ShortcutsPanel';
 
 /** One category in the settings sidebar. Its `Panel` renders in the content pane. */
 export interface SettingsSectionDef {
@@ -20,4 +21,5 @@ export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: 'appearance', label: 'Appearance', Panel: AppearancePanel },
   { id: 'signing', label: 'Commit Signing', Panel: CommitSigningPanel },
   { id: 'integrations', label: 'Integrations', Panel: IntegrationsPanel },
+  { id: 'shortcuts', label: 'Keyboard Shortcuts', Panel: ShortcutsPanel },
 ];
