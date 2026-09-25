@@ -178,6 +178,11 @@ body.is-col-resizing .commit-th {
 .commit-row.is-selected .commit-cell-inset {
   background: color-mix(in srgb, var(--primary) 18%, transparent);
 }
+/* While a commit search has results, rows that don't match fade back so the
+   matches stand out. */
+.commit-row.is-search-dimmed {
+  opacity: 0.35;
+}
 
 .commit-refs-inner {
   display: flex;

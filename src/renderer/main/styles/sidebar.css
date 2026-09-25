@@ -253,20 +253,6 @@ body.is-col-resizing {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
 }
 
-.gitflow-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.gitflow-field-label {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
-}
-
 /* The name row: a fixed prefix chip abutting the editable name input. */
 .gitflow-name-row {
   display: flex;
@@ -336,11 +322,7 @@ body.is-col-resizing {
 
 /* Footer: settings gear + optional Finish on the left, Cancel/Start on the right. */
 .gitflow-dialog-footer {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-top: 2px;
 }
 
 .gitflow-dialog-footer-left {
@@ -504,6 +486,32 @@ body.is-col-resizing {
   white-space: nowrap;
 }
 
+/* A folder header that carries a "more" menu button (a remote's folder): the
+   row takes over the hover background so the button sits inside it. */
+.repo-tree-folder-row {
+  display: flex;
+  align-items: center;
+  padding-right: 4px;
+  border-radius: 6px;
+}
+
+.repo-tree-folder-row:hover {
+  background: var(--control-bg);
+}
+
+.repo-tree-folder-row .repo-tree-folder-header {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.repo-tree-folder-row .repo-tree-folder-header:hover {
+  background: transparent;
+}
+
+.repo-tree-folder-row:hover .repo-row-action {
+  opacity: 1;
+}
+
 /* A remote's owner avatar (GitHub), shown in place of the generic remote glyph
    on the sidebar's remote folder and on commit-list remote badges. Sizing comes
    from the element's width/height attributes so both call sites can differ. */
@@ -621,39 +629,11 @@ body.is-col-resizing {
   color: var(--fg-muted);
 }
 
-/* Per-field helper text under a gitflow settings input. */
-.gitflow-form-hint {
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-
 /* Add-worktree dialog: same width as the new-PR dialog; height hugs content. */
 .worktree-dialog {
   width: min(560px, 100%);
   height: auto;
   max-height: calc(100vh - 48px);
-}
-
-/* Primary-tinted focus for this dialog's fields (the shared PR form is green). */
-.worktree-dialog .pr-form-field input:focus,
-.worktree-dialog .pr-form-field textarea:focus {
-  border-color: var(--primary);
-}
-
-/* This dialog's field hint is informational, so grey rather than the shared
-   PR form's amber (which flags a validation warning). */
-.worktree-dialog .pr-form-hint {
-  color: var(--fg-muted);
-}
-
-/* …a real validation failure (branch already in a worktree) turns it red, … */
-.worktree-dialog .pr-form-hint.worktree-hint-error {
-  color: var(--danger);
-}
-
-/* …and a soft advisory (worktree nested in the working dir) turns it amber. */
-.worktree-dialog .pr-form-hint.worktree-hint-warn {
-  color: #d29922;
 }
 
 /* Custom "Check out" dropdown: a form-control trigger over a popup list whose
@@ -811,7 +791,7 @@ body.is-col-resizing {
 }
 
 /* Gitflow settings: two columns — base branches on the left, prefixes on the
-   right. Each column stacks its fields; the pr-form gap already spaces them. */
+   right. Each column stacks its fields; the form gap already spaces them. */
 .gitflow-dialog {
   width: min(640px, 100%);
   height: auto;
@@ -840,6 +820,14 @@ body.is-col-resizing {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  font-size: calc(1em - 2px);
+}
+
+.repo-settings-remotes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .repo-settings-remote {
@@ -847,6 +835,7 @@ body.is-col-resizing {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  min-height: 26px;
 }
 
 .repo-settings-remote-name {
@@ -855,11 +844,29 @@ body.is-col-resizing {
 }
 
 .repo-settings-remote-url {
+  flex: 1 1 auto;
   color: var(--fg-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+.repo-settings-remote-actions,
+.repo-settings-remote-confirm {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.repo-settings-remote-confirm {
+  gap: 6px;
+}
+
+.repo-settings-remote-action {
+  width: 24px;
+  height: 24px;
 }
 
 /* ---- Git LFS tab --------------------------------------------------------- */
@@ -875,7 +882,7 @@ body.is-col-resizing {
   gap: 8px;
 }
 
-.lfs-track-row input {
+.lfs-track-row .form-input {
   flex: 1 1 auto;
   min-width: 0;
 }

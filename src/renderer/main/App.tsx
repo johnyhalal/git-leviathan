@@ -14,6 +14,9 @@ import { TelemetryNotice } from './components/TelemetryNotice';
 import { TooltipLayer } from './components/TooltipLayer';
 import { RepoView } from './components/repo/RepoView';
 import { ActivityLog } from './components/repo/ActivityLog';
+import { CommandPalette } from './components/CommandPalette';
+import { CommandProvider, useCommands, useRunCommand } from './commands/CommandRegistry';
+import { setOpenErrorHandler } from './openActions';
 import { GearIcon, FeedbackIcon } from '../../../assets/icons';
 import kofiLogo from '../../../assets/kofi_logo.webp';
 import type { RepoInfo, UpdateInfo, UpdateStatus } from '../../types/ipc';
@@ -84,6 +87,14 @@ function renderUpdateButton(update: UpdateInfo | null, status: UpdateStatus) {
 }
 
 export function App() {
+  return (
+    <CommandProvider>
+      <AppShell />
+    </CommandProvider>
+  );
+}
+
+function AppShell() {
   const isMac = window.api.platform === 'darwin';
   const [tabs, setTabs] = useState<Tab[]>([
     { id: 'tab-1', title: 'New Tab' },
@@ -94,6 +105,8 @@ export function App() {
   const [cloneOpen, setCloneOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [telemetryNoticeOpen, setTelemetryNoticeOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const runCommand = useRunCommand();
   const [toasts, setToasts] = useState<ToastData[]>([]);
   // Bumped to ask the status-bar ActivityLog to open (e.g. from a hook-failure toast).
   const [activityLogSignal, setActivityLogSignal] = useState(0);
@@ -282,6 +295,11 @@ export function App() {
     ]);
   };
 
+  // "Open in editor/terminal/Finder" failures, from wherever they were raised.
+  useEffect(() => {
+    setOpenErrorHandler((title, message) => showToast(title, message, 'error'));
+  });
+
   const addTab = () => {
     const id = `tab-${nextTabId++}`;
     setTabs((prev) => [...prev, { id, title: 'New Tab' }]);
@@ -431,6 +449,45 @@ export function App() {
     showToast('Repository cloned', `“${repo.name}” is ready.`, 'info');
   };
 
+  const openSettings = (section?: string) => {
+    setSettingsSection(section);
+    setSettingsOpen(true);
+  };
+
+  /** Switch to the tab `delta` places away from the active one, wrapping around. */
+  const cycleTab = (delta: number) => {
+    const index = tabs.findIndex((tab) => tab.id === activeId);
+    setActiveId(tabs[(index + delta + tabs.length) % tabs.length].id);
+  };
+
+  useCommands([
+    {
+      id: 'palette',
+      // Toggle, but never open over another popup.
+      run: () =>
+        setPaletteOpen((open) =>
+          open || !document.querySelector('[role="dialog"], [role="alertdialog"]') ? !open : open,
+        ),
+    },
+    { id: 'settings', run: () => openSettings() },
+    { id: 'feedback', run: () => setFeedbackOpen(true) },
+    { id: 'tab.new', run: addTab },
+    { id: 'tab.close', run: () => closeTab(activeId) },
+    { id: 'tab.next', run: () => cycleTab(1), enabled: tabs.length > 1 },
+    { id: 'tab.prev', run: () => cycleTab(-1), enabled: tabs.length > 1 },
+    { id: 'repo.open', run: () => void handleOpen() },
+    { id: 'repo.clone', run: () => setCloneOpen(true) },
+    // One entry per tab: listed in the palette, and ⌘1–⌘9 jump to the first nine.
+    ...tabs.map((tab, index) => ({
+      id: `tab:${tab.id}`,
+      label: `Switch to ${tab.title}`,
+      category: 'Tabs',
+      run: () => setActiveId(tab.id),
+      enabled: tab.id !== activeId,
+      accelerators: index < 9 ? [`CmdOrCtrl+${index + 1}`] : [],
+    })),
+  ]);
+
   return (
     <div className={isMac ? 'app is-mac' : 'app'}>
       <header className="topbar">
@@ -450,10 +507,7 @@ export function App() {
             className="icon-button tooltip-host"
             aria-label="Settings"
             data-tooltip="Settings"
-            onClick={() => {
-              setSettingsSection(undefined);
-              setSettingsOpen(true);
-            }}
+            onClick={() => openSettings()}
           >
             <GearIcon size={14} />
           </button>
@@ -482,10 +536,7 @@ export function App() {
             }
             onNotice={(title, message) => showToast(title, message, 'info')}
             onSuccess={(title, message) => showToast(title, message, 'green')}
-            onOpenSettings={(section) => {
-              setSettingsSection(section);
-              setSettingsOpen(true);
-            }}
+            onOpenSettings={openSettings}
             onOpenRepo={openRepo}
             onOpenRepoInNewTab={openRepoInNewTab}
             onWorktreeRemoved={closeTabsForPath}
@@ -570,6 +621,17 @@ export function App() {
             acknowledgeTelemetryNotice();
             setSettingsSection('general');
             setSettingsOpen(true);
+          }}
+        />
+      )}
+
+      {paletteOpen && (
+        <CommandPalette
+          onClose={(runId) => {
+            setPaletteOpen(false);
+            // Run once the palette's dialog is gone, so the command isn't
+            // blocked by the "no commands under a popup" guard.
+            if (runId) window.setTimeout(() => runCommand(runId), 0);
           }}
         />
       )}

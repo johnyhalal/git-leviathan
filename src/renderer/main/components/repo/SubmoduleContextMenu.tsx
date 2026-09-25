@@ -1,5 +1,6 @@
 import { useConfirm } from '../ConfirmBar';
 import { ContextMenu } from './ContextMenu';
+import { openMenuItems, useOpenTools } from '../../openActions';
 import type { SubmoduleState } from '../../../../types/ipc';
 
 /** The submodule a context menu was opened on. */
@@ -76,6 +77,7 @@ export function SubmoduleContextMenu({
   onRemove,
 }: SubmoduleContextMenuProps) {
   const requestConfirm = useConfirm();
+  const editorName = useOpenTools()?.editorName;
   const initialized = target.state !== 'uninitialized';
 
   // Deinit refuses on local modifications; swap the bar to an explicit "force?"
@@ -120,6 +122,7 @@ export function SubmoduleContextMenu({
       label: 'Open submodule in new tab',
       onClick: () => onOpenInNewTab(target.absolutePath),
     });
+    entries.push(...openMenuItems(editorName, target.absolutePath));
     entries.push('separator');
     entries.push({ label: 'Update submodule', onClick: () => onUpdate(target.path) });
   } else {

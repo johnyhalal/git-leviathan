@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import type { PullMode } from '../../../../types/ipc';
 import { ChevronDownIcon, PullIcon } from '../../../../../assets/icons';
 import { useOutsideDismiss } from './useOutsideDismiss';
+import { useCommands } from '../../commands/CommandRegistry';
+import { shortcutFor } from '../../commands/keys';
 
 /** Selectable pull/fetch actions. The first-listed default is fast-forward. */
 const PULL_ACTIONS: { label: string; mode: PullMode }[] = [
@@ -50,6 +52,18 @@ export function PullAction({ onPull, pulling }: PullActionProps) {
     void window.api.app.setPullMode(next.mode);
   };
 
+  // ⌘⇧L runs the default action; the palette also offers each pull mode by name.
+  useCommands([
+    { id: 'repo.pull', run: () => onPull(action.mode), enabled: !pulling },
+    ...PULL_ACTIONS.filter((option) => option.mode !== 'fetch-all').map((option) => ({
+      id: `pull:${option.mode}`,
+      label: option.label,
+      category: 'Repository',
+      run: () => onPull(option.mode),
+      enabled: !pulling,
+    })),
+  ]);
+
   const isFetch = action.mode === 'fetch-all';
   const busyLabel = isFetch ? 'Fetching…' : 'Pulling…';
 
@@ -58,7 +72,7 @@ export function PullAction({ onPull, pulling }: PullActionProps) {
       <button
         type="button"
         className="repo-action pull-action-main tooltip-host"
-        data-tooltip={action.label}
+        data-tooltip={`${action.label} (${shortcutFor('repo.pull')})`}
         onClick={() => onPull(action.mode)}
         disabled={pulling}
       >

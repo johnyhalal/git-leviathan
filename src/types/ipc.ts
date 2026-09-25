@@ -42,6 +42,10 @@ export const AppChannels = {
   getUpdateCheckInterval: 'app:get-update-check-interval',
   /** Renderer -> main (invoke): persist the auto-update check interval. */
   setUpdateCheckInterval: 'app:set-update-check-interval',
+  /** Renderer -> main (invoke): read whether fetches prune deleted remote branches. */
+  getFetchPrune: 'app:get-fetch-prune',
+  /** Renderer -> main (invoke): turn pruning deleted remote branches on fetch on/off. */
+  setFetchPrune: 'app:set-fetch-prune',
   /** Renderer -> main (invoke): read whether anonymous usage analytics are on. */
   getTelemetryEnabled: 'app:get-telemetry-enabled',
   /** Renderer -> main (invoke): turn anonymous usage analytics on/off. */
@@ -62,6 +66,151 @@ export const AppChannels = {
   /** Main -> renderer (send): the main window regained OS focus. */
   focused: 'app:focused',
 } as const;
+
+export const OpenChannels = {
+  /** Renderer -> main (invoke): installed editors/terminals and the chosen ones. */
+  tools: 'open:tools',
+  /** Renderer -> main (invoke): persist the editor id (`system`, `custom` or a detected one). */
+  setEditor: 'open:set-editor',
+  /** Renderer -> main (invoke): persist the terminal id. */
+  setTerminal: 'open:set-terminal',
+  /** Renderer -> main (invoke): pick a custom editor executable/app; returns the new state. */
+  pickCustomEditor: 'open:pick-custom-editor',
+  /** Renderer -> main (invoke): open a repo, or a file in it, in the chosen editor. */
+  inEditor: 'open:in-editor',
+  /** Renderer -> main (invoke): open a terminal in a repo folder. */
+  inTerminal: 'open:in-terminal',
+  /** Renderer -> main (invoke): show a repo folder, or select a file in it, in the file manager. */
+  reveal: 'open:reveal',
+  /** Renderer -> main (invoke): open a file with the OS default app for its type. */
+  withDefaultApp: 'open:with-default-app',
+} as const;
+
+/** An installed editor or terminal the user can pick. */
+export interface ToolOption {
+  id: string;
+  name: string;
+}
+
+export interface OpenToolsState {
+  /** Installed editors, in catalog order. */
+  editors: ToolOption[];
+  /** Installed terminals, in catalog order. */
+  terminals: ToolOption[];
+  /** The chosen editor: a detected id, `system` (OS default app) or `custom`. */
+  editor: string;
+  /** The chosen terminal id. */
+  terminal: string;
+  /** The executable/app picked as the custom editor, if any. */
+  customEditorPath: string | null;
+  /** Display name of the chosen editor ("VS Code", "Default App", or the custom app's name). */
+  editorName: string;
+}
+
+export type OpenResult = { status: 'ok' } | { status: 'error'; message: string };
+
+export const MenuChannels = {
+  /** Main -> renderer (send): a native menu item (or its accelerator) was chosen. */
+  command: 'menu:command',
+  /** Renderer -> main (send): the command ids that can run right now. */
+  setEnabled: 'menu:set-enabled',
+} as const;
+
+/**
+ * Every named app command. Dynamic palette entries (a branch to check out, a tab
+ * to switch to) aren't listed here — they're registered ad hoc by the renderer.
+ */
+export type AppCommandId =
+  | 'palette'
+  | 'settings'
+  | 'feedback'
+  | 'tab.new'
+  | 'tab.close'
+  | 'tab.next'
+  | 'tab.prev'
+  | 'tab.goto'
+  | 'repo.open'
+  | 'repo.clone'
+  | 'repo.fetch'
+  | 'repo.pull'
+  | 'repo.push'
+  | 'repo.branch'
+  | 'repo.stash'
+  | 'repo.pop'
+  | 'repo.search'
+  | 'repo.undo'
+  | 'repo.redo'
+  | 'repo.resolve'
+  | 'repo.settings'
+  | 'repo.openEditor'
+  | 'repo.openTerminal'
+  | 'repo.reveal';
+
+export type AppCommandCategory = 'App' | 'Tabs' | 'Repository';
+
+/** Which native menu an app command lives in, when it has one. */
+export type AppCommandMenu = 'app' | 'file' | 'view' | 'repository' | 'help';
+
+export interface AppCommandSpec {
+  id: AppCommandId;
+  label: string;
+  category: AppCommandCategory;
+  /** The primary shortcut, in Electron accelerator syntax (e.g. `CmdOrCtrl+Shift+P`). */
+  accelerator?: string;
+  /** Extra shortcuts, always handled in the page (a menu item takes only one). */
+  aliases?: string[];
+  /**
+   * The native menu the command appears in. A command with a menu is
+   * dispatched by the menu — its accelerator is registered there, so the key
+   * never reaches the page. Without one, the renderer's keydown listener
+   * handles the shortcut (for keys that must stay text-aware, like git undo).
+   */
+  menu?: AppCommandMenu;
+  /** Scoped to an open repository — greyed out in the menu otherwise. */
+  repo?: boolean;
+  /** A platform's own wording (e.g. "Reveal in Finder"), overriding `label` there. */
+  platformLabel?: { darwin?: string; win32?: string };
+}
+
+/** A command's label as the given platform words it. */
+export function commandLabel(spec: AppCommandSpec, platform: string): string {
+  return spec.platformLabel?.[platform as 'darwin' | 'win32'] ?? spec.label;
+}
+
+/**
+ * The single shortcut table: drives the native menu, the command palette, the
+ * shortcut hints in tooltips and the Settings shortcut list. The set is fixed —
+ * every key here avoids text-editing combos and Alt (AltGr on many layouts),
+ * since a menu accelerator fires even while a text field has focus.
+ */
+export const APP_COMMANDS: readonly AppCommandSpec[] = [
+  { id: 'palette', label: 'Command Palette…', category: 'App', accelerator: 'CmdOrCtrl+P', aliases: ['CmdOrCtrl+K'], menu: 'view' },
+  { id: 'settings', label: 'Settings…', category: 'App', accelerator: 'CmdOrCtrl+,', menu: 'app' },
+  { id: 'feedback', label: 'Send Feedback…', category: 'App', menu: 'help' },
+  { id: 'tab.new', label: 'New Tab', category: 'Tabs', accelerator: 'CmdOrCtrl+T', menu: 'file' },
+  { id: 'repo.open', label: 'Open Repository…', category: 'Tabs', accelerator: 'CmdOrCtrl+O', menu: 'file' },
+  { id: 'repo.clone', label: 'Clone Repository…', category: 'Tabs', menu: 'file' },
+  { id: 'tab.close', label: 'Close Tab', category: 'Tabs', accelerator: 'CmdOrCtrl+W', menu: 'file' },
+  { id: 'tab.next', label: 'Next Tab', category: 'Tabs', accelerator: 'Ctrl+Tab', aliases: ['CmdOrCtrl+Shift+]'] },
+  { id: 'tab.prev', label: 'Previous Tab', category: 'Tabs', accelerator: 'Ctrl+Shift+Tab', aliases: ['CmdOrCtrl+Shift+['] },
+  { id: 'tab.goto', label: 'Go to Tab 1–9', category: 'Tabs', accelerator: 'CmdOrCtrl+1' },
+  { id: 'repo.fetch', label: 'Fetch All', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+F', menu: 'repository', repo: true },
+  { id: 'repo.pull', label: 'Pull', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+L', menu: 'repository', repo: true },
+  { id: 'repo.push', label: 'Push', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+P', menu: 'repository', repo: true },
+  { id: 'repo.branch', label: 'New Branch…', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+B', menu: 'repository', repo: true },
+  { id: 'repo.stash', label: 'Stash Changes', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+S', menu: 'repository', repo: true },
+  { id: 'repo.pop', label: 'Pop Stash', category: 'Repository', menu: 'repository', repo: true },
+  { id: 'repo.search', label: 'Find Commit…', category: 'Repository', accelerator: 'CmdOrCtrl+F', menu: 'repository', repo: true },
+  { id: 'repo.undo', label: 'Undo', category: 'Repository', accelerator: 'CmdOrCtrl+Z', repo: true },
+  { id: 'repo.redo', label: 'Redo', category: 'Repository', accelerator: 'CmdOrCtrl+R', aliases: ['CmdOrCtrl+Shift+Z', 'CmdOrCtrl+Y'], repo: true },
+  { id: 'repo.openEditor', label: 'Open in Editor', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+E', menu: 'repository', repo: true },
+  { id: 'repo.openTerminal', label: 'Open in Terminal', category: 'Repository', menu: 'repository', repo: true },
+  { id: 'repo.reveal', label: 'Show in File Manager', category: 'Repository', menu: 'repository', repo: true, platformLabel: { darwin: 'Reveal in Finder', win32: 'Show in Explorer' } },
+  { id: 'repo.resolve', label: 'Resolve Conflicts…', category: 'Repository', menu: 'repository', repo: true },
+  { id: 'repo.settings', label: 'Repository Settings…', category: 'Repository', menu: 'repository', repo: true },
+];
+
+export const APP_COMMAND_IDS: ReadonlySet<string> = new Set(APP_COMMANDS.map((c) => c.id));
 
 export const UpdateChannels = {
   /** Renderer -> main (invoke): resolve a newer release, or null. */
@@ -205,6 +354,11 @@ export interface RemoteInfo {
   name: string;
   /** Fetch URL, e.g. "git@github.com:owner/repo.git" (empty if unset). */
   url: string;
+  /**
+   * A separate push URL (`remote.<name>.pushurl`), when pushes go somewhere other
+   * than `url`; absent when pushing uses the fetch URL, as it usually does.
+   */
+  pushUrl?: string;
 }
 
 /** A tag and the short hash of the object it points at. */
@@ -223,6 +377,20 @@ export interface StashInfo {
   message: string;
   /** The branch the stash was taken on, when parseable from the subject. */
   branch?: string;
+}
+
+/** Options for `git stash push`; every field is optional. */
+export interface StashPushOptions {
+  /** Stash message (`-m`). Empty or missing gives the default "WIP on <branch>". */
+  message?: string;
+  /** Also stash untracked files (`--include-untracked`). Default true. */
+  includeUntracked?: boolean;
+  /** Leave the staged changes in place (`--keep-index`). */
+  keepIndex?: boolean;
+  /** Stash only the staged changes (`--staged`); ignores keepIndex and includeUntracked. */
+  stagedOnly?: boolean;
+  /** Limit the stash to these repo-relative paths (a literal pathspec after `--`). */
+  paths?: string[];
 }
 
 /** A linked working tree from `git worktree list`. */
@@ -566,6 +734,20 @@ export interface CommitRefDecoration {
 }
 
 /** One commit in the history, with the parent links the graph is drawn from. */
+/** Result of a {@link RepoChannels.search} over the whole commit history. */
+export interface CommitSearchResult {
+  /** Matching commit hashes, in graph (`--date-order`) order, newest first. */
+  hashes: string[];
+  /**
+   * Each match's 0-based index among real commits in that order — i.e. the
+   * log needs `--max-count` of at least `position + 1` to include it. Parallel
+   * to `hashes`.
+   */
+  positions: number[];
+  /** True when more matches existed than were returned and the list was cut. */
+  truncated: boolean;
+}
+
 export interface CommitLogEntry {
   /** Full 40-char hash. */
   hash: string;
@@ -716,6 +898,36 @@ export interface DiffLine {
   newLine: number | null;
   /** Line content without its leading +/-/space marker (raw `@@` line for a hunk). */
   text: string;
+}
+
+/**
+ * How a file diff is read:
+ * - `context` — `hunks` (git's default 3 lines around each change) or `full`
+ *   (the whole file, so every line shows with the changes inline).
+ * - `ignoreWhitespace` — hide whitespace-only changes (`git diff -w`). Display
+ *   only: staging calls never apply it.
+ */
+export interface DiffOptions {
+  context?: 'hunks' | 'full';
+  ignoreWhitespace?: boolean;
+}
+
+/**
+ * One row of a file diff picked for line-level staging: the 0-based hunk index
+ * (in diff order) and the row's index within that hunk's body (context, added
+ * and deleted rows in order — the `@@` header isn't counted).
+ */
+export interface DiffLineRef {
+  hunk: number;
+  row: number;
+}
+
+/** Outcome of a line-level stage/unstage/discard. */
+export interface LinesResult {
+  /** The fresh working-tree status (returned even when the patch was rejected). */
+  status: WorkingStatus;
+  /** Why git rejected the patch (one line), when it did. */
+  error?: string;
 }
 
 /** A single file's diff, parsed into rows for the diff viewer. */
@@ -909,6 +1121,8 @@ export const RepoChannels = {
   listRefs: 'repo:list-refs',
   /** Renderer -> main (invoke): read commit history (newest first). */
   log: 'repo:log',
+  /** Renderer -> main (invoke): search the whole history by message, author or hash prefix. */
+  search: 'repo:search',
   /** Renderer -> main (invoke): read the files changed by a single commit. */
   commitFiles: 'repo:commit-files',
   /** Renderer -> main (invoke): list every file in a commit's tree snapshot. */
@@ -933,6 +1147,12 @@ export const RepoChannels = {
   discardHunk: 'repo:discard-hunk',
   /** Renderer -> main (invoke): unstage a single staged hunk; returns fresh status. */
   unstageHunk: 'repo:unstage-hunk',
+  /** Renderer -> main (invoke): stage chosen changed lines of one unstaged hunk; fresh status. */
+  stageLines: 'repo:stage-lines',
+  /** Renderer -> main (invoke): unstage chosen changed lines of one staged hunk; fresh status. */
+  unstageLines: 'repo:unstage-lines',
+  /** Renderer -> main (invoke): discard chosen changed lines from the working tree; fresh status. */
+  discardLines: 'repo:discard-lines',
   /** Renderer -> main (invoke): unstage a file (or all); returns fresh status. */
   unstage: 'repo:unstage',
   /** Renderer -> main (invoke): discard every working-tree change; fresh status. */
@@ -1057,6 +1277,16 @@ export const RepoChannels = {
   repoConfig: 'repo:config',
   /** Renderer -> main (invoke): save the repo's commit identity to its local git config. */
   repoSaveConfig: 'repo:save-config',
+  /** Renderer -> main (invoke): add a remote (optionally fetching it); returns fresh refs. */
+  remoteAdd: 'repo:remote-add',
+  /** Renderer -> main (invoke): remove a remote and its tracking refs; returns fresh refs. */
+  remoteRemove: 'repo:remote-remove',
+  /** Renderer -> main (invoke): rename a remote (and its tracking refs); returns fresh refs. */
+  remoteRename: 'repo:remote-rename',
+  /** Renderer -> main (invoke): change a remote's URL; returns fresh refs. */
+  remoteSetUrl: 'repo:remote-set-url',
+  /** Renderer -> main (invoke): set or clear a remote's separate push URL; returns fresh refs. */
+  remoteSetPushUrl: 'repo:remote-set-push-url',
   /** Renderer -> main (invoke): read the repo's Git LFS status. */
   repoLfsStatus: 'repo:lfs-status',
   /** Renderer -> main (invoke): track a pattern with Git LFS. */
@@ -1547,6 +1777,13 @@ export interface AppApi {
   /** Persist the auto-update check interval (global). */
   setUpdateCheckInterval(minutes: UpdateCheckInterval): Promise<void>;
   /**
+   * Read whether the app's fetches and pulls pass `--prune`, dropping
+   * remote-tracking branches deleted on the server. On by default.
+   */
+  getFetchPrune(): Promise<boolean>;
+  /** Turn pruning on fetch on/off (global). */
+  setFetchPrune(enabled: boolean): Promise<void>;
+  /**
    * Read whether anonymous usage analytics are enabled. On by default, so a
    * fresh install with no saved preference resolves to `true`.
    */
@@ -1584,6 +1821,26 @@ export interface AppApi {
   onWindowFocus(callback: () => void): () => void;
 }
 
+export interface OpenApi {
+  tools(): Promise<OpenToolsState>;
+  setEditor(id: string): Promise<OpenToolsState>;
+  setTerminal(id: string): Promise<OpenToolsState>;
+  /** Null when the picker was cancelled. */
+  pickCustomEditor(): Promise<OpenToolsState | null>;
+  /** `relPath` is relative to `repoPath`; omit it to open the repository folder. */
+  inEditor(repoPath: string, relPath?: string): Promise<OpenResult>;
+  inTerminal(repoPath: string): Promise<OpenResult>;
+  reveal(repoPath: string, relPath?: string): Promise<OpenResult>;
+  withDefaultApp(repoPath: string, relPath: string): Promise<OpenResult>;
+}
+
+export interface MenuApi {
+  /** Subscribe to native menu picks (by command id). Returns an unsubscribe function. */
+  onCommand(callback: (id: AppCommandId) => void): () => void;
+  /** Report which commands can run now, so the menu greys out the rest. */
+  setEnabled(ids: AppCommandId[]): void;
+}
+
 export interface RepoApi {
   /**
    * Show the native folder picker and open the chosen directory as a git
@@ -1600,6 +1857,12 @@ export interface RepoApi {
    * `limit` commits (default applied by the main process).
    */
   log(path: string, limit?: number): Promise<CommitLogEntry[]>;
+  /**
+   * Search the whole commit history (not just the loaded page) for `query`,
+   * matched case-insensitively against the message, the author name/email, and
+   * hash prefixes. Resolves with no matches for an empty query or a non-repo.
+   */
+  search(path: string, query: string): Promise<CommitSearchResult>;
   /** Read the files changed by the commit `hash` (vs its first parent). */
   commitFiles(path: string, hash: string): Promise<FileChange[]>;
   /**
@@ -1611,7 +1874,7 @@ export interface RepoApi {
    * Read the parsed unified diff of `file` at `source` (a commit against its
    * parent, or a staged/unstaged working-tree change).
    */
-  fileDiff(path: string, source: DiffSource, file: string): Promise<FileDiff>;
+  fileDiff(path: string, source: DiffSource, file: string, options?: DiffOptions): Promise<FileDiff>;
   /**
    * Read `file`'s full content at `source` as an array of lines, for the diff
    * viewer's "file view". For an unstaged source this is the on-disk working
@@ -1643,21 +1906,31 @@ export interface RepoApi {
   /**
    * Stage just the `hunkIndex`-th hunk (0-based, in diff order) of `file`'s
    * unstaged changes by applying that single hunk to the index. Returns fresh
-   * status.
+   * status. Hunk and line calls take the viewer's DiffOptions so their indices
+   * refer to the same diff that was shown (`ignoreWhitespace` is ignored).
    */
-  stageHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
+  stageHunk(path: string, file: string, hunkIndex: number, options?: DiffOptions): Promise<WorkingStatus>;
   /**
    * Discard just the `hunkIndex`-th hunk (0-based, in diff order) of `file`'s
    * unstaged changes by reverse-applying that hunk to the working tree.
    * Irreversible. Returns fresh status.
    */
-  discardHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
+  discardHunk(path: string, file: string, hunkIndex: number, options?: DiffOptions): Promise<WorkingStatus>;
   /**
    * Unstage just the `hunkIndex`-th hunk (0-based, in diff order) of `file`'s
    * staged changes by reverse-applying that hunk to the index. Returns fresh
    * status.
    */
-  unstageHunk(path: string, file: string, hunkIndex: number): Promise<WorkingStatus>;
+  unstageHunk(path: string, file: string, hunkIndex: number, options?: DiffOptions): Promise<WorkingStatus>;
+  /** Stage only the picked changed rows of `file`'s unstaged diff. */
+  stageLines(path: string, file: string, lines: DiffLineRef[], options?: DiffOptions): Promise<LinesResult>;
+  /** Unstage only the picked changed rows of `file`'s staged diff. */
+  unstageLines(path: string, file: string, lines: DiffLineRef[], options?: DiffOptions): Promise<LinesResult>;
+  /**
+   * Discard only the picked changed rows of `file`'s unstaged diff from the
+   * working tree. Irreversible.
+   */
+  discardLines(path: string, file: string, lines: DiffLineRef[], options?: DiffOptions): Promise<LinesResult>;
   /** Unstage `file` (a path), or everything when null. Returns fresh status. */
   unstage(path: string, file: string | null): Promise<WorkingStatus>;
   /**
@@ -1948,11 +2221,13 @@ export interface RepoApi {
     remoteBranch: string,
   ): Promise<CommitResult>;
   /**
-   * Stash the working tree's uncommitted changes (`git stash push`, including
-   * untracked files). Resolves with fresh refs, or an error (e.g. when there is
-   * nothing to stash).
+   * Stash the working tree's uncommitted changes (`git stash push`). By default
+   * this includes untracked files and uses a "WIP on <branch>" message; `options`
+   * sets a message, keeps or stashes only the staged changes, leaves untracked
+   * files out, or limits the stash to some paths. Resolves with fresh refs, or
+   * an error (e.g. when there is nothing to stash).
    */
-  stashPush(path: string): Promise<RefsMutationResult>;
+  stashPush(path: string, options?: StashPushOptions): Promise<RefsMutationResult>;
   /**
    * Apply the stash at `index` while keeping it in the stash list
    * (`git stash apply stash@{index}`). Resolves with fresh refs, or an error
@@ -2064,6 +2339,23 @@ export interface RepoApi {
    * Returns the stored config, or an error when a value is rejected.
    */
   repoSaveConfig(path: string, config: RepoConfig): Promise<RepoConfigResult>;
+  /**
+   * Add the remote `name` at `url` (`git remote add`). With `fetch`, also fetch it
+   * so its branches show up straight away; a failed fetch still keeps the remote
+   * and resolves ok with a `notice` explaining the fetch failure.
+   */
+  remoteAdd(path: string, name: string, url: string, fetch: boolean): Promise<RefsMutationResult>;
+  /** Remove the remote `name` and its remote-tracking branches (`git remote remove`). */
+  remoteRemove(path: string, name: string): Promise<RefsMutationResult>;
+  /** Rename the remote `name` to `newName`, moving its tracking refs (`git remote rename`). */
+  remoteRename(path: string, name: string, newName: string): Promise<RefsMutationResult>;
+  /** Point the remote `name` at `url` (`git remote set-url`). */
+  remoteSetUrl(path: string, name: string, url: string): Promise<RefsMutationResult>;
+  /**
+   * Give the remote `name` a separate push URL (`remote.<name>.pushurl`), or pass
+   * `null` to clear it so pushes go to the fetch URL again.
+   */
+  remoteSetPushUrl(path: string, name: string, url: string | null): Promise<RefsMutationResult>;
   /** Read the repo's Git LFS status (the patterns it tracks). */
   repoLfsStatus(path: string): Promise<LfsStatus>;
   /** Track `pattern` with Git LFS (ensures LFS is installed, writes `.gitattributes`). */
@@ -2378,4 +2670,6 @@ export interface ExposedApi {
   claude: ClaudeApi;
   signing: SigningApi;
   update: UpdateApi;
+  menu: MenuApi;
+  open: OpenApi;
 }

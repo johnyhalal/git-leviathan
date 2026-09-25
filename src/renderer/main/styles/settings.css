@@ -163,35 +163,21 @@
   gap: 8px;
 }
 
-.settings-select {
+/* A setting's control sits beside its label, so it sizes to its content
+   rather than filling the row like a dialog field. */
+.settings-control .form-input {
+  width: auto;
   padding: 6px 9px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--control-bg);
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
 }
 
-.settings-select:focus {
-  outline: none;
-  border-color: var(--accent, #2ea043);
+/* Keep room for the select's chevron (forms.css) past the tighter padding. */
+.settings-control select.form-input {
+  padding-left: 12px;
+  padding-right: 30px;
 }
 
-.settings-input {
-  padding: 6px 9px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--control-bg);
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
+.settings-control input.form-input {
   min-width: 200px;
-}
-
-.settings-input:focus {
-  outline: none;
-  border-color: var(--accent, #2ea043);
 }
 
 /* Cap a select whose options can be long (e.g. a GPG uid) so a wide entry can't
@@ -209,3 +195,10 @@
   color: var(--fg-muted);
 }
 
+
+/* A control with a companion button beside it (e.g. a select + "Choose…"). */
+.settings-inline-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

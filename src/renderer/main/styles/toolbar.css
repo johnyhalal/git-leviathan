@@ -184,6 +184,10 @@
   flex: 1;
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  /* Anchors the floating commit-search bar. */
+  position: relative;
 }
 
 /* Copy of `.icon-button`, forked so the repo-settings button can carry its own
@@ -205,6 +209,83 @@
 .repo-settings-button:hover {
   color: var(--fg);
   background: var(--control-bg);
+}
+
+.repo-settings-button.is-active {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+/* Commit search: floats just left of the toolbar's buttons, above the
+   centered actions and everything else. */
+.commit-search-bar {
+  position: absolute;
+  top: 50%;
+  right: 92px;
+  transform: translateY(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 36px;
+  padding: 0 4px 0 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  color: var(--fg-muted);
+  -webkit-app-region: no-drag;
+}
+
+.commit-search-glyph {
+  display: inline-flex;
+  margin-right: 4px;
+}
+
+.commit-search-input {
+  width: 240px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.commit-search-input::placeholder {
+  color: var(--fg-muted);
+}
+
+.commit-search-count {
+  min-width: 64px;
+  padding: 0 6px;
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.commit-search-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.commit-search-button:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--control-bg);
+}
+
+.commit-search-button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .repo-branch-pill {
@@ -470,8 +551,13 @@
   cursor: pointer;
 }
 
-.pull-action-option:hover {
+.pull-action-option:hover:not(:disabled) {
   background: var(--control-bg);
+}
+
+.pull-action-option:disabled {
+  color: var(--fg-muted);
+  cursor: default;
 }
 
 .pull-action-option.is-current {

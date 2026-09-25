@@ -111,15 +111,16 @@ export function SubmoduleDialog({
         </header>
 
         <form
-          className="settings-content pr-form"
+          className="settings-content form"
           onSubmit={(event) => {
             event.preventDefault();
             void submit();
           }}
         >
-          <label className="pr-form-field">
-            <span className="pr-form-label">Repository URL</span>
+          <label className="form-field">
+            <span className="form-label">Repository URL</span>
             <input
+              className="form-input"
               value={url}
               placeholder="https://github.com/owner/repo.git"
               spellCheck={false}
@@ -129,9 +130,10 @@ export function SubmoduleDialog({
             />
           </label>
 
-          <label className="pr-form-field">
-            <span className="pr-form-label">Path in this repository</span>
+          <label className="form-field">
+            <span className="form-label">Path in this repository</span>
             <input
+              className="form-input"
               value={location}
               placeholder={suggested}
               spellCheck={false}
@@ -140,18 +142,19 @@ export function SubmoduleDialog({
               onChange={(event) => setLocation(event.target.value)}
             />
             {pathError ? (
-              <span className="pr-form-hint worktree-hint-error">{pathError}</span>
+              <span className="form-hint form-hint-error">{pathError}</span>
             ) : (
-              <span className="pr-form-hint">
+              <span className="form-hint">
                 Where the submodule is checked out, relative to the repository root
                 — e.g. “vendor/library”.
               </span>
             )}
           </label>
 
-          <label className="pr-form-field">
-            <span className="pr-form-label">Branch to track (optional)</span>
+          <label className="form-field">
+            <span className="form-label">Branch to track (optional)</span>
             <input
+              className="form-input"
               value={branch}
               placeholder="main"
               spellCheck={false}
@@ -160,18 +163,18 @@ export function SubmoduleDialog({
               onChange={(event) => setBranch(event.target.value)}
             />
             {branchError ? (
-              <span className="pr-form-hint worktree-hint-error">{branchError}</span>
+              <span className="form-hint form-hint-error">{branchError}</span>
             ) : (
-              <span className="pr-form-hint">
+              <span className="form-hint">
                 Recorded in .gitmodules, so the submodule can later be updated to
                 this branch’s tip.
               </span>
             )}
           </label>
 
-          {error && <p className="pr-form-error">{error}</p>}
+          {error && <p className="form-error">{error}</p>}
 
-          <div className="pr-dialog-footer">
+          <div className="form-footer">
             <button
               type="button"
               className="pill-btn pill-btn-gray"

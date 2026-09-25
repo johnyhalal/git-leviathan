@@ -25,6 +25,8 @@ import {
   WorktreeIcon,
 } from '../../../../../assets/icons';
 import { RemoteAvatar } from './RemoteAvatar';
+import { RemoteContextMenu } from './RemoteContextMenu';
+import { RemoteDialog } from './RemoteDialog';
 import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
 import {
   BranchDragMenu,
@@ -54,7 +56,9 @@ import type {
   PullRequestListResult,
   PullRequestState,
   PullRequestSummary,
+  RefsMutationResult,
   RemoteBranchInfo,
+  RemoteInfo,
   RepoRefs,
   StashInfo,
   SubmoduleInfo,
@@ -229,24 +233,66 @@ interface TreeFolderProps {
   depth: number;
   icon?: ReactNode;
   defaultOpen?: boolean;
+  /**
+   * Open the folder's context menu at a viewport point. When set, the header
+   * gets a hover "more" button (like a branch row) and a right-click menu.
+   */
+  onOpenMenu?: (x: number, y: number) => void;
+  /** Tooltip / accessible label for the "more" button. */
+  menuLabel?: string;
   children: ReactNode;
 }
 
 /** A collapsible folder row with a rotating caret and indented children. */
-function TreeFolder({ name, depth, icon, defaultOpen = true, children }: TreeFolderProps) {
+function TreeFolder({
+  name,
+  depth,
+  icon,
+  defaultOpen = true,
+  onOpenMenu,
+  menuLabel = 'Actions',
+  children,
+}: TreeFolderProps) {
   const [open, setOpen] = useState(defaultOpen);
+  const header = (
+    <button
+      type="button"
+      className="repo-tree-folder-header"
+      style={{ paddingLeft: indent(depth) }}
+      aria-expanded={open}
+      onClick={() => setOpen((prev) => !prev)}
+    >
+      {icon ?? <FolderIcon size={14} />}
+      <span className="repo-tree-folder-name">{name}</span>
+    </button>
+  );
   return (
     <div className="repo-tree-folder">
-      <button
-        type="button"
-        className="repo-tree-folder-header"
-        style={{ paddingLeft: indent(depth) }}
-        aria-expanded={open}
-        onClick={() => setOpen((prev) => !prev)}
-      >
-        {icon ?? <FolderIcon size={14} />}
-        <span className="repo-tree-folder-name">{name}</span>
-      </button>
+      {onOpenMenu ? (
+        <div
+          className="repo-tree-folder-row"
+          onContextMenu={(event) => {
+            event.preventDefault();
+            onOpenMenu(event.clientX, event.clientY);
+          }}
+        >
+          {header}
+          <button
+            type="button"
+            className="repo-row-action tooltip-host"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              onOpenMenu(rect.right, rect.bottom);
+            }}
+            data-tooltip={menuLabel}
+            aria-label={menuLabel}
+          >
+            <MoreIcon size={16} />
+          </button>
+        </div>
+      ) : (
+        header
+      )}
       {open && children}
     </div>
   );
@@ -882,6 +928,13 @@ interface RepoSidebarProps {
   onOpenSettings?: (section?: string) => void;
   /** Open the per-repository settings dialog, optionally to a specific tab. */
   onOpenRepoSettings?: (tab?: RepoSettingsTabId) => void;
+  /**
+   * Run a remote add/edit from the remote popup; the owner re-syncs on success
+   * and the popup shows a failure inline.
+   */
+  onRemoteMutate: (run: () => Promise<RefsMutationResult>) => Promise<RefsMutationResult>;
+  /** Remove a remote (local only); failures surface as a toast. */
+  onRemoteRemove: (name: string) => Promise<unknown>;
 }
 
 /**
@@ -935,6 +988,8 @@ export function RepoSidebar({
   onGitflowFinish,
   onOpenSettings,
   onOpenRepoSettings,
+  onRemoteMutate,
+  onRemoteRemove,
 }: RepoSidebarProps) {
   const [active, setActive] = useState<string | null>(null);
   // Whether the "start a gitflow branch" dialog is open.
@@ -995,6 +1050,15 @@ export function RepoSidebar({
       setWorktreeMenu({ target, x, y }),
     [],
   );
+
+  // The edit/remove menu opened on a remote's folder; null when closed.
+  const [remoteMenu, setRemoteMenu] = useState<{
+    remote: RemoteInfo;
+    x: number;
+    y: number;
+  } | null>(null);
+  // The add/edit remote popup: `null` remote adds one; `false` when closed.
+  const [remoteDialog, setRemoteDialog] = useState<RemoteInfo | null | false>(false);
 
   // Whether the "add a submodule" dialog is open.
   const [submoduleDialogOpen, setSubmoduleDialogOpen] = useState(false);
@@ -1112,9 +1176,13 @@ export function RepoSidebar({
 
   // Remote branches: a folder per remote (origin, upstream, …), each holding a
   // tree of that remote's branches, badged with its host's icon (from its URL).
+  // Every configured remote gets a folder, so one added without fetching (or
+  // not fetched yet) still shows up, just empty.
   const remotes = useMemo(() => {
-    const urlByRemote = new Map((refs?.remotes ?? []).map((r) => [r.name, r.url]));
-    const byRemote = new Map<string, RemoteBranchInfo[]>();
+    const infoByRemote = new Map((refs?.remotes ?? []).map((r) => [r.name, r]));
+    const byRemote = new Map<string, RemoteBranchInfo[]>(
+      (refs?.remotes ?? []).map((r) => [r.name, []]),
+    );
     for (const branch of remoteBranches) {
       const list = byRemote.get(branch.remote);
       if (list) list.push(branch);
@@ -1124,7 +1192,7 @@ export function RepoSidebar({
       .sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
       .map(([remote, branches]) => ({
         remote,
-        url: urlByRemote.get(remote),
+        info: infoByRemote.get(remote),
         tree: buildTree(branches, (branch) => branch.name),
       }));
   }, [remoteBranches, refs?.remotes]);
@@ -1465,12 +1533,32 @@ export function RepoSidebar({
         label="Remote Branches"
         icon={<RemoteIcon size={16} />}
         count={remoteBranches.length}
+        action={
+          <button
+            type="button"
+            className="pill-btn pill-btn-green repo-worktree-new tooltip-host"
+            aria-label="Add a remote"
+            data-tooltip="Add a remote"
+            onClick={() => setRemoteDialog(null)}
+          >
+            <PlusIcon size={12} />
+          </button>
+        }
         {...sectionProps('remote')}
       >
-        {remoteBranches.length === 0
-          ? placeholder('No remote branches')
-          : remotes.map(({ remote, url, tree }) => (
-              <TreeFolder key={remote} name={remote} depth={0} icon={<RemoteAvatar url={url} />}>
+        {remotes.length === 0
+          ? placeholder('No remotes — use + to add one')
+          : remotes.map(({ remote, info, tree }) => (
+              <TreeFolder
+                key={remote}
+                name={remote}
+                depth={0}
+                icon={<RemoteAvatar url={info?.url} />}
+                // Only configured remotes can be edited; a stray tracking ref
+                // left behind by a removed remote has no config to act on.
+                onOpenMenu={info ? (x, y) => setRemoteMenu({ remote: info, x, y }) : undefined}
+                menuLabel="Remote actions"
+              >
                 <BranchTree
                   nodes={tree}
                   depth={1}
@@ -1752,6 +1840,25 @@ export function RepoSidebar({
           onOpenInNewTab={onOpenWorktreeInNewTab}
           onRemove={onWorktreeRemove}
           onLock={onWorktreeLock}
+        />
+      )}
+      {remoteMenu && (
+        <RemoteContextMenu
+          remote={remoteMenu.remote}
+          x={remoteMenu.x}
+          y={remoteMenu.y}
+          onClose={() => setRemoteMenu(null)}
+          onEdit={setRemoteDialog}
+          onRemove={onRemoteRemove}
+        />
+      )}
+      {remoteDialog !== false && (
+        <RemoteDialog
+          repoPath={repoPath}
+          remote={remoteDialog}
+          existingNames={(refs?.remotes ?? []).map((remote) => remote.name)}
+          onMutate={onRemoteMutate}
+          onClose={() => setRemoteDialog(false)}
         />
       )}
       {submoduleMenu && (

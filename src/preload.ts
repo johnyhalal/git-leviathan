@@ -3,10 +3,15 @@ import {
   AppChannels,
   ClaudeChannels,
   IntegrationChannels,
+  MenuChannels,
+  OpenChannels,
   RepoChannels,
   SigningChannels,
   ThemeChannels,
   UpdateChannels,
+  type AppCommandId,
+  type OpenResult,
+  type OpenToolsState,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -15,6 +20,7 @@ import {
   type ResolveBlockResult,
   type CheckoutResult,
   type RefsMutationResult,
+  type StashPushOptions,
   type UndoRedoState,
   type GitflowKind,
   type GitflowConfig,
@@ -35,6 +41,10 @@ import {
   type CloneRequest,
   type CloneResult,
   type CommitLogEntry,
+  type CommitSearchResult,
+  type DiffLineRef,
+  type DiffOptions,
+  type LinesResult,
   type CommitDetailData,
   type CommitResult,
   type RebaseInteractivePreview,
@@ -111,6 +121,10 @@ const api: ExposedApi = {
         AppChannels.setUpdateCheckInterval,
         minutes,
       ) as Promise<void>,
+    getFetchPrune: () =>
+      ipcRenderer.invoke(AppChannels.getFetchPrune) as Promise<boolean>,
+    setFetchPrune: (enabled: boolean) =>
+      ipcRenderer.invoke(AppChannels.setFetchPrune, enabled) as Promise<void>,
     getTelemetryEnabled: () =>
       ipcRenderer.invoke(AppChannels.getTelemetryEnabled) as Promise<boolean>,
     setTelemetryEnabled: (enabled: boolean) =>
@@ -144,12 +158,14 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.listRefs, path) as Promise<RepoRefs>,
     log: (path: string, limit?: number) =>
       ipcRenderer.invoke(RepoChannels.log, path, limit) as Promise<CommitLogEntry[]>,
+    search: (path: string, query: string) =>
+      ipcRenderer.invoke(RepoChannels.search, path, query) as Promise<CommitSearchResult>,
     commitFiles: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.commitFiles, path, hash) as Promise<FileChange[]>,
     commitTree: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.commitTree, path, hash) as Promise<string[]>,
-    fileDiff: (path: string, source: DiffSource, file: string) =>
-      ipcRenderer.invoke(RepoChannels.fileDiff, path, source, file) as Promise<FileDiff>,
+    fileDiff: (path: string, source: DiffSource, file: string, options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.fileDiff, path, source, file, options) as Promise<FileDiff>,
     fileContent: (path: string, source: DiffSource, file: string) =>
       ipcRenderer.invoke(RepoChannels.fileContent, path, source, file) as Promise<string[]>,
     fileBlame: (path: string, rev: string, file: string) =>
@@ -162,12 +178,18 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.status, path) as Promise<WorkingStatus>,
     stage: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.stage, path, file) as Promise<WorkingStatus>,
-    stageHunk: (path: string, file: string, hunkIndex: number) =>
-      ipcRenderer.invoke(RepoChannels.stageHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
-    discardHunk: (path: string, file: string, hunkIndex: number) =>
-      ipcRenderer.invoke(RepoChannels.discardHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
-    unstageHunk: (path: string, file: string, hunkIndex: number) =>
-      ipcRenderer.invoke(RepoChannels.unstageHunk, path, file, hunkIndex) as Promise<WorkingStatus>,
+    stageHunk: (path: string, file: string, hunkIndex: number, options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.stageHunk, path, file, hunkIndex, options) as Promise<WorkingStatus>,
+    discardHunk: (path: string, file: string, hunkIndex: number, options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.discardHunk, path, file, hunkIndex, options) as Promise<WorkingStatus>,
+    unstageHunk: (path: string, file: string, hunkIndex: number, options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.unstageHunk, path, file, hunkIndex, options) as Promise<WorkingStatus>,
+    stageLines: (path: string, file: string, lines: DiffLineRef[], options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.stageLines, path, file, lines, options) as Promise<LinesResult>,
+    unstageLines: (path: string, file: string, lines: DiffLineRef[], options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.unstageLines, path, file, lines, options) as Promise<LinesResult>,
+    discardLines: (path: string, file: string, lines: DiffLineRef[], options?: DiffOptions) =>
+      ipcRenderer.invoke(RepoChannels.discardLines, path, file, lines, options) as Promise<LinesResult>,
     unstage: (path: string, file: string | null) =>
       ipcRenderer.invoke(RepoChannels.unstage, path, file) as Promise<WorkingStatus>,
     discardAll: (path: string) =>
@@ -306,8 +328,8 @@ const api: ExposedApi = {
         localBranch,
         remoteBranch,
       ) as Promise<CommitResult>,
-    stashPush: (path: string) =>
-      ipcRenderer.invoke(RepoChannels.stashPush, path) as Promise<RefsMutationResult>,
+    stashPush: (path: string, options?: StashPushOptions) =>
+      ipcRenderer.invoke(RepoChannels.stashPush, path, options) as Promise<RefsMutationResult>,
     stashApply: (path: string, index: number) =>
       ipcRenderer.invoke(RepoChannels.stashApply, path, index) as Promise<RefsMutationResult>,
     stashPop: (path: string, index: number) =>
@@ -382,6 +404,16 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.repoConfig, path) as Promise<RepoConfig>,
     repoSaveConfig: (path: string, config: RepoConfig) =>
       ipcRenderer.invoke(RepoChannels.repoSaveConfig, path, config) as Promise<RepoConfigResult>,
+    remoteAdd: (path: string, name: string, url: string, fetch: boolean) =>
+      ipcRenderer.invoke(RepoChannels.remoteAdd, path, name, url, fetch) as Promise<RefsMutationResult>,
+    remoteRemove: (path: string, name: string) =>
+      ipcRenderer.invoke(RepoChannels.remoteRemove, path, name) as Promise<RefsMutationResult>,
+    remoteRename: (path: string, name: string, newName: string) =>
+      ipcRenderer.invoke(RepoChannels.remoteRename, path, name, newName) as Promise<RefsMutationResult>,
+    remoteSetUrl: (path: string, name: string, url: string) =>
+      ipcRenderer.invoke(RepoChannels.remoteSetUrl, path, name, url) as Promise<RefsMutationResult>,
+    remoteSetPushUrl: (path: string, name: string, url: string | null) =>
+      ipcRenderer.invoke(RepoChannels.remoteSetPushUrl, path, name, url) as Promise<RefsMutationResult>,
     repoLfsStatus: (path: string) =>
       ipcRenderer.invoke(RepoChannels.repoLfsStatus, path) as Promise<LfsStatus>,
     repoLfsTrack: (path: string, pattern: string) =>
@@ -634,6 +666,33 @@ const api: ExposedApi = {
         ipcRenderer.removeListener(UpdateChannels.found, listener);
       };
     },
+  },
+  menu: {
+    onCommand: (callback: (id: AppCommandId) => void) => {
+      const listener = (_event: IpcRendererEvent, id: AppCommandId) => callback(id);
+      ipcRenderer.on(MenuChannels.command, listener);
+      return () => {
+        ipcRenderer.removeListener(MenuChannels.command, listener);
+      };
+    },
+    setEnabled: (ids: AppCommandId[]) => ipcRenderer.send(MenuChannels.setEnabled, ids),
+  },
+  open: {
+    tools: () => ipcRenderer.invoke(OpenChannels.tools) as Promise<OpenToolsState>,
+    setEditor: (id: string) =>
+      ipcRenderer.invoke(OpenChannels.setEditor, id) as Promise<OpenToolsState>,
+    setTerminal: (id: string) =>
+      ipcRenderer.invoke(OpenChannels.setTerminal, id) as Promise<OpenToolsState>,
+    pickCustomEditor: () =>
+      ipcRenderer.invoke(OpenChannels.pickCustomEditor) as Promise<OpenToolsState | null>,
+    inEditor: (repoPath: string, relPath?: string) =>
+      ipcRenderer.invoke(OpenChannels.inEditor, repoPath, relPath) as Promise<OpenResult>,
+    inTerminal: (repoPath: string) =>
+      ipcRenderer.invoke(OpenChannels.inTerminal, repoPath) as Promise<OpenResult>,
+    reveal: (repoPath: string, relPath?: string) =>
+      ipcRenderer.invoke(OpenChannels.reveal, repoPath, relPath) as Promise<OpenResult>,
+    withDefaultApp: (repoPath: string, relPath: string) =>
+      ipcRenderer.invoke(OpenChannels.withDefaultApp, repoPath, relPath) as Promise<OpenResult>,
   },
 };
 

@@ -213,18 +213,18 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps) {
               role="tabpanel"
               aria-label={active.label}
             >
-              <div className="clone-form">
-                {error && <p className="clone-error">{error}</p>}
+              <div className="form clone-form">
+                {error && <p className="form-error form-error-banner">{error}</p>}
 
-                <div className="clone-field">
-                  <label className="clone-label" htmlFor="clone-destination">
+                <div className="form-field">
+                  <label className="form-label" htmlFor="clone-destination">
                     Destination
                   </label>
                   <div className="clone-picker">
                     <input
                       id="clone-destination"
                       type="text"
-                      className="clone-input"
+                      className="form-input form-input-lg"
                       placeholder="Choose a folder to clone into"
                       value={destination}
                       readOnly
@@ -259,8 +259,8 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps) {
                 )}
 
                 {resolvedUrl.length > 0 && (
-                  <div className="clone-field">
-                    <label className="clone-label" htmlFor="clone-directory">
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="clone-directory">
                       Directory name
                     </label>
                     <div className="clone-directory">
@@ -273,7 +273,7 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps) {
                       <input
                         id="clone-directory"
                         type="text"
-                        className="clone-input clone-directory-input"
+                        className="form-input form-input-lg clone-directory-input"
                         placeholder={defaultDirectory || 'Repository name'}
                         value={directory}
                         onChange={(event) => setDirectory(event.target.value)}
@@ -282,7 +282,7 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps) {
                   </div>
                 )}
 
-                <div className="clone-actions">
+                <div className="form-footer">
                   <button
                     type="button"
                     className="clone-submit"

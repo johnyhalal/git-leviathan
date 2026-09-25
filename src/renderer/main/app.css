@@ -5,6 +5,7 @@
 @import './styles/top-bar.css';
 @import './styles/status-bar.css';
 @import './styles/buttons.css';
+@import './styles/forms.css';
 @import './styles/repo-start.css';
 @import './styles/toasts.css';
 @import './styles/settings.css';
@@ -22,3 +23,4 @@
 @import './styles/activity.css';
 @import './styles/merge-conflict.css';
 @import './styles/interactive-rebase.css';
+@import './styles/command-palette.css';

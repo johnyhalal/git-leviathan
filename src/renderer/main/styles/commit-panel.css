@@ -687,6 +687,13 @@ body.is-row-resizing {
   background: var(--control-bg);
 }
 
+/* Open-in-editor and close, side by side at the header's end. */
+.diff-header-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
 /* Secondary nav: a centered file/diff switch, with the blame/history toggles and
    the prev/next steppers grouped at the end. */
 .diff-subnav {
@@ -730,12 +737,36 @@ body.is-row-resizing {
   background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
+/* Icon-only toggles (diff layout, whitespace, wrap): square-ish, no label. */
+.diff-viewswitch button.is-icon {
+  min-width: 0;
+  padding: 4px 6px;
+}
+
+.diff-viewswitch button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.diff-viewswitch button:disabled:hover {
+  color: var(--fg-muted);
+  border-color: var(--border);
+}
+
+.diff-viewswitch button.active:disabled:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
 .diff-subnav-end {
   grid-column: 3;
   justify-self: end;
   display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  gap: 10px;
+  /* Wider than the gap inside a group, so the groups read as separate. */
+  gap: 6px 16px;
 }
 
 .diff-steppers {
@@ -777,6 +808,8 @@ body.is-row-resizing {
    a fixed height (taller for hunk headers) so the two stay aligned; the code
    pane is the only scroller, and the column follows its vertical scroll. */
 .diff-body {
+  /* Anchors the floating line-selection bar. */
+  position: relative;
   --diff-row-h: 20px;
   --diff-hunk-h: 28px;
   flex: 1 1 auto;
@@ -837,6 +870,133 @@ body.is-row-resizing {
   position: sticky;
   left: 0;
   z-index: 1;
+}
+
+/* Per-line action buttons, revealed when the row is hovered: stage (+) or
+   unstage (−) tucked into the left edge of the first line-number gutter, and
+   a "Discard line" text button pinned to the row's right end (see .diff-line-end). */
+.diff-line-stage {
+  --line-btn-color: #2ea043;
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--line-btn-color);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--line-btn-color) 18%, var(--panel-bg));
+  color: var(--line-btn-color);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.diff-line-stage.is-unstage {
+  --line-btn-color: var(--danger);
+}
+
+/* Discard is a warning action, in the yellow of `.pill-btn-yellow`. */
+.diff-line-stage.is-discard {
+  --line-btn-color: #d29922;
+}
+
+/* A zero-width anchor pinned to the row's right edge: it takes no room (so the
+   line's tint runs the full width) and stays put while the diff scrolls
+   horizontally; the discard button floats over the line from it. */
+.diff-line-end {
+  position: sticky;
+  right: 0;
+  flex: 0 0 0;
+  width: 0;
+}
+
+.diff-line-end .diff-line-stage {
+  left: auto;
+  right: 8px;
+  width: auto;
+  padding: 0 6px;
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.diff-line:hover .diff-line-stage,
+.diff-line-stage:focus-visible {
+  opacity: 1;
+}
+
+.diff-line-stage:disabled {
+  cursor: default;
+}
+
+.diff-line:hover .diff-line-stage:disabled {
+  opacity: 0.4;
+}
+
+/* Changed rows' gutters select lines (click, ⌘/Ctrl-click, Shift-click). */
+.diff-gutter.is-selectable {
+  cursor: pointer;
+}
+
+.diff-line.is-line-selected .diff-gutter {
+  background: color-mix(in srgb, var(--primary) 28%, var(--panel-bg));
+  color: var(--fg);
+}
+
+/* The rows a hovered line button will act on (a paired edit or the selection). */
+.diff-line.is-line-target .diff-code {
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
+.diff-line.is-line-target .diff-gutter {
+  color: var(--fg);
+}
+
+/* Floating actions for a multi-line selection, centered along the bottom. */
+.diff-selection-bar {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  font-family: 'Roboto', Helvetica, Arial, sans-serif;
+}
+
+.diff-selection-count {
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.diff-selection-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.diff-selection-clear:hover {
+  color: var(--fg);
+  background: var(--control-bg);
 }
 
 /* The diff's second (new-side) gutter sits right after the first. */
@@ -971,7 +1131,6 @@ body.is-row-resizing {
   display: flex;
   gap: 6px;
   padding: 2px 8px;
-  background: var(--control-bg);
 }
 
 /* Slightly denser than a stock pill, with room for the leading icon. */
@@ -979,6 +1138,73 @@ body.is-row-resizing {
   gap: 4px;
   padding: 3px 8px;
   font-size: 11px;
+}
+
+/* Word wrap: rows fit the pane and grow to hold wrapped code, instead of
+   sizing to the longest line and scrolling sideways. */
+.diff-lines.is-wrap {
+  width: 100%;
+}
+
+.diff-lines.is-wrap .diff-line {
+  width: 100%;
+  height: auto;
+  min-height: var(--diff-row-h);
+}
+
+.diff-lines.is-wrap .diff-code {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-lines.is-wrap .diff-line-hunk {
+  min-height: var(--diff-hunk-h);
+}
+
+/* Split view: each row is an old-side cell beside a new-side cell, each half
+   the pane wide with its own line-number gutter. */
+.diff-split-row {
+  display: flex;
+  width: 100%;
+}
+
+.diff-lines-split .diff-split-row > .diff-line {
+  flex: 1 1 50%;
+  width: 50%;
+  min-width: 0;
+}
+
+.diff-lines-split .diff-split-row > .diff-line + .diff-line {
+  border-left: 1px solid var(--border);
+}
+
+/* Unwrapped split view: old and new as two side-by-side panes, each scrolling
+   sideways on its own (their vertical scroll is mirrored in script). Rows keep
+   the fixed row heights, so the panes stay level. */
+.diff-split-panes {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.diff-split-pane {
+  flex: 1 1 50%;
+  width: 50%;
+}
+
+.diff-split-pane.is-new {
+  border-left: 1px solid var(--border);
+}
+
+/* The blank half beside a line that exists on one side only. */
+.diff-line-empty {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    var(--control-bg) 6px 12px
+  );
 }
 
 /* File view uses a single, slightly wider line-number gutter. */

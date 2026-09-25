@@ -438,6 +438,8 @@ interface CommitListProps {
   selectedHash: string | null;
   /** Every highlighted commit hash (multi-select). A single selection is a one-element set. */
   selectedHashes: ReadonlySet<string>;
+  /** Hashes matching the open commit search; every other row is dimmed. Undefined when no search is active. */
+  searchMatches?: ReadonlySet<string>;
   /** The checked-out branch name, for the branch context menu's merge/rebase actions. */
   currentBranch?: string;
   /** Configured remotes, for badging remote refs with their host avatar. */
@@ -915,6 +917,7 @@ export function CommitList({
   commits,
   selectedHash,
   selectedHashes,
+  searchMatches,
   currentBranch,
   remotes,
   workingStatus,
@@ -1151,6 +1154,7 @@ export function CommitList({
           // highlight identically; `selectedHash` only marks the focused one.
           if (selectedHashes.has(commit.hash)) classes.push('is-selected');
           if (isStash) classes.push('is-stash');
+          if (searchMatches && !searchMatches.has(commit.hash)) classes.push('is-search-dimmed');
           // The inline "new branch" input rides on the checked-out (HEAD) commit's
           // refs cell while branch creation is active.
           const isHead = commit.refs.some((ref) => ref.kind === 'head');

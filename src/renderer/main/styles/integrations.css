@@ -239,21 +239,4 @@
   flex: 1 1 auto;
   min-width: 0;
   height: 38px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
-  font-size: 14px;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.integration-token-input:focus {
-  border-color: var(--primary);
-}
-
-.integration-token-input::placeholder {
-  color: var(--fg-muted);
 }

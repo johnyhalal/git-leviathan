@@ -33,14 +33,22 @@ import {
   type TokenUsage,
 } from './claude';
 import {
+  APP_COMMANDS,
+  APP_COMMAND_IDS,
   AppChannels,
+  commandLabel,
+  OpenChannels,
   ClaudeChannels,
   IntegrationChannels,
+  MenuChannels,
   RepoChannels,
   SigningChannels,
   ThemeChannels,
   UpdateChannels,
   GLOBAL_ACTIVITY_PATH,
+  type AppCommandMenu,
+  type OpenResult,
+  type OpenToolsState,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -71,12 +79,17 @@ import {
   type LfsStatus,
   type LfsResult,
   type StashInfo,
+  type StashPushOptions,
   type WorktreeInfo,
   type WorktreeAddOptions,
   type SubmoduleInfo,
   type SubmoduleState,
   type SubmoduleAddOptions,
   type CommitLogEntry,
+  type CommitSearchResult,
+  type DiffLineRef,
+  type DiffOptions,
+  type LinesResult,
   type CommitRefDecoration,
   type CommitDetailData,
   type CommitResult,
@@ -147,6 +160,7 @@ import {
   primeGpgPassphrase,
 } from './signing';
 import { configureTelemetry, trackEvent } from './telemetry';
+import { detectEditors, detectTerminals, openInEditor, openInTerminal } from './openers';
 
 // Name the app before anything reads it, so app.getName(), the userData path,
 // notifications and the About panel all say "GitLeviathan" rather than
@@ -312,6 +326,17 @@ interface Settings {
    * (absent means enabled); toggled from General settings.
    */
   telemetryEnabled?: boolean;
+  /**
+   * Whether the app's fetches and pulls pass `--prune`. On by default (absent
+   * means enabled); toggled from General settings.
+   */
+  fetchPrune?: boolean;
+  /** The editor for "Open in editor": a detected id, `system` or `custom`. Absent: first detected. */
+  editor?: string;
+  /** The terminal for "Open in terminal". Absent: first detected. */
+  terminal?: string;
+  /** The executable (or macOS `.app`) picked as the custom editor. */
+  customEditorPath?: string;
   /**
    * Stable anonymous id for this install, minted once and sent with each usage
    * event so active users can be counted without any PII. Not tied to identity.
@@ -533,6 +558,14 @@ function loadSettings(): void {
     }
     if (typeof parsed.telemetryEnabled === 'boolean') {
       settings.telemetryEnabled = parsed.telemetryEnabled;
+    }
+    if (typeof parsed.fetchPrune === 'boolean') {
+      settings.fetchPrune = parsed.fetchPrune;
+    }
+    if (typeof parsed.editor === 'string' && parsed.editor) settings.editor = parsed.editor;
+    if (typeof parsed.terminal === 'string' && parsed.terminal) settings.terminal = parsed.terminal;
+    if (typeof parsed.customEditorPath === 'string' && parsed.customEditorPath) {
+      settings.customEditorPath = parsed.customEditorPath;
     }
     if (typeof parsed.telemetryId === 'string' && parsed.telemetryId) {
       settings.telemetryId = parsed.telemetryId;
@@ -1052,19 +1085,26 @@ async function readRemoteBranches(cwd: string): Promise<RemoteBranchInfo[]> {
 
 async function readRemotes(cwd: string): Promise<RemoteInfo[]> {
   // "origin\tgit@github.com:owner/repo.git (fetch)" lines, one fetch + one push
-  // per remote. Keep the fetch URL, deduped by remote name.
+  // per remote (the push line shows the pushurl when one is set). Keep the fetch
+  // URL and the first push URL, by remote name.
   const out = await runGit(cwd, ['remote', '-v']);
   const byName = new Map<string, string>();
+  const pushByName = new Map<string, string>();
   for (const line of nonEmptyLines(out)) {
-    const match = /^(\S+)\t(\S+)\s+\(fetch\)$/.exec(line);
-    if (match) byName.set(match[1], match[2]);
+    const match = /^(\S+)\t(\S+)\s+\((fetch|push)\)$/.exec(line);
+    if (!match) continue;
+    if (match[3] === 'fetch') byName.set(match[1], match[2]);
+    else if (!pushByName.has(match[1])) pushByName.set(match[1], match[2]);
   }
   // Strip any embedded credentials (e.g. `https://user:ghp_token@github.com/...`)
   // so a PAT baked into a remote URL never crosses IPC or reaches the UI.
-  return [...byName.entries()].map(([name, url]) => ({
-    name,
-    url: url.replace(/\/\/[^@\s/]+@/g, '//'),
-  }));
+  const redact = (url: string) => url.replace(/\/\/[^@\s/]+@/g, '//');
+  return [...byName.entries()].map(([name, url]) => {
+    const push = pushByName.get(name);
+    return push && push !== url
+      ? { name, url: redact(url), pushUrl: redact(push) }
+      : { name, url: redact(url) };
+  });
 }
 
 async function readTags(cwd: string): Promise<TagInfo[]> {
@@ -1492,6 +1532,43 @@ function isLfsPattern(value: unknown): value is string {
 }
 
 const PULL_MODES: PullMode[] = ['ff', 'ff-only', 'rebase', 'fetch-all'];
+
+/**
+ * Validate the untrusted `stashPush` options from IPC: `undefined` means the
+ * defaults; otherwise every present field must have the right type. Returns
+ * null when anything is malformed.
+ */
+function asStashPushOptions(value: unknown): StashPushOptions | null {
+  if (value === undefined) return {};
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const { message, includeUntracked, keepIndex, stagedOnly, paths } = value as Record<
+    string,
+    unknown
+  >;
+  const optionalBool = (flag: unknown) => flag === undefined || typeof flag === 'boolean';
+  if (message !== undefined && (typeof message !== 'string' || message.length > 1000)) {
+    return null;
+  }
+  if (!optionalBool(includeUntracked) || !optionalBool(keepIndex) || !optionalBool(stagedOnly)) {
+    return null;
+  }
+  if (
+    paths !== undefined &&
+    (!Array.isArray(paths) ||
+      paths.length === 0 ||
+      paths.length > 1000 ||
+      !paths.every((p) => typeof p === 'string' && p.length > 0 && !p.includes('\0')))
+  ) {
+    return null;
+  }
+  return {
+    message: message as string | undefined,
+    includeUntracked: includeUntracked as boolean | undefined,
+    keepIndex: keepIndex as boolean | undefined,
+    stagedOnly: stagedOnly as boolean | undefined,
+    paths: paths as string[] | undefined,
+  };
+}
 
 /**
  * Run a sequence of git commands in `cwd`, stopping at the first failure, then
@@ -2152,6 +2229,46 @@ async function readLog(cwd: string, limit: number): Promise<CommitLogEntry[]> {
   return mergeStashes(commits, stashes);
 }
 
+/** Most matches a commit search returns; more than this sets `truncated`. */
+const MAX_SEARCH_RESULTS = 1000;
+/** Longest query a commit search accepts (longer input is cut). */
+const MAX_SEARCH_QUERY = 200;
+
+/**
+ * Search the whole history for `query`, matched case-insensitively as a fixed
+ * string against the commit message, the author name/email, and hash prefixes.
+ * Every walk uses the same flags as {@link readLogCommits}, so a match's index
+ * in the full `rev-list` is exactly the `--max-count` the graph needs to load
+ * it. git ANDs `--grep` with `--author`, so they run as separate walks whose
+ * hits are unioned here.
+ */
+async function searchLog(cwd: string, query: string): Promise<CommitSearchResult> {
+  const walk = ['--exclude=refs/stash', '--all', '--date-order'];
+  const [all, byMessage, byAuthor] = await Promise.all([
+    runGit(cwd, ['rev-list', ...walk]),
+    runGit(cwd, ['log', ...walk, '-i', '-F', `--grep=${query}`, '--format=%H']),
+    runGit(cwd, ['log', ...walk, '-i', '-F', `--author=${query}`, '--format=%H']),
+  ]);
+  const order = nonEmptyLines(all);
+  const matched = new Set([...nonEmptyLines(byMessage), ...nonEmptyLines(byAuthor)]);
+  const hashPrefix = /^[0-9a-f]{4,40}$/i.test(query) ? query.toLowerCase() : null;
+
+  const hashes: string[] = [];
+  const positions: number[] = [];
+  let truncated = false;
+  for (let index = 0; index < order.length; index++) {
+    const hash = order[index];
+    if (!matched.has(hash) && !(hashPrefix && hash.startsWith(hashPrefix))) continue;
+    if (hashes.length === MAX_SEARCH_RESULTS) {
+      truncated = true;
+      break;
+    }
+    hashes.push(hash);
+    positions.push(index);
+  }
+  return { hashes, positions, truncated };
+}
+
 function mapFileStatus(code: string): FileStatus {
   switch (code) {
     case 'A':
@@ -2259,7 +2376,25 @@ function parseUnifiedDiff(patch: string): { binary: boolean; lines: DiffLine[] }
 }
 
 /** The git args that emit `file`'s unified diff for a given diff source. */
-function fileDiffArgs(source: DiffSource, file: string): string[] {
+function fileDiffArgs(source: DiffSource, file: string, options: DiffOptions = {}): string[] {
+  const args = baseFileDiffArgs(source, file);
+  const flags = diffOptionFlags(options);
+  // The option flags go right after the subcommand (before any revision / `--`).
+  return flags.length > 0 ? [args[0], ...flags, ...args.slice(1)] : args;
+}
+
+/** Context lines that stand in for "the whole file" (`--unified` needs a number). */
+const FULL_CONTEXT_LINES = 1_000_000;
+
+/** The extra `git diff`/`show` flags a DiffOptions asks for. */
+function diffOptionFlags(options: DiffOptions): string[] {
+  const flags: string[] = [];
+  if (options.context === 'full') flags.push(`--unified=${FULL_CONTEXT_LINES}`);
+  if (options.ignoreWhitespace) flags.push('--ignore-all-space');
+  return flags;
+}
+
+function baseFileDiffArgs(source: DiffSource, file: string): string[] {
   switch (source.kind) {
     case 'commit':
       // `show --format=` prints just the patch; --root lists the initial commit's
@@ -2324,10 +2459,22 @@ async function isUntracked(cwd: string, file: string): Promise<boolean> {
  * untracked file isn't part of git's diff (it prints nothing), so it's diffed
  * against an empty file, matching how it renders once `git add`ed.
  */
-async function rawUnstagedDiff(cwd: string, file: string): Promise<string> {
-  const out = await runGit(cwd, fileDiffArgs({ kind: 'unstaged' }, file));
+async function rawUnstagedDiff(
+  cwd: string,
+  file: string,
+  options: DiffOptions = {},
+): Promise<string> {
+  const out = await runGit(cwd, fileDiffArgs({ kind: 'unstaged' }, file, options));
   if (out === '' && (await isUntracked(cwd, file))) {
-    return runGitDiff(cwd, ['diff', '--no-color', '--no-index', '--', '/dev/null', file]);
+    return runGitDiff(cwd, [
+      'diff',
+      '--no-color',
+      ...diffOptionFlags(options),
+      '--no-index',
+      '--',
+      '/dev/null',
+      file,
+    ]);
   }
   return out;
 }
@@ -2336,11 +2483,12 @@ async function readFileDiff(
   cwd: string,
   source: DiffSource,
   file: string,
+  options: DiffOptions = {},
 ): Promise<FileDiff> {
   const out =
     source.kind === 'unstaged'
-      ? await rawUnstagedDiff(cwd, file)
-      : await runGit(cwd, fileDiffArgs(source, file));
+      ? await rawUnstagedDiff(cwd, file, options)
+      : await runGit(cwd, fileDiffArgs(source, file, options));
   const { binary, lines } = parseUnifiedDiff(out);
   return { path: file, binary, lines };
 }
@@ -2352,10 +2500,20 @@ async function readFileDiff(
  * when the patch has no header or the index is out of range.
  */
 function extractHunkPatch(patch: string, hunkIndex: number): string | null {
+  const split = splitPatchHunks(patch);
+  if (!split || hunkIndex < 0 || hunkIndex >= split.hunks.length) return null;
+  return joinPatch(split.header, split.hunks[hunkIndex]);
+}
+
+/**
+ * Split a file's unified diff into its file header (every line before the
+ * first `@@`) and its hunks (each an `@@` line plus the lines under it). Null
+ * when there's no hunk at all.
+ */
+function splitPatchHunks(patch: string): { header: string[]; hunks: string[][] } | null {
   const lines = patch.split('\n');
   const firstHunk = lines.findIndex((line) => line.startsWith('@@'));
   if (firstHunk === -1) return null;
-  const header = lines.slice(0, firstHunk);
   const hunks: string[][] = [];
   for (const line of lines.slice(firstHunk)) {
     // Each `@@` opens a hunk; every following line (context/+/-/"\ No newline")
@@ -2363,20 +2521,103 @@ function extractHunkPatch(patch: string, hunkIndex: number): string | null {
     if (line.startsWith('@@')) hunks.push([line]);
     else hunks[hunks.length - 1]?.push(line);
   }
-  if (hunkIndex < 0 || hunkIndex >= hunks.length) return null;
-  // git apply requires a trailing newline and no stray blank tail from the split.
-  return [...header, ...hunks[hunkIndex]].join('\n').replace(/\n*$/, '\n');
+  return { header: lines.slice(0, firstHunk), hunks };
 }
 
-/** Run `git apply <args>` with `patch` fed on stdin. Resolves true on success. */
-function runGitApply(cwd: string, args: string[], patch: string): Promise<boolean> {
+/** Join patch lines for `git apply`: one trailing newline, no stray blank tail. */
+function joinPatch(header: string[], hunk: string[]): string {
+  return [...header, ...hunk].join('\n').replace(/\n*$/, '\n');
+}
+
+/**
+ * Carve a patch out of `patch` that applies only the chosen changed lines.
+ * `picks` maps a 0-based hunk index to the rows picked in it — indices into
+ * that hunk's body rows (context/+/- lines in order, skipping "\ No newline"
+ * markers), the same rows the viewer renders under the hunk's header. Hunks
+ * with nothing picked are left out.
+ *
+ * An unpicked change must leave the target untouched, so it's rewritten against
+ * the side the patch is applied to: a forward apply (stage) reads the old side,
+ * so an unpicked `-` becomes context and an unpicked `+` is dropped; a reverse
+ * apply (unstage/discard) reads the new side, so it's the other way round. Each
+ * header's counts are recomputed to match. Null when no picked row is a change
+ * (or the diff no longer has the picked hunks).
+ */
+function extractLinesPatch(
+  patch: string,
+  picks: ReadonlyMap<number, ReadonlySet<number>>,
+  reverse: boolean,
+): string | null {
+  const split = splitPatchHunks(patch);
+  if (!split) return null;
+  const hunks: string[] = [];
+  for (const [hunkIndex, rows] of [...picks].sort(([a], [b]) => a - b)) {
+    const hunk = split.hunks[hunkIndex];
+    if (!hunk) return null;
+    const [heading, ...body] = hunk;
+    const range = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(heading);
+    if (!range) return null;
+
+    const out: string[] = [];
+    let oldCount = 0;
+    let newCount = 0;
+    let row = -1;
+    let picked = false;
+    // Whether the previous row survived, so its "\ No newline" marker goes too.
+    let keptPrev = false;
+    for (const line of body) {
+      const marker = line[0];
+      if (marker === '\\') {
+        if (keptPrev) out.push(line);
+        continue;
+      }
+      if (marker !== ' ' && marker !== '+' && marker !== '-') continue;
+      row += 1;
+      keptPrev = true;
+      if (marker === ' ') {
+        out.push(line);
+        oldCount += 1;
+        newCount += 1;
+      } else if (rows.has(row)) {
+        out.push(line);
+        if (marker === '-') oldCount += 1;
+        else newCount += 1;
+        picked = true;
+      } else if (reverse ? marker === '+' : marker === '-') {
+        out.push(` ${line.slice(1)}`);
+        oldCount += 1;
+        newCount += 1;
+      } else {
+        keptPrev = false;
+      }
+    }
+    if (!picked) continue;
+    const [, oldStart, newStart, section] = range;
+    hunks.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${section}`, ...out);
+  }
+  return hunks.length > 0 ? joinPatch(split.header, hunks) : null;
+}
+
+/**
+ * Run `git apply <args>` with `patch` fed on stdin. Resolves with whether it
+ * applied, plus git's stderr (why it was rejected) on failure.
+ */
+function runGitApply(
+  cwd: string,
+  args: string[],
+  patch: string,
+): Promise<{ ok: boolean; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(gitBin, ['apply', ...args], {
       cwd,
       env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }),
     });
-    child.on('error', () => resolve(false));
-    child.on('close', (code) => resolve(code === 0));
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (err) => resolve({ ok: false, stderr: err.message }));
+    child.on('close', (code) => resolve({ ok: code === 0, stderr }));
     // A broken pipe (git rejecting the patch early) must not crash the process.
     child.stdin?.on('error', () => {
       /* ignore: the close handler reports the failure via the exit code */
@@ -3232,6 +3473,15 @@ async function autoStashPop(cwd: string, hash: string): Promise<boolean> {
 }
 
 /**
+ * Whether the app's fetches and pulls pass `--prune`, dropping remote-tracking
+ * branches that were deleted on the server. On unless turned off in Settings;
+ * when off, no flag is passed, so the user's own `fetch.prune` config applies.
+ */
+function fetchPruneEnabled(): boolean {
+  return settings.fetchPrune !== false;
+}
+
+/**
  * Pull (or, for `fetch-all`, fetch) the current branch from its upstream. The
  * mode maps straight onto git's flags. GIT_TERMINAL_PROMPT=0 keeps an
  * auth-required remote from hanging the app.
@@ -3251,6 +3501,8 @@ async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
         : mode === 'rebase'
           ? ['pull', '--rebase']
           : ['pull'];
+  // `pull` forwards `--prune` to its fetch, so every mode honors the setting.
+  if (fetchPruneEnabled()) args.push('--prune');
 
   // `fetch --all` touches every remote; the pull modes talk to the current
   // branch's upstream. Authenticate whichever remotes are involved.
@@ -3343,7 +3595,8 @@ async function backgroundFetchAll(cwd: string): Promise<BackgroundFetchResult> {
     const sshEnv = await sshEnvForRemotes(cwd, remotes);
     const env = gitEnv({ GIT_TERMINAL_PROMPT: '0', ...sshEnv });
     try {
-      await execFileAsync(gitBin, [...authArgs, 'fetch', '--all'], {
+      const prune = fetchPruneEnabled() ? ['--prune'] : [];
+      await execFileAsync(gitBin, [...authArgs, 'fetch', '--all', ...prune], {
         cwd,
         env,
         timeout: BACKGROUND_FETCH_TIMEOUT_MS,
@@ -3953,6 +4206,18 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.search,
+    async (_event, repoPath: unknown, query: unknown): Promise<CommitSearchResult> => {
+      const none: CommitSearchResult = { hashes: [], positions: [], truncated: false };
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return none;
+      if (typeof query !== 'string') return none;
+      const trimmed = query.trim().slice(0, MAX_SEARCH_QUERY);
+      if (!trimmed) return none;
+      return searchLog(repoPath, trimmed);
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.log,
     async (_event, repoPath: unknown, limit: unknown): Promise<CommitLogEntry[]> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return [];
@@ -4007,6 +4272,24 @@ function registerRepoIpc(): void {
     return null;
   };
 
+  // Narrow an untrusted IPC value to DiffOptions (unknown/invalid fields dropped).
+  const asDiffOptions = (value: unknown): DiffOptions => {
+    if (typeof value !== 'object' || value === null) return {};
+    const raw = value as { context?: unknown; ignoreWhitespace?: unknown };
+    const options: DiffOptions = {};
+    if (raw.context === 'full' || raw.context === 'hunks') options.context = raw.context;
+    if (raw.ignoreWhitespace === true) options.ignoreWhitespace = true;
+    return options;
+  };
+
+  // Staging patches are carved from a diff re-read with the viewer's context, so
+  // hunk/row indices line up with what's on screen. Whitespace-ignoring diffs
+  // can't be applied faithfully, so that option never reaches a staging read.
+  const stagingOptions = (value: unknown): DiffOptions => {
+    const { context } = asDiffOptions(value);
+    return context ? { context } : {};
+  };
+
   ipcMain.handle(
     RepoChannels.fileDiff,
     async (
@@ -4014,6 +4297,7 @@ function registerRepoIpc(): void {
       repoPath: unknown,
       source: unknown,
       file: unknown,
+      options: unknown,
     ): Promise<FileDiff> => {
       const src = asDiffSource(source);
       if (
@@ -4025,7 +4309,7 @@ function registerRepoIpc(): void {
       ) {
         return { path: typeof file === 'string' ? file : '', binary: false, lines: [] };
       }
-      return readFileDiff(repoPath, src, file);
+      return readFileDiff(repoPath, src, file, asDiffOptions(options));
     },
   );
 
@@ -4136,6 +4420,7 @@ function registerRepoIpc(): void {
     hunkIndex: unknown,
     from: 'staged' | 'unstaged',
     args: string[],
+    options: DiffOptions = {},
   ): Promise<WorkingStatus> => {
     if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return emptyStatus;
     if (typeof file !== 'string' || file.length === 0) return readStatus(repoPath);
@@ -4144,8 +4429,8 @@ function registerRepoIpc(): void {
     }
     const rawDiff =
       from === 'staged'
-        ? await runGit(repoPath, fileDiffArgs({ kind: 'staged' }, file))
-        : await rawUnstagedDiff(repoPath, file);
+        ? await runGit(repoPath, fileDiffArgs({ kind: 'staged' }, file, options))
+        : await rawUnstagedDiff(repoPath, file, options);
     const patch = extractHunkPatch(rawDiff, hunkIndex);
     if (patch !== null) await runGitApply(repoPath, args, patch);
     return readStatus(repoPath);
@@ -4153,21 +4438,94 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.stageHunk,
-    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
-      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--cached']),
+    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown, options: unknown): Promise<WorkingStatus> =>
+      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--cached'], stagingOptions(options)),
   );
 
   ipcMain.handle(
     RepoChannels.discardHunk,
-    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
-      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--reverse']),
+    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown, options: unknown): Promise<WorkingStatus> =>
+      applyHunk(repoPath, file, hunkIndex, 'unstaged', ['--reverse'], stagingOptions(options)),
   );
 
   // Unstage reverse-applies the hunk to the index alone (worktree untouched).
   ipcMain.handle(
     RepoChannels.unstageHunk,
-    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown): Promise<WorkingStatus> =>
-      applyHunk(repoPath, file, hunkIndex, 'staged', ['--cached', '--reverse']),
+    (_event, repoPath: unknown, file: unknown, hunkIndex: unknown, options: unknown): Promise<WorkingStatus> =>
+      applyHunk(repoPath, file, hunkIndex, 'staged', ['--cached', '--reverse'], stagingOptions(options)),
+  );
+
+  // Stage/unstage/discard only some changed lines: like `applyHunk`, but the
+  // patch keeps just the picked rows (see extractLinesPatch), and a rejected
+  // patch comes back as an error line rather than failing silently.
+  const applyLines = async (
+    repoPath: unknown,
+    file: unknown,
+    lines: unknown,
+    from: 'staged' | 'unstaged',
+    args: string[],
+    options: DiffOptions = {},
+  ): Promise<LinesResult> => {
+    if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return { status: emptyStatus };
+    if (typeof file !== 'string' || file.length === 0) {
+      return { status: await readStatus(repoPath) };
+    }
+    const isIndex = (value: unknown): value is number =>
+      typeof value === 'number' && Number.isInteger(value) && value >= 0;
+    if (
+      !Array.isArray(lines) ||
+      lines.length === 0 ||
+      lines.length > 100_000 ||
+      !lines.every(
+        (ref: unknown) =>
+          typeof ref === 'object' &&
+          ref !== null &&
+          isIndex((ref as DiffLineRef).hunk) &&
+          isIndex((ref as DiffLineRef).row),
+      )
+    ) {
+      return { status: await readStatus(repoPath) };
+    }
+    const picks = new Map<number, Set<number>>();
+    for (const { hunk, row } of lines as DiffLineRef[]) {
+      const rows = picks.get(hunk) ?? new Set<number>();
+      rows.add(row);
+      picks.set(hunk, rows);
+    }
+    const rawDiff =
+      from === 'staged'
+        ? await runGit(repoPath, fileDiffArgs({ kind: 'staged' }, file, options))
+        : await rawUnstagedDiff(repoPath, file, options);
+    const patch = extractLinesPatch(rawDiff, picks, args.includes('--reverse'));
+    let error: string | undefined;
+    if (patch === null) {
+      error = 'The selected lines are no longer in the diff — it has been refreshed.';
+    } else {
+      const applied = await runGitApply(repoPath, args, patch);
+      if (!applied.ok) {
+        error = gitErrorMessage(applied, 'git rejected the patch for the selected lines.');
+      }
+    }
+    return { status: await readStatus(repoPath), ...(error ? { error } : {}) };
+  };
+
+  ipcMain.handle(
+    RepoChannels.stageLines,
+    (_event, repoPath: unknown, file: unknown, lines: unknown, options: unknown): Promise<LinesResult> =>
+      applyLines(repoPath, file, lines, 'unstaged', ['--cached'], stagingOptions(options)),
+  );
+
+  ipcMain.handle(
+    RepoChannels.unstageLines,
+    (_event, repoPath: unknown, file: unknown, lines: unknown, options: unknown): Promise<LinesResult> =>
+      applyLines(repoPath, file, lines, 'staged', ['--cached', '--reverse'], stagingOptions(options)),
+  );
+
+  // Discard reverse-applies the picked lines to the working tree (index untouched).
+  ipcMain.handle(
+    RepoChannels.discardLines,
+    (_event, repoPath: unknown, file: unknown, lines: unknown, options: unknown): Promise<LinesResult> =>
+      applyLines(repoPath, file, lines, 'unstaged', ['--reverse'], stagingOptions(options)),
   );
 
   ipcMain.handle(
@@ -5240,16 +5598,36 @@ function registerRepoIpc(): void {
 
   ipcMain.handle(
     RepoChannels.stashPush,
-    async (_event, repoPath: unknown): Promise<RefsMutationResult> => {
+    async (_event, repoPath: unknown, rawOptions: unknown): Promise<RefsMutationResult> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
         return { status: 'error', message: 'Not a git repository.' };
       }
+      const options = asStashPushOptions(rawOptions);
+      if (!options) return { status: 'error', message: 'Invalid stash options.' };
+      const args = ['stash', 'push'];
+      if (options.stagedOnly) {
+        args.push('--staged');
+      } else {
+        if (options.includeUntracked !== false) args.push('--include-untracked');
+        if (options.keepIndex) args.push('--keep-index');
+      }
       // Default the stash message to "WIP on <branch>". On a detached HEAD there
       // is no branch, so omit -m and let git use its own default message.
-      const branch = await currentBranchName(repoPath);
-      const args = ['stash', 'push', '--include-untracked'];
-      if (branch) args.push('-m', `WIP on ${branch}`);
-      return mutateRepo(repoPath, [args], 'Could not stash your changes.');
+      const message = options.message?.trim();
+      if (message) {
+        args.push('-m', message);
+      } else {
+        const branch = await currentBranchName(repoPath);
+        if (branch) args.push('-m', `WIP on ${branch}`);
+      }
+      // Literal pathspecs so a file named e.g. `*.ts` stashes just that file.
+      if (options.paths) args.push('--', ...options.paths);
+      return mutateRepo(
+        repoPath,
+        [args],
+        'Could not stash your changes.',
+        options.paths ? { GIT_LITERAL_PATHSPECS: '1' } : undefined,
+      );
     },
   );
 
@@ -5758,6 +6136,184 @@ function registerRepoIpc(): void {
         };
       }
       return { status: 'ok', config: valid };
+    },
+  );
+
+  // --- Remotes ------------------------------------------------------------
+
+  // A remote name becomes a ref path segment (`refs/remotes/<name>/…`), so keep
+  // it to a conservative slug that can't be read as a flag; git still has the
+  // final say via its own refname check.
+  const isRemoteName = (name: unknown): name is string =>
+    typeof name === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name) &&
+    !name.includes('..') &&
+    !name.endsWith('/') &&
+    !name.endsWith('.lock');
+
+  // Any URL git accepts (https, ssh, scp-style, file paths), minus whitespace,
+  // flag-like values and the command-running `ext::`/`fd::` transports.
+  const isRemoteUrl = (url: unknown): url is string =>
+    typeof url === 'string' &&
+    url.length > 0 &&
+    !/\s/.test(url) &&
+    !url.startsWith('-') &&
+    !/^(ext|fd)::/i.test(url);
+
+  const configuredRemotes = async (repoPath: string) =>
+    new Set(nonEmptyLines(await runGit(repoPath, ['remote'])));
+
+  ipcMain.handle(
+    RepoChannels.remoteAdd,
+    async (
+      _event,
+      repoPath: unknown,
+      name: unknown,
+      url: unknown,
+      fetch: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (!isRemoteName(name)) {
+        return { status: 'error', message: 'Enter a valid remote name (e.g. upstream).' };
+      }
+      if (!isRemoteUrl(url)) {
+        return { status: 'error', message: 'Enter a valid remote URL.' };
+      }
+      if ((await configuredRemotes(repoPath)).has(name)) {
+        return { status: 'error', message: `A remote named “${name}” already exists.` };
+      }
+      const added = await mutateRepo(
+        repoPath,
+        [['remote', 'add', '--', name, url]],
+        `Could not add the remote “${name}”.`,
+      );
+      if (added.status !== 'ok' || fetch !== true) return added;
+
+      // Fetch through the same auth plumbing as pull, so a connected GitHub/GitLab
+      // account or generated SSH key covers the new remote too. The remote stays
+      // added even when the fetch fails — it's reported as a notice, not an error.
+      const authArgs = await authArgsForRemotes(repoPath, [name]);
+      const sshEnv = await sshEnvForRemotes(repoPath, [name]);
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0', ...sshEnv });
+      try {
+        await spawnGit(repoPath, [...authArgs, 'fetch', name], 'fetch', env);
+      } catch (err) {
+        return {
+          status: 'ok',
+          refs: await readRefs(repoPath),
+          notice: `Added “${name}”, but fetching it failed: ${pullErrorMessage(err)}`,
+        };
+      }
+      return { status: 'ok', refs: await readRefs(repoPath) };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.remoteRemove,
+    async (_event, repoPath: unknown, name: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof name !== 'string' || !(await configuredRemotes(repoPath)).has(name)) {
+        return { status: 'error', message: 'Unknown remote.' };
+      }
+      // Local-only: drops the remote's config and its remote-tracking branches,
+      // never anything on the server.
+      return mutateRepo(
+        repoPath,
+        [['remote', 'remove', '--', name]],
+        `Could not remove the remote “${name}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.remoteRename,
+    async (
+      _event,
+      repoPath: unknown,
+      name: unknown,
+      newName: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const remotes = await configuredRemotes(repoPath);
+      if (typeof name !== 'string' || !remotes.has(name)) {
+        return { status: 'error', message: 'Unknown remote.' };
+      }
+      if (!isRemoteName(newName)) {
+        return { status: 'error', message: 'Enter a valid remote name (e.g. upstream).' };
+      }
+      if (remotes.has(newName)) {
+        return { status: 'error', message: `A remote named “${newName}” already exists.` };
+      }
+      // `rename` also moves the tracking refs and rewrites branches' upstreams.
+      return mutateRepo(
+        repoPath,
+        [['remote', 'rename', '--', name, newName]],
+        `Could not rename the remote “${name}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.remoteSetUrl,
+    async (_event, repoPath: unknown, name: unknown, url: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof name !== 'string' || !(await configuredRemotes(repoPath)).has(name)) {
+        return { status: 'error', message: 'Unknown remote.' };
+      }
+      if (!isRemoteUrl(url)) {
+        return { status: 'error', message: 'Enter a valid remote URL.' };
+      }
+      return mutateRepo(
+        repoPath,
+        [['remote', 'set-url', '--', name, url]],
+        `Could not change the URL of “${name}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.remoteSetPushUrl,
+    async (_event, repoPath: unknown, name: unknown, url: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof name !== 'string' || !(await configuredRemotes(repoPath)).has(name)) {
+        return { status: 'error', message: 'Unknown remote.' };
+      }
+      if (url !== null && !isRemoteUrl(url)) {
+        return { status: 'error', message: 'Enter a valid push URL.' };
+      }
+      // Drop every existing push URL first (a remote may carry several), so the
+      // result is exactly one push URL — or none, falling back to the fetch URL.
+      // `--unset-all` exits 5 when there was nothing to unset; that's fine.
+      try {
+        await execFileAsync(
+          gitBin,
+          ['config', '--local', '--unset-all', `remote.${name}.pushurl`],
+          { cwd: repoPath, env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }) },
+        );
+      } catch (err) {
+        if ((err as { code?: unknown }).code !== 5) {
+          return {
+            status: 'error',
+            message: gitErrorMessage(err, `Could not change the push URL of “${name}”.`),
+          };
+        }
+      }
+      if (url === null) return { status: 'ok', refs: await readRefs(repoPath) };
+      return mutateRepo(
+        repoPath,
+        [['remote', 'set-url', '--push', '--', name, url]],
+        `Could not change the push URL of “${name}”.`,
+      );
     },
   );
 
@@ -7531,7 +8087,25 @@ function registerClaudeIpc(): void {
     error,
   });
 
-  ipcMain.handle(ClaudeChannels.status, (): ClaudeStatus => currentStatus());
+  // The CLI updates itself (or via Homebrew) behind our back, so the version
+  // recorded at connect time goes stale — re-read it from the stored binary.
+  ipcMain.handle(ClaudeChannels.status, async (): Promise<ClaudeStatus> => {
+    const conn = settings.claudeConnection;
+    if (!conn) return currentStatus();
+    const probe = await probeClaude(conn.binaryPath);
+    if (
+      probe.installed &&
+      probe.binaryPath &&
+      (probe.binaryPath !== conn.binaryPath || probe.version !== conn.version)
+    ) {
+      settings.claudeConnection = {
+        binaryPath: probe.binaryPath,
+        version: probe.version,
+      };
+      saveSettings();
+    }
+    return currentStatus();
+  });
 
   ipcMain.handle(
     ClaudeChannels.connect,
@@ -8489,6 +9063,16 @@ function registerAppIpc(): void {
     saveSettings();
   });
 
+  ipcMain.handle(AppChannels.getFetchPrune, (): boolean => fetchPruneEnabled());
+
+  ipcMain.handle(AppChannels.setFetchPrune, (_event, enabled: unknown): void => {
+    if (typeof enabled !== 'boolean') {
+      throw new Error('Invalid prune preference');
+    }
+    settings.fetchPrune = enabled;
+    saveSettings();
+  });
+
   ipcMain.handle(AppChannels.getTelemetryEnabled, (): boolean => telemetryEnabled());
 
   ipcMain.handle(AppChannels.setTelemetryEnabled, (_event, enabled: unknown): void => {
@@ -8739,39 +9323,248 @@ function registerUpdateIpc(): void {
   });
 }
 
+/** The user's editor/terminal choices, resolved against what's installed now. */
+function openToolsState(): OpenToolsState {
+  const editors = detectEditors();
+  const terminals = detectTerminals();
+  const customEditorPath = settings.customEditorPath ?? null;
+  // A saved choice that's since been uninstalled falls back like an unset one.
+  const editor =
+    settings.editor === 'system' ||
+    (settings.editor === 'custom' && customEditorPath) ||
+    editors.some((e) => e.id === settings.editor)
+      ? (settings.editor as string)
+      : (editors[0]?.id ?? 'system');
+  const terminal = terminals.some((t) => t.id === settings.terminal)
+    ? (settings.terminal as string)
+    : (terminals[0]?.id ?? '');
+  const editorName =
+    editor === 'system'
+      ? 'Default App'
+      : editor === 'custom' && customEditorPath
+        ? path.basename(customEditorPath).replace(/\.(app|exe)$/i, '')
+        : (editors.find((e) => e.id === editor)?.name ?? 'Editor');
+  return { editors, terminals, editor, terminal, customEditorPath, editorName };
+}
+
 /**
- * The application menu. It's the stock roles-based menu with one deliberate
+ * Resolve an "open" request's target: the repository folder, or a file inside
+ * it. Untrusted IPC args, so the repo must be a git repo and the file must not
+ * escape it (same containment check as deleting a file). A file that's gone
+ * from disk — deleted since the commit being viewed — is reported, not opened.
+ */
+function resolveOpenTarget(
+  repoPath: unknown,
+  relPath: unknown,
+): { ok: true; target: string; isFile: boolean } | { ok: false; result: OpenResult } {
+  const fail = (message: string) => ({ ok: false as const, result: { status: 'error' as const, message } });
+  if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return fail('Not a git repository.');
+  if (relPath === undefined || relPath === null || relPath === '') {
+    return { ok: true, target: repoPath, isFile: false };
+  }
+  if (typeof relPath !== 'string') return fail('Invalid file path.');
+  const target = path.resolve(repoPath, relPath);
+  const rel = path.relative(repoPath, target);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return fail('Invalid file path.');
+  if (!fs.existsSync(target)) return fail('That file no longer exists on disk.');
+  return { ok: true, target, isFile: true };
+}
+
+function registerOpenIpc(): void {
+  ipcMain.handle(OpenChannels.tools, (): OpenToolsState => openToolsState());
+
+  ipcMain.handle(OpenChannels.setEditor, (_event, id: unknown): OpenToolsState => {
+    if (typeof id === 'string' && id) {
+      settings.editor = id;
+      saveSettings();
+    }
+    return openToolsState();
+  });
+
+  ipcMain.handle(OpenChannels.setTerminal, (_event, id: unknown): OpenToolsState => {
+    if (typeof id === 'string' && id) {
+      settings.terminal = id;
+      saveSettings();
+    }
+    return openToolsState();
+  });
+
+  ipcMain.handle(
+    OpenChannels.pickCustomEditor,
+    async (event): Promise<OpenToolsState | null> => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const isMac = process.platform === 'darwin';
+      const options: Electron.OpenDialogOptions = {
+        title: 'Choose Editor',
+        defaultPath: isMac ? '/Applications' : undefined,
+        properties: ['openFile'],
+        filters: isMac
+          ? [{ name: 'Applications', extensions: ['app'] }]
+          : process.platform === 'win32'
+            ? [{ name: 'Programs', extensions: ['exe'] }]
+            : undefined,
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+      if (result.canceled || result.filePaths.length === 0) return null;
+      settings.customEditorPath = result.filePaths[0];
+      settings.editor = 'custom';
+      saveSettings();
+      return openToolsState();
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.inEditor,
+    async (_event, repoPath: unknown, relPath: unknown): Promise<OpenResult> => {
+      const resolved = resolveOpenTarget(repoPath, relPath);
+      if (!resolved.ok) return resolved.result;
+      const { editor, customEditorPath } = openToolsState();
+      if (editor === 'system') {
+        const message = await shell.openPath(resolved.target);
+        return message ? { status: 'error', message } : { status: 'ok' };
+      }
+      return openInEditor(editor, resolved.target, customEditorPath ?? undefined);
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.inTerminal,
+    async (_event, repoPath: unknown): Promise<OpenResult> => {
+      const resolved = resolveOpenTarget(repoPath, undefined);
+      if (!resolved.ok) return resolved.result;
+      const { terminal } = openToolsState();
+      if (!terminal) return { status: 'error', message: 'No terminal app was found.' };
+      return openInTerminal(terminal, resolved.target);
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.reveal,
+    async (_event, repoPath: unknown, relPath: unknown): Promise<OpenResult> => {
+      const resolved = resolveOpenTarget(repoPath, relPath);
+      if (!resolved.ok) return resolved.result;
+      if (resolved.isFile) {
+        shell.showItemInFolder(resolved.target);
+        return { status: 'ok' };
+      }
+      const message = await shell.openPath(resolved.target);
+      return message ? { status: 'error', message } : { status: 'ok' };
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.withDefaultApp,
+    async (_event, repoPath: unknown, relPath: unknown): Promise<OpenResult> => {
+      const resolved = resolveOpenTarget(repoPath, relPath);
+      if (!resolved.ok) return resolved.result;
+      const message = await shell.openPath(resolved.target);
+      return message ? { status: 'error', message } : { status: 'ok' };
+    },
+  );
+}
+
+/**
+ * The application menu. Built from the shared `APP_COMMANDS` table: each app
+ * command with a `menu` becomes an item carrying its accelerator, and choosing
+ * it (or pressing the key) forwards the command id to the focused window's
+ * renderer, which runs it. The rest are the stock roles, with one deliberate
  * omission: the plain Reload item's `CmdOrCtrl+R` accelerator. That accelerator
  * is swallowed by the menu before the page ever sees the key, and the repo view
  * binds Cmd/Ctrl+R to "redo" — so reloading keeps only its Shift variant
- * (`forceReload`), which nothing else wants.
+ * (`forceReload`), which nothing else wants. Close Window likewise moves to
+ * Cmd/Ctrl+Shift+W so Cmd/Ctrl+W can close a tab.
  */
 function installAppMenu(): void {
   const isMac = process.platform === 'darwin';
+  const commandItems = (menu: AppCommandMenu): MenuItemConstructorOptions[] =>
+    APP_COMMANDS.filter((spec) => spec.menu === menu).map((spec) => ({
+      id: spec.id,
+      label: commandLabel(spec, process.platform),
+      accelerator: spec.accelerator,
+      // Repo commands wait for the renderer to report an open repository.
+      enabled: !spec.repo,
+      click: () => {
+        const win = BrowserWindow.getFocusedWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(MenuChannels.command, spec.id);
+      },
+    }));
+  const separator: MenuItemConstructorOptions = { type: 'separator' };
   const template: MenuItemConstructorOptions[] = [
-    ...(isMac ? ([{ role: 'appMenu' }] as MenuItemConstructorOptions[]) : []),
-    { role: 'fileMenu' },
+    ...(isMac
+      ? ([
+          {
+            role: 'appMenu',
+            submenu: [
+              { role: 'about' },
+              separator,
+              ...commandItems('app'),
+              separator,
+              { role: 'services' },
+              separator,
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              separator,
+              { role: 'quit' },
+            ],
+          },
+        ] as MenuItemConstructorOptions[])
+      : []),
+    {
+      label: 'File',
+      submenu: [
+        ...commandItems('file'),
+        { role: 'close', label: 'Close Window', accelerator: 'CmdOrCtrl+Shift+W' },
+        ...(isMac ? [] : [separator, ...commandItems('app'), separator, { role: 'quit' } as MenuItemConstructorOptions]),
+      ],
+    },
     { role: 'editMenu' },
     {
       label: 'View',
       submenu: [
+        ...commandItems('view'),
+        separator,
         ...(app.isPackaged
           ? []
           : ([
               { role: 'forceReload' },
               { role: 'toggleDevTools' },
-              { type: 'separator' },
+              separator,
             ] as MenuItemConstructorOptions[])),
         { role: 'resetZoom' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },
-        { type: 'separator' },
+        separator,
         { role: 'togglefullscreen' },
       ],
     },
+    { label: 'Repository', submenu: commandItems('repository') },
     { role: 'windowMenu' },
+    { role: 'help', submenu: commandItems('help') },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/**
+ * The renderer reports which commands can run right now (a repository is open,
+ * there's a stash to pop, …); grey out every menu command that isn't among them.
+ */
+function registerMenuIpc(): void {
+  ipcMain.on(MenuChannels.setEnabled, (_event, ids: unknown): void => {
+    if (!Array.isArray(ids)) return;
+    const enabled = new Set(
+      ids.filter((id): id is string => typeof id === 'string' && APP_COMMAND_IDS.has(id)),
+    );
+    const menu = Menu.getApplicationMenu();
+    if (!menu) return;
+    for (const spec of APP_COMMANDS) {
+      if (!spec.menu) continue;
+      const item = menu.getMenuItemById(spec.id);
+      if (item) item.enabled = enabled.has(spec.id);
+    }
+  });
 }
 
 app.on('ready', () => {
@@ -8792,6 +9585,8 @@ app.on('ready', () => {
   registerSigningIpc();
   registerAppIpc();
   registerUpdateIpc();
+  registerMenuIpc();
+  registerOpenIpc();
   // Configure anonymous usage analytics (on by default) and record the launch.
   configureTelemetry({ isEnabled: telemetryEnabled, userId: ensureTelemetryId() });
   trackEvent('app_opened');

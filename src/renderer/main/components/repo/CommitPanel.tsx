@@ -7,6 +7,7 @@ import type {
   DiffSource,
   FileChange,
   FileStatus,
+  StashPushOptions,
   WorkingStatus,
 } from '../../../../types/ipc';
 import type { DiffTarget } from './DiffView';
@@ -14,6 +15,8 @@ import { FileContextMenu, type FileMenuItem } from './FileContextMenu';
 import { useConfirm, type ConfirmAction } from '../ConfirmBar';
 import { CopyButton } from '../CopyButton';
 import { formatDateTime, useDateFormat } from '../../dateFormat';
+import { formatAccelerator } from '../../commands/keys';
+import { openMenuItems, useOpenTools } from '../../openActions';
 import {
   CertificateIcon,
   ChevronDownIcon,
@@ -358,6 +361,13 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
   }, [mode]);
   const [viewAll, setViewAll] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // Right-click menu on a file: open the working copy in the user's tools.
+  const [fileMenu, setFileMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const editorName = useOpenTools()?.editorName;
+  const onContextMenuFile = (file: DisplayFile, event: React.MouseEvent) => {
+    event.preventDefault();
+    setFileMenu({ path: file.path, x: event.clientX, y: event.clientY });
+  };
 
   // This section always diffs against the commit; the active row is the one
   // whose path matches an open diff taken from this same commit.
@@ -509,6 +519,7 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
               onToggle={toggleDir}
               onOpenFile={openFile}
               activePath={activePath}
+              onContextMenuFile={onContextMenuFile}
             />
           </div>
         ) : (
@@ -518,10 +529,19 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
               file={file}
               onOpen={() => openFile(file)}
               selected={file.path === activePath}
+              onContextMenu={(event) => onContextMenuFile(file, event)}
             />
           ))
         )}
       </div>
+      {fileMenu && (
+        <FileContextMenu
+          x={fileMenu.x}
+          y={fileMenu.y}
+          onClose={() => setFileMenu(null)}
+          items={openMenuItems(editorName, repoPath, fileMenu.path)}
+        />
+      )}
     </div>
   );
 }
@@ -1222,6 +1242,8 @@ interface WorkingChangesProps {
   onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
+  /** Stash working-tree changes with the given options (`git stash push`). */
+  onStash: (options?: StashPushOptions) => Promise<unknown>;
 }
 
 /** Working-tree staging + commit, backed by real git status/add/reset/commit. */
@@ -1241,6 +1263,7 @@ function WorkingChanges({
   activeDiff,
   onError,
   onOpenSettings,
+  onStash,
 }: WorkingChangesProps) {
   const [busy, setBusy] = useState(false);
   // What the in-flight commit is doing, so the button can say so — a slow
@@ -1259,6 +1282,7 @@ function WorkingChanges({
   const [mode, setMode] = useState<'list' | 'tree'>('list');
   // Destructive actions route through the global confirm bar over the toolbar.
   const requestConfirm = useConfirm();
+  const editorName = useOpenTools()?.editorName;
   // The share of the changes body given to the unstaged (top) section; the
   // staged (bottom) section takes the remainder. Dragged via the divider.
   const [topRatio, setTopRatio] = useState(0.5);
@@ -1389,6 +1413,32 @@ function WorkingChanges({
       });
     },
     [requestConfirm, repoPath, activeDiff, onStatusChange, onCloseDiff],
+  );
+
+  // Stash just this file's changes (staged and unstaged), with an optional
+  // message collected in the confirm bar.
+  const stashFile = useCallback(
+    (file: DisplayFile) => {
+      requestConfirm({
+        message: `Stash changes to “${file.path}”?`,
+        input: {
+          placeholder: branch ? `WIP on ${branch}` : 'Stash message',
+          ariaLabel: 'Stash message',
+        },
+        actions: [
+          {
+            label: 'Stash',
+            busyLabel: 'Stashing…',
+            tone: 'primary',
+            // RepoView closes the file's diff once the stash lands.
+            onClick: async (message) => {
+              await onStash({ message, paths: [file.path] });
+            },
+          },
+        ],
+      });
+    },
+    [requestConfirm, branch, onStash],
   );
 
   // The three "Ignore" submenu rows for a file: the file itself, its extension,
@@ -1747,7 +1797,15 @@ function WorkingChanges({
       </div>
 
       <div className="commit-message-box">
-        <div className="commit-message-fields">
+        {/* ⌘/Ctrl+Enter in the summary or description commits, like the button. */}
+        <div
+          className="commit-message-fields"
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+            event.preventDefault();
+            if (canCommit) void commit();
+          }}
+        >
           <div className="commit-message-subject-row commit-message-subject-row--generate">
             <input
               className="commit-message-subject"
@@ -1815,7 +1873,8 @@ function WorkingChanges({
         </div>
         <button
           type="button"
-          className="commit-submit"
+          className="commit-submit tooltip-host"
+          data-tooltip={`${amendCommit ? 'Amend' : 'Commit'} (${formatAccelerator('CmdOrCtrl+Enter')})`}
           disabled={!canCommit}
           aria-busy={busy}
           onClick={() => void commit()}
@@ -1868,6 +1927,9 @@ function WorkingChanges({
             'separator',
             { label: 'Ignore', submenu: ignoreSubmenu(fileMenu.file) },
             { label: 'Discard changes', danger: true, onClick: () => discardFile(fileMenu.file) },
+            { label: 'Stash file…', onClick: () => stashFile(fileMenu.file) },
+            'separator',
+            ...openMenuItems(editorName, repoPath, fileMenu.file.path),
             'separator',
             { label: 'Delete file', danger: true, onClick: () => deleteFile(fileMenu.file) },
           ]}
@@ -1916,6 +1978,8 @@ interface CommitPanelProps {
   onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
   /** Open the settings modal, optionally to a specific section id. */
   onOpenSettings?: (section?: string) => void;
+  /** Stash working-tree changes with the given options (`git stash push`). */
+  onStash: (options?: StashPushOptions) => Promise<unknown>;
 }
 
 /**
@@ -1942,6 +2006,7 @@ export function CommitPanel({
   activeDiff,
   onError,
   onOpenSettings,
+  onStash,
 }: CommitPanelProps) {
   // 2+ selected commits → the multi-commit boxes view, regardless of which one is
   // focused. A single (or zero) selection keeps the rich detail / staging views.
@@ -1986,6 +2051,7 @@ export function CommitPanel({
       activeDiff={activeDiff}
       onError={onError}
       onOpenSettings={onOpenSettings}
+      onStash={onStash}
     />
   );
 }

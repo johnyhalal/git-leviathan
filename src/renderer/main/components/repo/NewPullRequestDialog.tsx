@@ -118,26 +118,28 @@ export function NewPullRequestDialog({
         </header>
 
         <form
-          className="settings-content pr-form"
+          className="settings-content form"
           onSubmit={(event) => {
             event.preventDefault();
             void submit();
           }}
         >
-          <div className="pr-form-branches">
-            <label className="pr-form-field">
-              <span className="pr-form-label">From</span>
+          <div className="pr-branches">
+            <label className="form-field">
+              <span className="form-label">From</span>
               <select
+                className="form-input"
                 value={source}
                 onChange={(event) => setSource(event.target.value)}
               >
                 {branchOptions}
               </select>
             </label>
-            <span className="pr-form-into">→</span>
-            <label className="pr-form-field">
-              <span className="pr-form-label">Into</span>
+            <span className="pr-branches-into">→</span>
+            <label className="form-field">
+              <span className="form-label">Into</span>
               <select
+                className="form-input"
                 value={target}
                 onChange={(event) => setTarget(event.target.value)}
               >
@@ -147,14 +149,15 @@ export function NewPullRequestDialog({
           </div>
 
           {sameBranch && (
-            <p className="pr-form-hint">
+            <p className="form-hint form-hint-warn">
               Choose two different branches to compare.
             </p>
           )}
 
-          <label className="pr-form-field">
-            <span className="pr-form-label">Title</span>
+          <label className="form-field">
+            <span className="form-label">Title</span>
             <input
+              className="form-input"
               autoFocus
               value={title}
               placeholder="Summarize the change"
@@ -162,9 +165,10 @@ export function NewPullRequestDialog({
             />
           </label>
 
-          <label className="pr-form-field">
-            <span className="pr-form-label">Description</span>
+          <label className="form-field">
+            <span className="form-label">Description</span>
             <textarea
+              className="form-input"
               value={body}
               rows={8}
               placeholder="Describe what changed and why (optional)"
@@ -172,7 +176,7 @@ export function NewPullRequestDialog({
             />
           </label>
 
-          <label className="pr-form-check">
+          <label className="form-check">
             <input
               type="checkbox"
               checked={draft}
@@ -181,9 +185,9 @@ export function NewPullRequestDialog({
             <span>Open as a draft</span>
           </label>
 
-          {error && <p className="pr-form-error">{error}</p>}
+          {error && <p className="form-error">{error}</p>}
 
-          <div className="pr-dialog-footer">
+          <div className="form-footer">
             <button
               type="button"
               className="pill-btn pill-btn-gray"

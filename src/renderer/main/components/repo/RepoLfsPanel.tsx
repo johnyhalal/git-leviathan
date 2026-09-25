@@ -53,15 +53,16 @@ export function RepoLfsPanel({ repoPath }: RepoLfsPanelProps) {
   return (
     <div className="lfs-panel">
       <form
-        className="pr-form-field lfs-track-form"
+        className="form-field lfs-track-form"
         onSubmit={(event) => {
           event.preventDefault();
           void track();
         }}
       >
-        <span className="pr-form-label">Track a pattern</span>
+        <span className="form-label">Track a pattern</span>
         <div className="lfs-track-row">
           <input
+            className="form-input"
             value={pattern}
             placeholder="*.psd"
             spellCheck={false}
@@ -77,13 +78,13 @@ export function RepoLfsPanel({ repoPath }: RepoLfsPanelProps) {
             Track
           </button>
         </div>
-        <span className="gitflow-form-hint">
+        <span className="form-hint">
           Files matching the pattern are stored with Git LFS (written to <code>.gitattributes</code>).
         </span>
       </form>
 
-      <div className="pr-form-field">
-        <span className="pr-form-label">Tracked patterns</span>
+      <div className="form-field">
+        <span className="form-label">Tracked patterns</span>
         {status.patterns.length === 0 ? (
           <p className="settings-empty">No patterns are tracked yet.</p>
         ) : (
@@ -107,7 +108,7 @@ export function RepoLfsPanel({ repoPath }: RepoLfsPanelProps) {
         )}
       </div>
 
-      {error && <p className="pr-form-error">{error}</p>}
+      {error && <p className="form-error">{error}</p>}
     </div>
   );
 }

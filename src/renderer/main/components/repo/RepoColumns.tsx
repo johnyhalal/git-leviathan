@@ -4,9 +4,11 @@ import type {
   ConflictFile,
   GitflowConfig,
   GitflowKind,
+  RefsMutationResult,
   RepoRefs,
   ResetMode,
   ResetPreview,
+  StashPushOptions,
   WorkingStatus,
 } from '../../../../types/ipc';
 import { RepoSidebar } from './RepoSidebar';
@@ -25,6 +27,13 @@ interface RepoColumnsProps {
   branch?: string;
   refs: RepoRefs | null;
   commits: CommitLogEntry[] | null;
+  /** Hashes matching the open commit search; the list dims every other row. */
+  searchMatches?: ReadonlySet<string>;
+  /**
+   * A search match to select once it's in `commits` (RepoView loads pages until
+   * it is). A new `token` is a new request, even for the same hash.
+   */
+  searchFocus?: { hash: string; token: number } | null;
   /** The shared working-tree status (staged/unstaged), or null while loading. */
   workingStatus: WorkingStatus | null;
   /** Push a fresh working-tree status up (after stage/unstage/commit). */
@@ -51,6 +60,11 @@ interface RepoColumnsProps {
    * pane to the commit list.
    */
   closeDiffToken: number;
+  /**
+   * The working-tree status read right after a stash. When it changes, an open
+   * staged/unstaged diff closes if its file no longer has changes on that side.
+   */
+  stashedStatus: WorkingStatus | null;
   /**
    * Check out a branch (double-clicking it in the sidebar). Pass `remote` for a
    * remote branch so a tracking branch is created off that specific remote.
@@ -121,6 +135,8 @@ interface RepoColumnsProps {
   onStashPop: (index: number) => void;
   /** Discard a stash by index (`git stash drop`). */
   onStashDrop: (index: number) => void;
+  /** Stash working-tree changes with the given options (`git stash push`). */
+  onStash: (options?: StashPushOptions) => Promise<unknown>;
   /** A worktree was added via the dialog: refs should reload. */
   onWorktreeAdded: () => void;
   /** Remove the worktree at `path`; resolves whether it needs a forced retry. */
@@ -160,6 +176,10 @@ interface RepoColumnsProps {
   onOpenSettings?: (section?: string) => void;
   /** Open the per-repository settings dialog, optionally to a specific tab. */
   onOpenRepoSettings?: (tab?: RepoSettingsTabId) => void;
+  /** Run a remote add/edit from the sidebar's remote popup. */
+  onRemoteMutate: (run: () => Promise<RefsMutationResult>) => Promise<RefsMutationResult>;
+  /** Remove a remote from the sidebar's remote menu. */
+  onRemoteRemove: (name: string) => Promise<unknown>;
 }
 
 /**
@@ -174,6 +194,8 @@ export function RepoColumns({
   branch,
   refs,
   commits,
+  searchMatches,
+  searchFocus,
   workingStatus,
   onWorkingStatusChange,
   conflicts,
@@ -185,6 +207,7 @@ export function RepoColumns({
   onLoadMore,
   onCommitted,
   closeDiffToken,
+  stashedStatus,
   onCheckout,
   creatingBranch,
   onCreateBranch,
@@ -219,6 +242,7 @@ export function RepoColumns({
   onStashApply,
   onStashPop,
   onStashDrop,
+  onStash,
   onWorktreeAdded,
   onWorktreeRemove,
   onWorktreeLock,
@@ -237,6 +261,8 @@ export function RepoColumns({
   onError,
   onOpenSettings,
   onOpenRepoSettings,
+  onRemoteMutate,
+  onRemoteRemove,
 }: RepoColumnsProps) {
   const { leftWidth, rightWidth, startResize } = useResizableColumns(240, 320);
   // `selectedHash` is the focused commit (drives the detail panel + auto-scroll);
@@ -272,6 +298,16 @@ export function RepoColumns({
   useEffect(() => {
     setDiffTarget(null);
   }, [closeDiffToken]);
+
+  // A stash just landed: close a working-tree diff whose file it stashed.
+  useEffect(() => {
+    if (!stashedStatus) return;
+    setDiffTarget((target) => {
+      const kind = target?.source.kind;
+      if (kind !== 'staged' && kind !== 'unstaged') return target;
+      return stashedStatus[kind].some((file) => file.path === target?.path) ? target : null;
+    });
+  }, [stashedStatus]);
 
   // On opening a repo, preselect the latest real commit — skipping the synthetic
   // working-tree row and any stash rows. Keyed on repoPath so it runs once per
@@ -327,6 +363,16 @@ export function RepoColumns({
       selectTipAfterReload.current = null;
     }
   }, [commits, selectSingle]);
+
+  // Select the focused search match once its page has loaded — once per
+  // request token, so later reloads never yank the selection back to it.
+  const handledSearchToken = useRef<number | null>(null);
+  useEffect(() => {
+    if (!searchFocus || handledSearchToken.current === searchFocus.token) return;
+    if (!commits?.some((commit) => commit.hash === searchFocus.hash)) return;
+    handledSearchToken.current = searchFocus.token;
+    selectSingle(searchFocus.hash);
+  }, [searchFocus, commits, selectSingle]);
 
   // Select a commit from a mouse click in the list, honouring the modifier keys:
   //   • Shift  — extend a contiguous range from the anchor to the clicked row.
@@ -436,6 +482,8 @@ export function RepoColumns({
           onGitflowFinish={onGitflowFinish}
           onOpenSettings={onOpenSettings}
           onOpenRepoSettings={onOpenRepoSettings}
+          onRemoteMutate={onRemoteMutate}
+          onRemoteRemove={onRemoteRemove}
         />
       </div>
       )}
@@ -454,6 +502,8 @@ export function RepoColumns({
             target={diffTarget}
             onClose={() => setDiffTarget(null)}
             onWorkingStatusChange={onWorkingStatusChange}
+            onError={onError}
+            onRetarget={setDiffTarget}
             onSelectCommit={(hash) => {
               // Close explicitly: selecting the already-selected commit
               // wouldn't trip the stale-diff effect above.
@@ -466,6 +516,7 @@ export function RepoColumns({
             commits={commits}
             selectedHash={selectedHash}
             selectedHashes={selectedHashes}
+            searchMatches={searchMatches}
             currentBranch={branch}
             remotes={refs?.remotes}
             workingStatus={workingStatus}
@@ -527,6 +578,7 @@ export function RepoColumns({
           activeDiff={diffTarget}
           onError={onError}
           onOpenSettings={onOpenSettings}
+          onStash={onStash}
         />
       </div>
     </div>

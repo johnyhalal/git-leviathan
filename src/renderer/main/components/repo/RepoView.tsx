@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CommitLogEntry,
+  CommitSearchResult,
   GitflowConfig,
   GitflowConfigResult,
   GitflowKind,
@@ -13,17 +14,21 @@ import type {
   RepoInfo,
   RepoRefs,
   ResetMode,
+  StashPushOptions,
   UndoRedoState,
   WorkingStatus,
 } from '../../../../types/ipc';
 import { WORKING_TREE_HASH } from '../../../../types/ipc';
 import { RepoToolbar } from './RepoToolbar';
+import { CommitSearchBar } from './CommitSearchBar';
 import { RepoSettingsDialog, type RepoSettingsTabId } from './RepoSettingsDialog';
 import { RepoColumns } from './RepoColumns';
 import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
 import { CommitPlanEditor } from './CommitPlanEditor';
 import { ConfirmProvider } from '../ConfirmBar';
+import { useCommands } from '../../commands/CommandRegistry';
+import { openInEditor, openInTerminal, revealInFileManager } from '../../openActions';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 import type { SubmoduleDeinitOutcome } from './SubmoduleContextMenu';
 
@@ -93,6 +98,9 @@ export function RepoView({
   // can rewrite the file it was showing).
   const [closeDiffToken, setCloseDiffToken] = useState(0);
   const closeDiff = useCallback(() => setCloseDiffToken((token) => token + 1), []);
+  // The working-tree status read right after a stash, so RepoColumns can close
+  // an open working-tree diff whose file the stash just took away.
+  const [stashedStatus, setStashedStatus] = useState<WorkingStatus | null>(null);
   // True while a push is in flight, to disable the toolbar button.
   const [pushing, setPushing] = useState(false);
   // True while a pull/fetch is in flight, to disable the toolbar button.
@@ -135,6 +143,23 @@ export function RepoView({
   // resolver only on the transition into conflicts (not on every refresh).
   const hadMergeRef = useRef(false);
 
+  // Commit search: the floating bar's open state and query, the whole-history
+  // matches for that query, and which match is focused (-1 = none).
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResult, setSearchResult] = useState<CommitSearchResult | null>(null);
+  const [searchIndex, setSearchIndex] = useState(-1);
+  const [searching, setSearching] = useState(false);
+  // Bumped to re-focus the search input (a repeat ⌘F while it's open).
+  const [searchFocusToken, setSearchFocusToken] = useState(0);
+  // The match RepoColumns should select once it's loaded; the token makes a
+  // repeat jump to the same hash still count as a new request.
+  const [searchFocus, setSearchFocus] = useState<{ hash: string; token: number } | null>(null);
+  // Sequence numbers that let a newer search / jump supersede an older one
+  // whose (async) result lands late.
+  const searchSeqRef = useRef(0);
+  const searchJumpSeqRef = useRef(0);
+
   // Swap in a fresh merge state, opening the resolver the moment a repo first
   // enters a conflicted operation and closing it once everything is resolved.
   const applyMergeState = useCallback((next: MergeState | null) => {
@@ -170,6 +195,14 @@ export function RepoView({
     setTaggingAt(null);
     setResolverOpen(false);
     hadMergeRef.current = false;
+    // Search results belong to the previous repo.
+    searchSeqRef.current += 1;
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchResult(null);
+    setSearchIndex(-1);
+    setSearching(false);
+    setSearchFocus(null);
     void window.api.repo.commitDraft(repoPath).then((draft) => {
       if (!live) return;
       // Keep a merge message prefilled while the draft was loading (the message
@@ -236,6 +269,110 @@ export function RepoView({
     setHasMore(nextCommits.length >= nextLimit);
     setLoadingMore(false);
   }, [repoPath, hasMore, loadingMore]);
+
+  // Grow the loaded page until it holds at least `count` real commits, so a
+  // search match further down the history is in the list before it's selected.
+  // Rounds up to whole pages to keep pagination aligned with `loadMore`.
+  const ensureLoaded = useCallback(
+    async (count: number) => {
+      if (count <= loadedCountRef.current) return;
+      const nextLimit = Math.ceil(count / PAGE_SIZE) * PAGE_SIZE;
+      setLoadingMore(true);
+      const nextCommits = await window.api.repo.log(repoPath, nextLimit);
+      setLoadingMore(false);
+      // A larger read may have landed meanwhile; never shrink the list under it.
+      if (nextLimit < loadedCountRef.current) return;
+      loadedCountRef.current = nextLimit;
+      setCommits(nextCommits);
+      setHasMore(nextCommits.length >= nextLimit);
+    },
+    [repoPath],
+  );
+
+  // Focus match `index` (wrapping around either end) of `result`: load the log
+  // far enough to include it, then ask RepoColumns to select it — which scrolls
+  // it into view and closes any open diff.
+  const goToMatch = useCallback(
+    async (result: CommitSearchResult, index: number) => {
+      const total = result.hashes.length;
+      if (total === 0) return;
+      const wrapped = ((index % total) + total) % total;
+      const seq = ++searchJumpSeqRef.current;
+      setSearchIndex(wrapped);
+      await ensureLoaded(result.positions[wrapped] + 1);
+      if (seq !== searchJumpSeqRef.current) return;
+      setSearchFocus((prev) => ({ hash: result.hashes[wrapped], token: (prev?.token ?? 0) + 1 }));
+    },
+    [ensureLoaded],
+  );
+
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    setSearchFocusToken((token) => token + 1);
+  }, []);
+
+  const closeSearch = useCallback(() => {
+    searchSeqRef.current += 1;
+    searchJumpSeqRef.current += 1;
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchResult(null);
+    setSearchIndex(-1);
+    setSearching(false);
+    setSearchFocus(null);
+  }, []);
+
+  // Run the search (debounced) as the query changes, then jump to the first
+  // match. Superseded requests are dropped via the sequence number.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const query = searchQuery.trim();
+    const seq = ++searchSeqRef.current;
+    if (!query) {
+      searchJumpSeqRef.current += 1;
+      setSearchResult(null);
+      setSearchIndex(-1);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const handle = window.setTimeout(() => {
+      void window.api.repo.search(repoPath, query).then((result) => {
+        if (seq !== searchSeqRef.current) return;
+        setSearching(false);
+        setSearchResult(result);
+        setSearchIndex(-1);
+        void goToMatch(result, 0);
+      });
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [searchOpen, searchQuery, repoPath, goToMatch]);
+
+  // History moved under an open search (a commit, pull, fetch or external
+  // change re-read the refs): re-run it quietly so the matches stay current,
+  // keeping the focused match if it survived rather than jumping back to the
+  // first one.
+  const searchStateRef = useRef({ searchQuery, searchResult, searchIndex });
+  searchStateRef.current = { searchQuery, searchResult, searchIndex };
+  useEffect(() => {
+    const { searchQuery: raw, searchResult: prev, searchIndex: index } = searchStateRef.current;
+    const query = raw.trim();
+    if (!prev || !query) return;
+    const focused = index >= 0 ? prev.hashes[index] : undefined;
+    const seq = ++searchSeqRef.current;
+    void window.api.repo.search(repoPath, query).then((result) => {
+      if (seq !== searchSeqRef.current) return;
+      setSearchResult(result);
+      setSearchIndex(focused ? result.hashes.indexOf(focused) : -1);
+    });
+  }, [refs, repoPath]);
+
+  // Undefined until a search has returned, so the list only dims rows while
+  // there's a result set to show.
+  const searchMatches = useMemo(
+    () => (searchResult ? new Set(searchResult.hashes) : undefined),
+    [searchResult],
+  );
 
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
 
@@ -517,35 +654,14 @@ export function RepoView({
     [repoPath, runMutation],
   );
 
-  // Keyboard shortcuts for the toolbar's undo/redo: Cmd/Ctrl+Z undoes,
-  // Cmd/Ctrl+R (and the conventional Cmd/Ctrl+Shift+Z / Ctrl+Y) redoes. Typing
-  // in a field keeps its native text undo — git history is only touched when
-  // focus is outside an editor. The reload accelerator is dropped from the app
-  // menu in the main process so Cmd/Ctrl+R reaches the page at all.
-  useEffect(() => {
-    const isEditable = (node: EventTarget | null) => {
-      const el = node as HTMLElement | null;
-      if (!el || typeof el.closest !== 'function') return false;
-      return Boolean(el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]'));
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-      if (event.repeat || isEditable(event.target)) return;
-      const key = event.key.toLowerCase();
-      const wantsUndo = key === 'z' && !event.shiftKey;
-      const wantsRedo = (key === 'z' && event.shiftKey) || key === 'r' || key === 'y';
-      if (!wantsUndo && !wantsRedo) return;
-      event.preventDefault();
-      if (wantsUndo && undoRedo.undo) void undo();
-      else if (wantsRedo && undoRedo.redo) void redo();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [undo, redo, undoRedo.undo, undoRedo.redo]);
-
   const stashPush = useCallback(
-    () =>
-      runMutation('Stash failed', () => window.api.repo.stashPush(repoPath)),
+    async (options?: StashPushOptions) => {
+      const result = await runMutation('Stash failed', () =>
+        window.api.repo.stashPush(repoPath, options),
+      );
+      if (result.status === 'ok') setStashedStatus(await window.api.repo.status(repoPath));
+      return result;
+    },
     [repoPath, runMutation],
   );
 
@@ -734,6 +850,27 @@ export function RepoView({
       live = false;
     };
   }, [repoSettingsOpen, repoPath]);
+
+  // Remote add/edit/remove from the remote popup or repo settings: re-sync the
+  // view on success (remote branches appear/vanish), but leave failures to the
+  // caller to show inline.
+  const remoteMutation = useCallback(
+    async (run: () => Promise<RefsMutationResult>) => {
+      const result = await run();
+      if (result.status === 'ok') {
+        reload();
+        if (result.notice) onNotice?.('Remote added', result.notice);
+      }
+      return result;
+    },
+    [reload, onNotice],
+  );
+
+  const remoteRemove = useCallback(
+    (name: string) =>
+      runMutation('Remove remote failed', () => window.api.repo.remoteRemove(repoPath, name)),
+    [repoPath, runMutation],
+  );
 
   const gitflowStart = useCallback(
     (kind: GitflowKind, name: string, source: string) =>
@@ -1104,11 +1241,40 @@ export function RepoView({
   const branchLabel =
     refs === null ? 'Loading…' : currentBranch ?? 'HEAD (detached)';
 
+  // Repository commands for the menu, palette and keyboard. Undo/redo keep
+  // their text-aware behaviour: typing in a field gets the field's own undo,
+  // and git history is only touched when focus is outside an editor. Pull and
+  // push register from the toolbar, which owns their mode and publish confirm.
+  const loaded = refs !== null;
+  useCommands([
+    { id: 'repo.undo', run: () => void undo(), enabled: !!undoRedo.undo, allowInEditable: false },
+    { id: 'repo.redo', run: () => void redo(), enabled: !!undoRedo.redo, allowInEditable: false },
+    { id: 'repo.search', run: openSearch },
+    { id: 'repo.fetch', run: () => void pull('fetch-all'), enabled: loaded && !pulling },
+    { id: 'repo.branch', run: () => setCreatingBranch(true), enabled: loaded },
+    { id: 'repo.stash', run: () => void stashPush(), enabled: hasChanges },
+    { id: 'repo.pop', run: () => void stashPop(0), enabled: (refs?.stashes.length ?? 0) > 0 },
+    { id: 'repo.resolve', run: () => openResolver(null), enabled: !!mergeState },
+    { id: 'repo.settings', run: () => openRepoSettings() },
+    { id: 'repo.openEditor', run: () => void openInEditor(repoPath) },
+    { id: 'repo.openTerminal', run: () => void openInTerminal(repoPath) },
+    { id: 'repo.reveal', run: () => void revealInFileManager(repoPath) },
+    ...branchNames
+      .filter((name) => name !== currentBranch)
+      .map((name) => ({
+        id: `checkout:${name}`,
+        label: `Checkout ${name}`,
+        category: 'Branches',
+        run: () => void checkout(name),
+      })),
+  ]);
+
   return (
     <div className="repo-view">
       {/* Scoped here so its confirm bar can overlay the toolbar below. */}
       <ConfirmProvider>
         <RepoToolbar
+          repoPath={repoPath}
           branch={branchLabel}
           branches={branchNames}
           onCheckout={(branch) => void checkout(branch)}
@@ -1117,8 +1283,9 @@ export function RepoView({
           pushing={pushing}
           onPull={(mode) => void pull(mode)}
           pulling={pulling}
-          onStash={() => void stashPush()}
+          onStash={(options) => void stashPush(options)}
           canStash={hasChanges}
+          hasStaged={(workingStatus?.staged.length ?? 0) > 0}
           hasStash={(refs?.stashes.length ?? 0) > 0}
           onPop={() => void stashPop(0)}
           onBranch={() => setCreatingBranch((on) => !on)}
@@ -1128,6 +1295,24 @@ export function RepoView({
           undoLabel={undoRedo.undo}
           redoLabel={undoRedo.redo}
           onOpenRepoSettings={() => openRepoSettings()}
+          searchOpen={searchOpen}
+          onToggleSearch={() => (searchOpen ? closeSearch() : openSearch())}
+          searchBar={
+            <CommitSearchBar
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              current={searchIndex}
+              total={searchResult?.hashes.length ?? 0}
+              truncated={searchResult?.truncated ?? false}
+              searching={searching}
+              onPrev={() =>
+                searchResult && void goToMatch(searchResult, searchIndex < 0 ? -1 : searchIndex - 1)
+              }
+              onNext={() => searchResult && void goToMatch(searchResult, searchIndex + 1)}
+              onClose={closeSearch}
+              focusToken={searchFocusToken}
+            />
+          }
         />
         {mergeState && (
           <MergeBanner
@@ -1144,6 +1329,8 @@ export function RepoView({
           branch={currentBranch}
           refs={refs}
           commits={displayCommits}
+          searchMatches={searchMatches}
+          searchFocus={searchFocus}
           workingStatus={workingStatus}
           onWorkingStatusChange={setWorkingStatus}
           conflicts={mergeState?.conflicts ?? []}
@@ -1155,6 +1342,7 @@ export function RepoView({
           onLoadMore={() => void loadMore()}
           onCommitted={reload}
           closeDiffToken={closeDiffToken}
+          stashedStatus={stashedStatus}
           onCheckout={(branch, remote) => void checkout(branch, remote)}
           creatingBranch={creatingBranch}
           onCreateBranch={(name) => void createBranch(name)}
@@ -1189,6 +1377,7 @@ export function RepoView({
           onStashApply={(index) => void stashApply(index)}
           onStashPop={(index) => void stashPop(index)}
           onStashDrop={(index) => void stashDrop(index)}
+          onStash={stashPush}
           onWorktreeAdded={reload}
           onWorktreeRemove={worktreeRemove}
           onWorktreeLock={(path, lock, reason) => void worktreeLock(path, lock, reason)}
@@ -1201,6 +1390,8 @@ export function RepoView({
           onSubmoduleSync={(path) => void submoduleSync(path)}
           onSubmoduleDeinit={submoduleDeinit}
           onSubmoduleRemove={(path) => void submoduleRemove(path)}
+          onRemoteMutate={remoteMutation}
+          onRemoteRemove={remoteRemove}
           gitflowConfig={gitflowConfig}
           onGitflowStart={(kind, name, source) => void gitflowStart(kind, name, source)}
           onGitflowFinish={() => void gitflowFinish()}
@@ -1258,7 +1449,8 @@ export function RepoView({
           <RepoSettingsDialog
             repoPath={repoPath}
             config={repoConfig}
-            remotes={refs?.remotes ?? []}
+            remotes={refs?.remotes}
+            onRemoteMutate={remoteMutation}
             onSave={(config) => window.api.repo.repoSaveConfig(repoPath, config)}
             gitflowConfig={gitflowConfig}
             onGitflowSaveConfig={gitflowSaveConfig}

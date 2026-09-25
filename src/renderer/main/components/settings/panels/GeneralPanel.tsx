@@ -1,14 +1,85 @@
 import { useEffect, useState } from 'react';
 import {
   DEFAULT_UPDATE_CHECK_INTERVAL,
-  type DateFormat,
   type UpdateCheckInterval,
   type UpdateInfo,
   type UpdateStatus,
 } from '../../../../../types/ipc';
 import { SettingsSection } from '../SettingsSection';
 import { SettingsRow } from '../SettingsRow';
-import { formatDateTime, setDateFormat, useDateFormat } from '../../../dateFormat';
+import { setOpenTools, useOpenTools } from '../../../openActions';
+
+/**
+ * Which editor and terminal the "Open in…" actions use. The lists hold only
+ * what's installed; "Custom…" asks for any other app/executable.
+ */
+function OpenInSection() {
+  const tools = useOpenTools();
+  if (!tools) return null;
+
+  const pickCustom = async () => {
+    const next = await window.api.open.pickCustomEditor();
+    if (next) setOpenTools(next);
+  };
+
+  const onEditorChange = (id: string) => {
+    // Custom needs an app first; a cancelled pick leaves the old choice in place.
+    if (id === 'custom' && !tools.customEditorPath) {
+      void pickCustom();
+      return;
+    }
+    void window.api.open.setEditor(id).then(setOpenTools);
+  };
+
+  const customName = tools.customEditorPath?.split(/[\\/]/).pop()?.replace(/\.(app|exe)$/i, '');
+
+  return (
+    <SettingsSection title="Open in">
+      <SettingsRow
+        label="Editor"
+        description="Used by “Open in editor” on files, the diff header and the repository."
+      >
+        <span className="settings-inline-controls">
+          <select
+            className="form-input"
+            value={tools.editor}
+            onChange={(e) => onEditorChange(e.target.value)}
+          >
+            {tools.editors.map((editor) => (
+              <option key={editor.id} value={editor.id}>
+                {editor.name}
+              </option>
+            ))}
+            <option value="system">System default app</option>
+            <option value="custom">{customName ? `Custom — ${customName}` : 'Custom…'}</option>
+          </select>
+          {tools.editor === 'custom' && (
+            <button type="button" className="pill-btn pill-btn-gray" onClick={() => void pickCustom()}>
+              Choose…
+            </button>
+          )}
+        </span>
+      </SettingsRow>
+      <SettingsRow label="Terminal" description="Used by “Open in terminal” on a repository.">
+        {tools.terminals.length > 0 ? (
+          <select
+            className="form-input"
+            value={tools.terminal}
+            onChange={(e) => void window.api.open.setTerminal(e.target.value).then(setOpenTools)}
+          >
+            {tools.terminals.map((terminal) => (
+              <option key={terminal.id} value={terminal.id}>
+                {terminal.name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="settings-desc">No terminal app found</span>
+        )}
+      </SettingsRow>
+    </SettingsSection>
+  );
+}
 
 /** Labels for each allowed update-check interval, in dropdown order. */
 const INTERVAL_OPTIONS: { value: UpdateCheckInterval; label: string }[] = [
@@ -17,15 +88,6 @@ const INTERVAL_OPTIONS: { value: UpdateCheckInterval; label: string }[] = [
   { value: 360, label: 'Every 6 hours' },
   { value: 1440, label: 'Daily' },
   { value: 0, label: 'Never' },
-];
-
-/** Labels for each date format, in dropdown order; the example is appended live. */
-const DATE_FORMAT_OPTIONS: { value: DateFormat; label: string }[] = [
-  { value: 'system', label: 'System' },
-  { value: 'iso', label: 'ISO 8601' },
-  { value: 'us', label: 'US' },
-  { value: 'eu', label: 'European' },
-  { value: 'relative', label: 'Relative' },
 ];
 
 /** Result of a manual "Check now": pending, or the outcome of the last check. */
@@ -131,10 +193,6 @@ export function GeneralPanel() {
     supported: false,
   });
   const [telemetry, setTelemetry] = useState(true);
-  const dateFormat = useDateFormat();
-  // A fixed sample moment for the dropdown's examples, so they don't shift
-  // while the panel is open.
-  const [sample] = useState(() => new Date().toISOString());
 
   useEffect(() => window.api.update.onStatus(setStatus), []);
 
@@ -169,59 +227,44 @@ export function GeneralPanel() {
   };
 
   return (
-    <SettingsSection title="General">
-      <SettingsRow
-        label="Date format"
-        description="How commit, blame, and pull request dates are shown."
-      >
-        <select
-          className="settings-select"
-          value={dateFormat}
-          onChange={(e) => setDateFormat(e.target.value as DateFormat)}
+    <>
+      <SettingsSection title="General">
+        <SettingsRow
+          label="Check for updates"
+          description="How often GitLeviathan looks for a newer release on GitHub."
         >
-          {DATE_FORMAT_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label} — {opt.value === 'relative'
-                ? '3 days ago'
-                : formatDateTime(sample, opt.value)}
-            </option>
-          ))}
-        </select>
-      </SettingsRow>
-      <SettingsRow
-        label="Check for updates"
-        description="How often GitLeviathan looks for a newer release on GitHub."
-      >
-        <select
-          className="settings-select"
-          value={interval}
-          onChange={(e) =>
-            onChange(Number(e.target.value) as UpdateCheckInterval)
-          }
+          <select
+            className="form-input"
+            value={interval}
+            onChange={(e) =>
+              onChange(Number(e.target.value) as UpdateCheckInterval)
+            }
+          >
+            {INTERVAL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </SettingsRow>
+        <SettingsRow
+          label="Updates"
+          description={updateDescription(check, status)}
         >
-          {INTERVAL_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      </SettingsRow>
-      <SettingsRow
-        label="Updates"
-        description={updateDescription(check, status)}
-      >
-        {renderUpdateAction(check, status, onCheckNow)}
-      </SettingsRow>
-      <SettingsRow
-        label="Usage analytics"
-        description="Send anonymous usage data (app opens, commits, update checks) to help improve GitLeviathan. No repository contents or personal data are collected."
-      >
-        <input
-          type="checkbox"
-          checked={telemetry}
-          onChange={(e) => onToggleTelemetry(e.target.checked)}
-        />
-      </SettingsRow>
-    </SettingsSection>
+          {renderUpdateAction(check, status, onCheckNow)}
+        </SettingsRow>
+        <SettingsRow
+          label="Usage analytics"
+          description="Send anonymous usage data (app opens, commits, update checks) to help improve GitLeviathan. No repository contents or personal data are collected."
+        >
+          <input
+            type="checkbox"
+            checked={telemetry}
+            onChange={(e) => onToggleTelemetry(e.target.checked)}
+          />
+        </SettingsRow>
+      </SettingsSection>
+      <OpenInSection />
+    </>
   );
 }
