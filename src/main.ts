@@ -317,6 +317,11 @@ interface Settings {
    */
   telemetryEnabled?: boolean;
   /**
+   * Whether the app's fetches and pulls pass `--prune`. On by default (absent
+   * means enabled); toggled from General settings.
+   */
+  fetchPrune?: boolean;
+  /**
    * Stable anonymous id for this install, minted once and sent with each usage
    * event so active users can be counted without any PII. Not tied to identity.
    */
@@ -537,6 +542,9 @@ function loadSettings(): void {
     }
     if (typeof parsed.telemetryEnabled === 'boolean') {
       settings.telemetryEnabled = parsed.telemetryEnabled;
+    }
+    if (typeof parsed.fetchPrune === 'boolean') {
+      settings.fetchPrune = parsed.fetchPrune;
     }
     if (typeof parsed.telemetryId === 'string' && parsed.telemetryId) {
       settings.telemetryId = parsed.telemetryId;
@@ -1056,19 +1064,26 @@ async function readRemoteBranches(cwd: string): Promise<RemoteBranchInfo[]> {
 
 async function readRemotes(cwd: string): Promise<RemoteInfo[]> {
   // "origin\tgit@github.com:owner/repo.git (fetch)" lines, one fetch + one push
-  // per remote. Keep the fetch URL, deduped by remote name.
+  // per remote (the push line shows the pushurl when one is set). Keep the fetch
+  // URL and the first push URL, by remote name.
   const out = await runGit(cwd, ['remote', '-v']);
   const byName = new Map<string, string>();
+  const pushByName = new Map<string, string>();
   for (const line of nonEmptyLines(out)) {
-    const match = /^(\S+)\t(\S+)\s+\(fetch\)$/.exec(line);
-    if (match) byName.set(match[1], match[2]);
+    const match = /^(\S+)\t(\S+)\s+\((fetch|push)\)$/.exec(line);
+    if (!match) continue;
+    if (match[3] === 'fetch') byName.set(match[1], match[2]);
+    else if (!pushByName.has(match[1])) pushByName.set(match[1], match[2]);
   }
   // Strip any embedded credentials (e.g. `https://user:ghp_token@github.com/...`)
   // so a PAT baked into a remote URL never crosses IPC or reaches the UI.
-  return [...byName.entries()].map(([name, url]) => ({
-    name,
-    url: url.replace(/\/\/[^@\s/]+@/g, '//'),
-  }));
+  const redact = (url: string) => url.replace(/\/\/[^@\s/]+@/g, '//');
+  return [...byName.entries()].map(([name, url]) => {
+    const push = pushByName.get(name);
+    return push && push !== url
+      ? { name, url: redact(url), pushUrl: redact(push) }
+      : { name, url: redact(url) };
+  });
 }
 
 async function readTags(cwd: string): Promise<TagInfo[]> {
@@ -3400,6 +3415,15 @@ async function autoStashPop(cwd: string, hash: string): Promise<boolean> {
 }
 
 /**
+ * Whether the app's fetches and pulls pass `--prune`, dropping remote-tracking
+ * branches that were deleted on the server. On unless turned off in Settings;
+ * when off, no flag is passed, so the user's own `fetch.prune` config applies.
+ */
+function fetchPruneEnabled(): boolean {
+  return settings.fetchPrune !== false;
+}
+
+/**
  * Pull (or, for `fetch-all`, fetch) the current branch from its upstream. The
  * mode maps straight onto git's flags. GIT_TERMINAL_PROMPT=0 keeps an
  * auth-required remote from hanging the app.
@@ -3419,6 +3443,8 @@ async function pullCurrent(cwd: string, mode: PullMode): Promise<CommitResult> {
         : mode === 'rebase'
           ? ['pull', '--rebase']
           : ['pull'];
+  // `pull` forwards `--prune` to its fetch, so every mode honors the setting.
+  if (fetchPruneEnabled()) args.push('--prune');
 
   // `fetch --all` touches every remote; the pull modes talk to the current
   // branch's upstream. Authenticate whichever remotes are involved.
@@ -3511,7 +3537,8 @@ async function backgroundFetchAll(cwd: string): Promise<BackgroundFetchResult> {
     const sshEnv = await sshEnvForRemotes(cwd, remotes);
     const env = gitEnv({ GIT_TERMINAL_PROMPT: '0', ...sshEnv });
     try {
-      await execFileAsync(gitBin, [...authArgs, 'fetch', '--all'], {
+      const prune = fetchPruneEnabled() ? ['--prune'] : [];
+      await execFileAsync(gitBin, [...authArgs, 'fetch', '--all', ...prune], {
         cwd,
         env,
         timeout: BACKGROUND_FETCH_TIMEOUT_MS,
@@ -6031,6 +6058,184 @@ function registerRepoIpc(): void {
         };
       }
       return { status: 'ok', config: valid };
+    },
+  );
+
+  // --- Remotes ------------------------------------------------------------
+
+  // A remote name becomes a ref path segment (`refs/remotes/<name>/…`), so keep
+  // it to a conservative slug that can't be read as a flag; git still has the
+  // final say via its own refname check.
+  const isRemoteName = (name: unknown): name is string =>
+    typeof name === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name) &&
+    !name.includes('..') &&
+    !name.endsWith('/') &&
+    !name.endsWith('.lock');
+
+  // Any URL git accepts (https, ssh, scp-style, file paths), minus whitespace,
+  // flag-like values and the command-running `ext::`/`fd::` transports.
+  const isRemoteUrl = (url: unknown): url is string =>
+    typeof url === 'string' &&
+    url.length > 0 &&
+    !/\s/.test(url) &&
+    !url.startsWith('-') &&
+    !/^(ext|fd)::/i.test(url);
+
+  const configuredRemotes = async (repoPath: string) =>
+    new Set(nonEmptyLines(await runGit(repoPath, ['remote'])));
+
+  ipcMain.handle(
+    RepoChannels.remoteAdd,
+    async (
+      _event,
+      repoPath: unknown,
+      name: unknown,
+      url: unknown,
+      fetch: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (!isRemoteName(name)) {
+        return { status: 'error', message: 'Enter a valid remote name (e.g. upstream).' };
+      }
+      if (!isRemoteUrl(url)) {
+        return { status: 'error', message: 'Enter a valid remote URL.' };
+      }
+      if ((await configuredRemotes(repoPath)).has(name)) {
+        return { status: 'error', message: `A remote named “${name}” already exists.` };
+      }
+      const added = await mutateRepo(
+        repoPath,
+        [['remote', 'add', '--', name, url]],
+        `Could not add the remote “${name}”.`,
+      );
+      if (added.status !== 'ok' || fetch !== true) return added;
+
+      // Fetch through the same auth plumbing as pull, so a connected GitHub/GitLab
+      // account or generated SSH key covers the new remote too. The remote stays
+      // added even when the fetch fails — it's reported as a notice, not an error.
+      const authArgs = await authArgsForRemotes(repoPath, [name]);
+      const sshEnv = await sshEnvForRemotes(repoPath, [name]);
+      const env = gitEnv({ GIT_TERMINAL_PROMPT: '0', ...sshEnv });
+      try {
+        await spawnGit(repoPath, [...authArgs, 'fetch', name], 'fetch', env);
+      } catch (err) {
+        return {
+          status: 'ok',
+          refs: await readRefs(repoPath),
+          notice: `Added “${name}”, but fetching it failed: ${pullErrorMessage(err)}`,
+        };
+      }
+      return { status: 'ok', refs: await readRefs(repoPath) };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.remoteRemove,
+    async (_event, repoPath: unknown, name: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof name !== 'string' || !(await configuredRemotes(repoPath)).has(name)) {
+        return { status: 'error', message: 'Unknown remote.' };
+      }
+      // Local-only: drops the remote's config and its remote-tracking branches,
+      // never anything on the server.
+      return mutateRepo(
+        repoPath,
+        [['remote', 'remove', '--', name]],
+        `Could not remove the remote “${name}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.remoteRename,
+    async (
+      _event,
+      repoPath: unknown,
+      name: unknown,
+      newName: unknown,
+    ): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      const remotes = await configuredRemotes(repoPath);
+      if (typeof name !== 'string' || !remotes.has(name)) {
+        return { status: 'error', message: 'Unknown remote.' };
+      }
+      if (!isRemoteName(newName)) {
+        return { status: 'error', message: 'Enter a valid remote name (e.g. upstream).' };
+      }
+      if (remotes.has(newName)) {
+        return { status: 'error', message: `A remote named “${newName}” already exists.` };
+      }
+      // `rename` also moves the tracking refs and rewrites branches' upstreams.
+      return mutateRepo(
+        repoPath,
+        [['remote', 'rename', '--', name, newName]],
+        `Could not rename the remote “${name}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.remoteSetUrl,
+    async (_event, repoPath: unknown, name: unknown, url: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof name !== 'string' || !(await configuredRemotes(repoPath)).has(name)) {
+        return { status: 'error', message: 'Unknown remote.' };
+      }
+      if (!isRemoteUrl(url)) {
+        return { status: 'error', message: 'Enter a valid remote URL.' };
+      }
+      return mutateRepo(
+        repoPath,
+        [['remote', 'set-url', '--', name, url]],
+        `Could not change the URL of “${name}”.`,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.remoteSetPushUrl,
+    async (_event, repoPath: unknown, name: unknown, url: unknown): Promise<RefsMutationResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (typeof name !== 'string' || !(await configuredRemotes(repoPath)).has(name)) {
+        return { status: 'error', message: 'Unknown remote.' };
+      }
+      if (url !== null && !isRemoteUrl(url)) {
+        return { status: 'error', message: 'Enter a valid push URL.' };
+      }
+      // Drop every existing push URL first (a remote may carry several), so the
+      // result is exactly one push URL — or none, falling back to the fetch URL.
+      // `--unset-all` exits 5 when there was nothing to unset; that's fine.
+      try {
+        await execFileAsync(
+          gitBin,
+          ['config', '--local', '--unset-all', `remote.${name}.pushurl`],
+          { cwd: repoPath, env: gitEnv({ GIT_TERMINAL_PROMPT: '0' }) },
+        );
+      } catch (err) {
+        if ((err as { code?: unknown }).code !== 5) {
+          return {
+            status: 'error',
+            message: gitErrorMessage(err, `Could not change the push URL of “${name}”.`),
+          };
+        }
+      }
+      if (url === null) return { status: 'ok', refs: await readRefs(repoPath) };
+      return mutateRepo(
+        repoPath,
+        [['remote', 'set-url', '--push', '--', name, url]],
+        `Could not change the push URL of “${name}”.`,
+      );
     },
   );
 
@@ -8759,6 +8964,16 @@ function registerAppIpc(): void {
       throw new Error('Invalid date format');
     }
     settings.dateFormat = format as DateFormat;
+    saveSettings();
+  });
+
+  ipcMain.handle(AppChannels.getFetchPrune, (): boolean => fetchPruneEnabled());
+
+  ipcMain.handle(AppChannels.setFetchPrune, (_event, enabled: unknown): void => {
+    if (typeof enabled !== 'boolean') {
+      throw new Error('Invalid prune preference');
+    }
+    settings.fetchPrune = enabled;
     saveSettings();
   });
 

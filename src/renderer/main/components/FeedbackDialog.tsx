@@ -89,7 +89,7 @@ export function FeedbackDialog({ onSubmitted, onClose }: FeedbackDialogProps) {
             connected GitHub account.
           </p>
 
-          {error && <p className="feedback-error">{error}</p>}
+          {error && <p className="form-error form-error-banner">{error}</p>}
 
           <div
             className="feedback-kinds"
@@ -111,42 +111,46 @@ export function FeedbackDialog({ onSubmitted, onClose }: FeedbackDialogProps) {
               </button>
             ))}
           </div>
-          <p className="feedback-hint">{active.hint}</p>
+          <p className="form-hint feedback-hint">{active.hint}</p>
 
-          <label className="feedback-label" htmlFor="feedback-title">
-            Title
-          </label>
-          <input
-            id="feedback-title"
-            type="text"
-            className="feedback-input"
-            placeholder={
-              kind === 'bug'
-                ? 'Short summary of the problem'
-                : 'Short summary of the idea'
-            }
-            value={title}
-            maxLength={140}
-            onChange={(event) => setTitle(event.target.value)}
-          />
+          <div className="form-field">
+            <label className="form-label" htmlFor="feedback-title">
+              Title
+            </label>
+            <input
+              id="feedback-title"
+              type="text"
+              className="form-input form-input-lg"
+              placeholder={
+                kind === 'bug'
+                  ? 'Short summary of the problem'
+                  : 'Short summary of the idea'
+              }
+              value={title}
+              maxLength={140}
+              onChange={(event) => setTitle(event.target.value)}
+            />
+          </div>
 
-          <label className="feedback-label" htmlFor="feedback-details">
-            Details
-          </label>
-          <textarea
-            id="feedback-details"
-            className="feedback-textarea"
-            placeholder={
-              kind === 'bug'
-                ? 'What happened, what you expected, and steps to reproduce…'
-                : 'Describe the feature and why it would help…'
-            }
-            value={details}
-            rows={7}
-            onChange={(event) => setDetails(event.target.value)}
-          />
+          <div className="form-field">
+            <label className="form-label" htmlFor="feedback-details">
+              Details
+            </label>
+            <textarea
+              id="feedback-details"
+              className="form-input form-input-lg"
+              placeholder={
+                kind === 'bug'
+                  ? 'What happened, what you expected, and steps to reproduce…'
+                  : 'Describe the feature and why it would help…'
+              }
+              value={details}
+              rows={7}
+              onChange={(event) => setDetails(event.target.value)}
+            />
+          </div>
 
-          <div className="feedback-actions">
+          <div className="form-footer feedback-actions">
             <button
               type="button"
               className="feedback-cancel"

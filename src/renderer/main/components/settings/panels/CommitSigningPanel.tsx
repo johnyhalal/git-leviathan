@@ -232,7 +232,7 @@ export function CommitSigningPanel() {
       <SettingsSection title="Signing method">
         <SettingsRow label="Method" description="How commits and tags are signed.">
           <select
-            className="settings-select"
+            className="form-input"
             value={method}
             disabled={working}
             onChange={(e) =>
@@ -284,7 +284,7 @@ export function CommitSigningPanel() {
           >
             {gpgAvailable ? (
               <select
-                className="settings-select settings-select-truncate"
+                className="form-input settings-select-truncate"
                 value={config?.signingKey ?? ''}
                 disabled={working}
                 onChange={(e) => {
@@ -319,7 +319,7 @@ export function CommitSigningPanel() {
               <SettingsRow label="Name" description="Shown on the key's identity.">
                 <input
                   type="text"
-                  className="settings-input"
+                  className="form-input"
                   placeholder="Your name"
                   value={newName}
                   disabled={working}
@@ -332,7 +332,7 @@ export function CommitSigningPanel() {
               >
                 <input
                   type="email"
-                  className="settings-input"
+                  className="form-input"
                   placeholder="you@example.com"
                   value={newEmail}
                   disabled={working}
@@ -388,7 +388,7 @@ export function CommitSigningPanel() {
                 <>
                   <input
                     type="password"
-                    className="settings-input"
+                    className="form-input"
                     placeholder="Key passphrase"
                     value={passphrase}
                     disabled={working}

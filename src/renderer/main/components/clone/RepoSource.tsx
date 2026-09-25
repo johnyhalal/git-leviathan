@@ -120,8 +120,8 @@ export function RepoSource({
 
   if (status === null) {
     return (
-      <div className="clone-field">
-        <span className="clone-label">Repository</span>
+      <div className="form-field">
+        <span className="form-label">Repository</span>
         <p className="settings-empty">Checking your {label} connection…</p>
       </div>
     );
@@ -129,8 +129,8 @@ export function RepoSource({
 
   if (status === 'connecting') {
     return (
-      <div className="clone-field">
-        <span className="clone-label">Repository</span>
+      <div className="form-field">
+        <span className="form-label">Repository</span>
         {prompt ? (
           <ConnectingPrompt
             prompt={prompt}
@@ -156,13 +156,13 @@ export function RepoSource({
   if (status !== 'connected') {
     const message = connectError ?? connection?.error;
     return (
-      <div className="clone-field">
-        <span className="clone-label">Repository</span>
+      <div className="form-field">
+        <span className="form-label">Repository</span>
         <p className="settings-empty">
           Not connected to {label} yet. Connect to browse and clone your
           repositories.
         </p>
-        {message && <p className="clone-error">{message}</p>}
+        {message && <p className="form-error form-error-banner">{message}</p>}
         <button
           type="button"
           className="settings-connect clone-connect"
@@ -176,8 +176,8 @@ export function RepoSource({
   }
 
   return (
-    <div className="clone-field">
-      <span className="clone-label">Repository</span>
+    <div className="form-field">
+      <span className="form-label">Repository</span>
       <RepoCombobox
         repos={repos ?? []}
         query={query}

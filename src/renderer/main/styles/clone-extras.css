@@ -13,7 +13,7 @@
   pointer-events: none;
 }
 
-.github-search .clone-input {
+.github-search .form-input {
   padding-left: 36px;
 }
 
@@ -206,17 +206,7 @@
   background: var(--control-bg);
 }
 
-/* ---- Clone progress + error (clone dialog) ------------------------------ */
-
-.clone-error {
-  margin: 0 0 16px;
-  padding: 10px 12px;
-  border: 1px solid var(--danger);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
-  font-size: 13px;
-}
+/* ---- Clone progress (clone dialog) ------------------------------------- */
 
 .clone-progress {
   display: flex;

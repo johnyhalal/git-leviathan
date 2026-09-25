@@ -4,6 +4,7 @@ import type {
   ConflictFile,
   GitflowConfig,
   GitflowKind,
+  RefsMutationResult,
   RepoRefs,
   ResetMode,
   ResetPreview,
@@ -167,6 +168,10 @@ interface RepoColumnsProps {
   onOpenSettings?: (section?: string) => void;
   /** Open the per-repository settings dialog, optionally to a specific tab. */
   onOpenRepoSettings?: (tab?: RepoSettingsTabId) => void;
+  /** Run a remote add/edit from the sidebar's remote popup. */
+  onRemoteMutate: (run: () => Promise<RefsMutationResult>) => Promise<RefsMutationResult>;
+  /** Remove a remote from the sidebar's remote menu. */
+  onRemoteRemove: (name: string) => Promise<unknown>;
 }
 
 /**
@@ -246,6 +251,8 @@ export function RepoColumns({
   onError,
   onOpenSettings,
   onOpenRepoSettings,
+  onRemoteMutate,
+  onRemoteRemove,
 }: RepoColumnsProps) {
   const { leftWidth, rightWidth, startResize } = useResizableColumns(240, 320);
   // `selectedHash` is the focused commit (drives the detail panel + auto-scroll);
@@ -455,6 +462,8 @@ export function RepoColumns({
           onGitflowFinish={onGitflowFinish}
           onOpenSettings={onOpenSettings}
           onOpenRepoSettings={onOpenRepoSettings}
+          onRemoteMutate={onRemoteMutate}
+          onRemoteRemove={onRemoteRemove}
         />
       </div>
       )}

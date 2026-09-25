@@ -60,7 +60,7 @@ export function GitflowSettingsForm({
   onClose,
   onSaved,
   closeOnSave = true,
-  formClassName = 'pr-form gitflow-form',
+  formClassName = 'form gitflow-form',
 }: GitflowSettingsFormProps) {
   const [values, setValues] = useState<GitflowConfig>(config ?? DEFAULTS);
   const [busy, setBusy] = useState(false);
@@ -93,9 +93,10 @@ export function GitflowSettingsForm({
   };
 
   const renderField = ({ key, label, hint, placeholder }: Field, autoFocus: boolean) => (
-    <label key={key} className="pr-form-field">
-      <span className="pr-form-label">{label}</span>
+    <label key={key} className="form-field">
+      <span className="form-label">{label}</span>
       <input
+        className="form-input"
         autoFocus={autoFocus}
         value={values[key]}
         placeholder={placeholder}
@@ -104,7 +105,7 @@ export function GitflowSettingsForm({
         autoCorrect="off"
         onChange={(event) => setField(key, event.target.value)}
       />
-      <span className="gitflow-form-hint">{hint}</span>
+      <span className="form-hint">{hint}</span>
     </label>
   );
 
@@ -125,9 +126,9 @@ export function GitflowSettingsForm({
         </div>
       </div>
 
-      {error && <p className="pr-form-error">{error}</p>}
+      {error && <p className="form-error">{error}</p>}
 
-      <div className="pr-dialog-footer">
+      <div className="form-footer">
         <button type="button" className="pill-btn pill-btn-gray" onClick={onClose} disabled={busy}>
           Cancel
         </button>

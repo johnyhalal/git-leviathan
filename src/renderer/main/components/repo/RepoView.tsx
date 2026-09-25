@@ -874,6 +874,27 @@ export function RepoView({
     };
   }, [repoSettingsOpen, repoPath]);
 
+  // Remote add/edit/remove from the remote popup or repo settings: re-sync the
+  // view on success (remote branches appear/vanish), but leave failures to the
+  // caller to show inline.
+  const remoteMutation = useCallback(
+    async (run: () => Promise<RefsMutationResult>) => {
+      const result = await run();
+      if (result.status === 'ok') {
+        reload();
+        if (result.notice) onNotice?.('Remote added', result.notice);
+      }
+      return result;
+    },
+    [reload, onNotice],
+  );
+
+  const remoteRemove = useCallback(
+    (name: string) =>
+      runMutation('Remove remote failed', () => window.api.repo.remoteRemove(repoPath, name)),
+    [repoPath, runMutation],
+  );
+
   const gitflowStart = useCallback(
     (kind: GitflowKind, name: string, source: string) =>
       runMutation('Gitflow start failed', () =>
@@ -1360,6 +1381,8 @@ export function RepoView({
           onSubmoduleSync={(path) => void submoduleSync(path)}
           onSubmoduleDeinit={submoduleDeinit}
           onSubmoduleRemove={(path) => void submoduleRemove(path)}
+          onRemoteMutate={remoteMutation}
+          onRemoteRemove={remoteRemove}
           gitflowConfig={gitflowConfig}
           onGitflowStart={(kind, name, source) => void gitflowStart(kind, name, source)}
           onGitflowFinish={() => void gitflowFinish()}
@@ -1417,7 +1440,8 @@ export function RepoView({
           <RepoSettingsDialog
             repoPath={repoPath}
             config={repoConfig}
-            remotes={refs?.remotes ?? []}
+            remotes={refs?.remotes}
+            onRemoteMutate={remoteMutation}
             onSave={(config) => window.api.repo.repoSaveConfig(repoPath, config)}
             gitflowConfig={gitflowConfig}
             onGitflowSaveConfig={gitflowSaveConfig}

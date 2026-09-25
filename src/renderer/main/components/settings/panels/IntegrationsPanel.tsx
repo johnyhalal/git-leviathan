@@ -129,7 +129,7 @@ function TokenConnect({ name, help, toggleLabel, onSubmit }: TokenConnectProps) 
           <div className="integration-token-row">
             <input
               type="password"
-              className="integration-token-input"
+              className="form-input form-input-lg integration-token-input"
               placeholder="Paste your token"
               value={token}
               autoComplete="off"
@@ -424,7 +424,7 @@ function ClaudeSection() {
           }
         >
           <select
-            className="settings-select"
+            className="form-input"
             value={modelOptions ? selectedModel : ''}
             disabled={busy || !modelOptions}
             onChange={(e) => setModel(e.target.value)}

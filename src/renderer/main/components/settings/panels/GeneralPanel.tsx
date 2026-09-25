@@ -131,6 +131,7 @@ export function GeneralPanel() {
     supported: false,
   });
   const [telemetry, setTelemetry] = useState(true);
+  const [fetchPrune, setFetchPrune] = useState(true);
   const dateFormat = useDateFormat();
   // A fixed sample moment for the dropdown's examples, so they don't shift
   // while the panel is open.
@@ -146,6 +147,9 @@ export function GeneralPanel() {
     void window.api.app.getTelemetryEnabled().then((enabled) => {
       if (alive) setTelemetry(enabled);
     });
+    void window.api.app.getFetchPrune().then((enabled) => {
+      if (alive) setFetchPrune(enabled);
+    });
     return () => {
       alive = false;
     };
@@ -154,6 +158,11 @@ export function GeneralPanel() {
   const onToggleTelemetry = (enabled: boolean) => {
     setTelemetry(enabled);
     void window.api.app.setTelemetryEnabled(enabled);
+  };
+
+  const onToggleFetchPrune = (enabled: boolean) => {
+    setFetchPrune(enabled);
+    void window.api.app.setFetchPrune(enabled);
   };
 
   const onChange = (value: UpdateCheckInterval) => {
@@ -175,7 +184,7 @@ export function GeneralPanel() {
         description="How commit, blame, and pull request dates are shown."
       >
         <select
-          className="settings-select"
+          className="form-input"
           value={dateFormat}
           onChange={(e) => setDateFormat(e.target.value as DateFormat)}
         >
@@ -189,11 +198,21 @@ export function GeneralPanel() {
         </select>
       </SettingsRow>
       <SettingsRow
+        label="Remove deleted remote branches when fetching"
+        description="When a branch is deleted on the server (e.g. after its pull request is merged), drop it from the Remote Branches list on the next fetch or pull. Your local branches are never touched."
+      >
+        <input
+          type="checkbox"
+          checked={fetchPrune}
+          onChange={(e) => onToggleFetchPrune(e.target.checked)}
+        />
+      </SettingsRow>
+      <SettingsRow
         label="Check for updates"
         description="How often GitLeviathan looks for a newer release on GitHub."
       >
         <select
-          className="settings-select"
+          className="form-input"
           value={interval}
           onChange={(e) =>
             onChange(Number(e.target.value) as UpdateCheckInterval)

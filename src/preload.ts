@@ -115,6 +115,10 @@ const api: ExposedApi = {
         AppChannels.setUpdateCheckInterval,
         minutes,
       ) as Promise<void>,
+    getFetchPrune: () =>
+      ipcRenderer.invoke(AppChannels.getFetchPrune) as Promise<boolean>,
+    setFetchPrune: (enabled: boolean) =>
+      ipcRenderer.invoke(AppChannels.setFetchPrune, enabled) as Promise<void>,
     getTelemetryEnabled: () =>
       ipcRenderer.invoke(AppChannels.getTelemetryEnabled) as Promise<boolean>,
     setTelemetryEnabled: (enabled: boolean) =>
@@ -394,6 +398,16 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.repoConfig, path) as Promise<RepoConfig>,
     repoSaveConfig: (path: string, config: RepoConfig) =>
       ipcRenderer.invoke(RepoChannels.repoSaveConfig, path, config) as Promise<RepoConfigResult>,
+    remoteAdd: (path: string, name: string, url: string, fetch: boolean) =>
+      ipcRenderer.invoke(RepoChannels.remoteAdd, path, name, url, fetch) as Promise<RefsMutationResult>,
+    remoteRemove: (path: string, name: string) =>
+      ipcRenderer.invoke(RepoChannels.remoteRemove, path, name) as Promise<RefsMutationResult>,
+    remoteRename: (path: string, name: string, newName: string) =>
+      ipcRenderer.invoke(RepoChannels.remoteRename, path, name, newName) as Promise<RefsMutationResult>,
+    remoteSetUrl: (path: string, name: string, url: string) =>
+      ipcRenderer.invoke(RepoChannels.remoteSetUrl, path, name, url) as Promise<RefsMutationResult>,
+    remoteSetPushUrl: (path: string, name: string, url: string | null) =>
+      ipcRenderer.invoke(RepoChannels.remoteSetPushUrl, path, name, url) as Promise<RefsMutationResult>,
     repoLfsStatus: (path: string) =>
       ipcRenderer.invoke(RepoChannels.repoLfsStatus, path) as Promise<LfsStatus>,
     repoLfsTrack: (path: string, pattern: string) =>

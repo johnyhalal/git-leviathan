@@ -42,6 +42,10 @@ export const AppChannels = {
   getUpdateCheckInterval: 'app:get-update-check-interval',
   /** Renderer -> main (invoke): persist the auto-update check interval. */
   setUpdateCheckInterval: 'app:set-update-check-interval',
+  /** Renderer -> main (invoke): read whether fetches prune deleted remote branches. */
+  getFetchPrune: 'app:get-fetch-prune',
+  /** Renderer -> main (invoke): turn pruning deleted remote branches on fetch on/off. */
+  setFetchPrune: 'app:set-fetch-prune',
   /** Renderer -> main (invoke): read whether anonymous usage analytics are on. */
   getTelemetryEnabled: 'app:get-telemetry-enabled',
   /** Renderer -> main (invoke): turn anonymous usage analytics on/off. */
@@ -205,6 +209,11 @@ export interface RemoteInfo {
   name: string;
   /** Fetch URL, e.g. "git@github.com:owner/repo.git" (empty if unset). */
   url: string;
+  /**
+   * A separate push URL (`remote.<name>.pushurl`), when pushes go somewhere other
+   * than `url`; absent when pushing uses the fetch URL, as it usually does.
+   */
+  pushUrl?: string;
 }
 
 /** A tag and the short hash of the object it points at. */
@@ -1109,6 +1118,16 @@ export const RepoChannels = {
   repoConfig: 'repo:config',
   /** Renderer -> main (invoke): save the repo's commit identity to its local git config. */
   repoSaveConfig: 'repo:save-config',
+  /** Renderer -> main (invoke): add a remote (optionally fetching it); returns fresh refs. */
+  remoteAdd: 'repo:remote-add',
+  /** Renderer -> main (invoke): remove a remote and its tracking refs; returns fresh refs. */
+  remoteRemove: 'repo:remote-remove',
+  /** Renderer -> main (invoke): rename a remote (and its tracking refs); returns fresh refs. */
+  remoteRename: 'repo:remote-rename',
+  /** Renderer -> main (invoke): change a remote's URL; returns fresh refs. */
+  remoteSetUrl: 'repo:remote-set-url',
+  /** Renderer -> main (invoke): set or clear a remote's separate push URL; returns fresh refs. */
+  remoteSetPushUrl: 'repo:remote-set-push-url',
   /** Renderer -> main (invoke): read the repo's Git LFS status. */
   repoLfsStatus: 'repo:lfs-status',
   /** Renderer -> main (invoke): track a pattern with Git LFS. */
@@ -1598,6 +1617,13 @@ export interface AppApi {
   getUpdateCheckInterval(): Promise<UpdateCheckInterval>;
   /** Persist the auto-update check interval (global). */
   setUpdateCheckInterval(minutes: UpdateCheckInterval): Promise<void>;
+  /**
+   * Read whether the app's fetches and pulls pass `--prune`, dropping
+   * remote-tracking branches deleted on the server. On by default.
+   */
+  getFetchPrune(): Promise<boolean>;
+  /** Turn pruning on fetch on/off (global). */
+  setFetchPrune(enabled: boolean): Promise<void>;
   /**
    * Read whether anonymous usage analytics are enabled. On by default, so a
    * fresh install with no saved preference resolves to `true`.
@@ -2132,6 +2158,23 @@ export interface RepoApi {
    * Returns the stored config, or an error when a value is rejected.
    */
   repoSaveConfig(path: string, config: RepoConfig): Promise<RepoConfigResult>;
+  /**
+   * Add the remote `name` at `url` (`git remote add`). With `fetch`, also fetch it
+   * so its branches show up straight away; a failed fetch still keeps the remote
+   * and resolves ok with a `notice` explaining the fetch failure.
+   */
+  remoteAdd(path: string, name: string, url: string, fetch: boolean): Promise<RefsMutationResult>;
+  /** Remove the remote `name` and its remote-tracking branches (`git remote remove`). */
+  remoteRemove(path: string, name: string): Promise<RefsMutationResult>;
+  /** Rename the remote `name` to `newName`, moving its tracking refs (`git remote rename`). */
+  remoteRename(path: string, name: string, newName: string): Promise<RefsMutationResult>;
+  /** Point the remote `name` at `url` (`git remote set-url`). */
+  remoteSetUrl(path: string, name: string, url: string): Promise<RefsMutationResult>;
+  /**
+   * Give the remote `name` a separate push URL (`remote.<name>.pushurl`), or pass
+   * `null` to clear it so pushes go to the fetch URL again.
+   */
+  remoteSetPushUrl(path: string, name: string, url: string | null): Promise<RefsMutationResult>;
   /** Read the repo's Git LFS status (the patterns it tracks). */
   repoLfsStatus(path: string): Promise<LfsStatus>;
   /** Track `pattern` with Git LFS (ensures LFS is installed, writes `.gitattributes`). */

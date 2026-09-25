@@ -159,14 +159,14 @@ export function GitflowStartDialog({
         </header>
 
         <form
-          className="settings-content pr-form"
+          className="settings-content form"
           onSubmit={(event) => {
             event.preventDefault();
             submit();
           }}
         >
-          <div className="gitflow-field">
-            <span className="gitflow-field-label">Type</span>
+          <div className="form-field">
+            <span className="form-label">Type</span>
             <div className="gitflow-kind-tabs" role="tablist" aria-label="Branch kind">
               {KINDS.map(({ kind: k, label }) => (
                 <button
@@ -183,8 +183,8 @@ export function GitflowStartDialog({
             </div>
           </div>
 
-          <label className="gitflow-field">
-            <span className="gitflow-field-label">Name</span>
+          <label className="form-field">
+            <span className="form-label">Name</span>
             <span className="gitflow-name-row">
               <span className="gitflow-prefix" title={prefix}>
                 {prefix}
@@ -202,8 +202,8 @@ export function GitflowStartDialog({
             </span>
           </label>
 
-          <div className="gitflow-field">
-            <span className="gitflow-field-label">From</span>
+          <div className="form-field">
+            <span className="form-label">From</span>
             <div className="gitflow-source-options" role="radiogroup" aria-label="Source branch">
               {sourceRadios.map((option) => (
                 <label
@@ -224,7 +224,7 @@ export function GitflowStartDialog({
             </div>
           </div>
 
-          <div className="gitflow-dialog-footer">
+          <div className="form-footer gitflow-dialog-footer">
             <div className="gitflow-dialog-footer-left">
               <button
                 type="button"

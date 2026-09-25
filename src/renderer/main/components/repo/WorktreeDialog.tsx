@@ -183,14 +183,14 @@ export function WorktreeDialog({
         </header>
 
         <form
-          className="settings-content pr-form"
+          className="settings-content form"
           onSubmit={(event) => {
             event.preventDefault();
             void submit();
           }}
         >
-          <div className="pr-form-field">
-            <span className="pr-form-label">Check out</span>
+          <div className="form-field">
+            <span className="form-label">Check out</span>
             <WorktreeBranchSelect
               value={checkout}
               options={branches}
@@ -199,9 +199,10 @@ export function WorktreeDialog({
             />
           </div>
 
-          <label className="pr-form-field">
-            <span className="pr-form-label">Branch name</span>
+          <label className="form-field">
+            <span className="form-label">Branch name</span>
             <input
+              className="form-input"
               value={name}
               placeholder={defaultName}
               spellCheck={false}
@@ -210,20 +211,20 @@ export function WorktreeDialog({
               onChange={(event) => setName(event.target.value)}
             />
             {branchError ? (
-              <span className="pr-form-hint worktree-hint-error">{branchError}</span>
+              <span className="form-hint form-hint-error">{branchError}</span>
             ) : (
-              <span className="pr-form-hint">
+              <span className="form-hint">
                 A new branch with this name is created from the selected one — it
                 can’t match an existing branch.
               </span>
             )}
           </label>
 
-          <label className="pr-form-field">
-            <span className="pr-form-label">Location</span>
+          <label className="form-field">
+            <span className="form-label">Location</span>
             <span className="worktree-location-row">
               <input
-                className="worktree-location-input"
+                className="form-input worktree-location-input"
                 value={location}
                 placeholder={suggested}
                 spellCheck={false}
@@ -243,7 +244,7 @@ export function WorktreeDialog({
             </span>
           </label>
 
-          <label className="pr-form-check">
+          <label className="form-check">
             <input
               type="checkbox"
               checked={openAfter}
@@ -253,15 +254,15 @@ export function WorktreeDialog({
           </label>
 
           {locationInsideRepo && (
-              <span className="pr-form-hint worktree-hint-warn">
+              <span className="form-hint form-hint-warn">
                 Not recommended: this is inside the repository’s working directory.
                 Make sure its folder is ignored in .gitignore.
               </span>
           )}
 
-          {error && <p className="pr-form-error">{error}</p>}
+          {error && <p className="form-error">{error}</p>}
 
-          <div className="pr-dialog-footer">
+          <div className="form-footer">
             <button
               type="button"
               className="pill-btn pill-btn-gray"
