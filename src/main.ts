@@ -36,6 +36,8 @@ import {
   APP_COMMANDS,
   APP_COMMAND_IDS,
   AppChannels,
+  commandLabel,
+  OpenChannels,
   ClaudeChannels,
   IntegrationChannels,
   MenuChannels,
@@ -45,6 +47,8 @@ import {
   UpdateChannels,
   GLOBAL_ACTIVITY_PATH,
   type AppCommandMenu,
+  type OpenResult,
+  type OpenToolsState,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -155,6 +159,7 @@ import {
   primeGpgPassphrase,
 } from './signing';
 import { configureTelemetry, trackEvent } from './telemetry';
+import { detectEditors, detectTerminals, openInEditor, openInTerminal } from './openers';
 
 // Name the app before anything reads it, so app.getName(), the userData path,
 // notifications and the About panel all say "GitLeviathan" rather than
@@ -325,6 +330,12 @@ interface Settings {
    * means enabled); toggled from General settings.
    */
   fetchPrune?: boolean;
+  /** The editor for "Open in editor": a detected id, `system` or `custom`. Absent: first detected. */
+  editor?: string;
+  /** The terminal for "Open in terminal". Absent: first detected. */
+  terminal?: string;
+  /** The executable (or macOS `.app`) picked as the custom editor. */
+  customEditorPath?: string;
   /**
    * Stable anonymous id for this install, minted once and sent with each usage
    * event so active users can be counted without any PII. Not tied to identity.
@@ -549,6 +560,11 @@ function loadSettings(): void {
     }
     if (typeof parsed.fetchPrune === 'boolean') {
       settings.fetchPrune = parsed.fetchPrune;
+    }
+    if (typeof parsed.editor === 'string' && parsed.editor) settings.editor = parsed.editor;
+    if (typeof parsed.terminal === 'string' && parsed.terminal) settings.terminal = parsed.terminal;
+    if (typeof parsed.customEditorPath === 'string' && parsed.customEditorPath) {
+      settings.customEditorPath = parsed.customEditorPath;
     }
     if (typeof parsed.telemetryId === 'string' && parsed.telemetryId) {
       settings.telemetryId = parsed.telemetryId;
@@ -9231,6 +9247,148 @@ function registerUpdateIpc(): void {
   });
 }
 
+/** The user's editor/terminal choices, resolved against what's installed now. */
+function openToolsState(): OpenToolsState {
+  const editors = detectEditors();
+  const terminals = detectTerminals();
+  const customEditorPath = settings.customEditorPath ?? null;
+  // A saved choice that's since been uninstalled falls back like an unset one.
+  const editor =
+    settings.editor === 'system' ||
+    (settings.editor === 'custom' && customEditorPath) ||
+    editors.some((e) => e.id === settings.editor)
+      ? (settings.editor as string)
+      : (editors[0]?.id ?? 'system');
+  const terminal = terminals.some((t) => t.id === settings.terminal)
+    ? (settings.terminal as string)
+    : (terminals[0]?.id ?? '');
+  const editorName =
+    editor === 'system'
+      ? 'Default App'
+      : editor === 'custom' && customEditorPath
+        ? path.basename(customEditorPath).replace(/\.(app|exe)$/i, '')
+        : (editors.find((e) => e.id === editor)?.name ?? 'Editor');
+  return { editors, terminals, editor, terminal, customEditorPath, editorName };
+}
+
+/**
+ * Resolve an "open" request's target: the repository folder, or a file inside
+ * it. Untrusted IPC args, so the repo must be a git repo and the file must not
+ * escape it (same containment check as deleting a file). A file that's gone
+ * from disk — deleted since the commit being viewed — is reported, not opened.
+ */
+function resolveOpenTarget(
+  repoPath: unknown,
+  relPath: unknown,
+): { ok: true; target: string; isFile: boolean } | { ok: false; result: OpenResult } {
+  const fail = (message: string) => ({ ok: false as const, result: { status: 'error' as const, message } });
+  if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return fail('Not a git repository.');
+  if (relPath === undefined || relPath === null || relPath === '') {
+    return { ok: true, target: repoPath, isFile: false };
+  }
+  if (typeof relPath !== 'string') return fail('Invalid file path.');
+  const target = path.resolve(repoPath, relPath);
+  const rel = path.relative(repoPath, target);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return fail('Invalid file path.');
+  if (!fs.existsSync(target)) return fail('That file no longer exists on disk.');
+  return { ok: true, target, isFile: true };
+}
+
+function registerOpenIpc(): void {
+  ipcMain.handle(OpenChannels.tools, (): OpenToolsState => openToolsState());
+
+  ipcMain.handle(OpenChannels.setEditor, (_event, id: unknown): OpenToolsState => {
+    if (typeof id === 'string' && id) {
+      settings.editor = id;
+      saveSettings();
+    }
+    return openToolsState();
+  });
+
+  ipcMain.handle(OpenChannels.setTerminal, (_event, id: unknown): OpenToolsState => {
+    if (typeof id === 'string' && id) {
+      settings.terminal = id;
+      saveSettings();
+    }
+    return openToolsState();
+  });
+
+  ipcMain.handle(
+    OpenChannels.pickCustomEditor,
+    async (event): Promise<OpenToolsState | null> => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const isMac = process.platform === 'darwin';
+      const options: Electron.OpenDialogOptions = {
+        title: 'Choose Editor',
+        defaultPath: isMac ? '/Applications' : undefined,
+        properties: ['openFile'],
+        filters: isMac
+          ? [{ name: 'Applications', extensions: ['app'] }]
+          : process.platform === 'win32'
+            ? [{ name: 'Programs', extensions: ['exe'] }]
+            : undefined,
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+      if (result.canceled || result.filePaths.length === 0) return null;
+      settings.customEditorPath = result.filePaths[0];
+      settings.editor = 'custom';
+      saveSettings();
+      return openToolsState();
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.inEditor,
+    async (_event, repoPath: unknown, relPath: unknown): Promise<OpenResult> => {
+      const resolved = resolveOpenTarget(repoPath, relPath);
+      if (!resolved.ok) return resolved.result;
+      const { editor, customEditorPath } = openToolsState();
+      if (editor === 'system') {
+        const message = await shell.openPath(resolved.target);
+        return message ? { status: 'error', message } : { status: 'ok' };
+      }
+      return openInEditor(editor, resolved.target, customEditorPath ?? undefined);
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.inTerminal,
+    async (_event, repoPath: unknown): Promise<OpenResult> => {
+      const resolved = resolveOpenTarget(repoPath, undefined);
+      if (!resolved.ok) return resolved.result;
+      const { terminal } = openToolsState();
+      if (!terminal) return { status: 'error', message: 'No terminal app was found.' };
+      return openInTerminal(terminal, resolved.target);
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.reveal,
+    async (_event, repoPath: unknown, relPath: unknown): Promise<OpenResult> => {
+      const resolved = resolveOpenTarget(repoPath, relPath);
+      if (!resolved.ok) return resolved.result;
+      if (resolved.isFile) {
+        shell.showItemInFolder(resolved.target);
+        return { status: 'ok' };
+      }
+      const message = await shell.openPath(resolved.target);
+      return message ? { status: 'error', message } : { status: 'ok' };
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.withDefaultApp,
+    async (_event, repoPath: unknown, relPath: unknown): Promise<OpenResult> => {
+      const resolved = resolveOpenTarget(repoPath, relPath);
+      if (!resolved.ok) return resolved.result;
+      const message = await shell.openPath(resolved.target);
+      return message ? { status: 'error', message } : { status: 'ok' };
+    },
+  );
+}
+
 /**
  * The application menu. Built from the shared `APP_COMMANDS` table: each app
  * command with a `menu` becomes an item carrying its accelerator, and choosing
@@ -9247,7 +9405,7 @@ function installAppMenu(): void {
   const commandItems = (menu: AppCommandMenu): MenuItemConstructorOptions[] =>
     APP_COMMANDS.filter((spec) => spec.menu === menu).map((spec) => ({
       id: spec.id,
-      label: spec.label,
+      label: commandLabel(spec, process.platform),
       accelerator: spec.accelerator,
       // Repo commands wait for the renderer to report an open repository.
       enabled: !spec.repo,
@@ -9352,6 +9510,7 @@ app.on('ready', () => {
   registerAppIpc();
   registerUpdateIpc();
   registerMenuIpc();
+  registerOpenIpc();
   // Configure anonymous usage analytics (on by default) and record the launch.
   configureTelemetry({ isEnabled: telemetryEnabled, userId: ensureTelemetryId() });
   trackEvent('app_opened');

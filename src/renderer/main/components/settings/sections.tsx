@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react';
 import { GeneralPanel } from './panels/GeneralPanel';
 import { AppearancePanel } from './panels/AppearancePanel';
+import { GitPanel } from './panels/GitPanel';
 import { IntegrationsPanel } from './panels/IntegrationsPanel';
 import { CommitSigningPanel } from './panels/CommitSigningPanel';
 import { ShortcutsPanel } from './panels/ShortcutsPanel';
@@ -19,6 +20,7 @@ export interface SettingsSectionDef {
 export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: 'general', label: 'General', Panel: GeneralPanel },
   { id: 'appearance', label: 'Appearance', Panel: AppearancePanel },
+  { id: 'git', label: 'Git', Panel: GitPanel },
   { id: 'signing', label: 'Commit Signing', Panel: CommitSigningPanel },
   { id: 'integrations', label: 'Integrations', Panel: IntegrationsPanel },
   { id: 'shortcuts', label: 'Keyboard Shortcuts', Panel: ShortcutsPanel },

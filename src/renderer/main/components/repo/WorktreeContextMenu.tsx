@@ -1,5 +1,6 @@
 import { useConfirm } from '../ConfirmBar';
 import { ContextMenu } from './ContextMenu';
+import { openMenuItems, useOpenTools } from '../../openActions';
 
 /** The worktree a context menu was opened on. */
 export interface WorktreeMenuTarget {
@@ -71,6 +72,7 @@ export function WorktreeContextMenu({
   onLock,
 }: WorktreeContextMenuProps) {
   const requestConfirm = useConfirm();
+  const editorName = useOpenTools()?.editorName;
   const label = target.branch ?? target.path;
 
   // Confirm a removal with a single button. If git refuses because the worktree
@@ -113,6 +115,9 @@ export function WorktreeContextMenu({
   };
 
   const entries: MenuEntry[] = [];
+
+  // Open the worktree's folder in the user's editor, a terminal or the file manager.
+  entries.push(...openMenuItems(editorName, target.path), 'separator');
 
   // Open actions — not for the worktree already open in this tab.
   if (!target.isCurrent) {

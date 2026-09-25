@@ -13,6 +13,7 @@ import {
 import {
   APP_COMMANDS,
   APP_COMMAND_IDS,
+  commandLabel,
   type AppCommandId,
   type AppCommandSpec,
 } from '../../../types/ipc';
@@ -133,7 +134,7 @@ export function CommandProvider({ children }: { children: ReactNode }) {
             const primary = spec?.accelerator ?? command.accelerators?.[0];
             return {
               id: command.id,
-              label: command.label ?? spec?.label ?? command.id,
+              label: command.label ?? (spec ? commandLabel(spec, window.api.platform) : command.id),
               category: command.category ?? spec?.category ?? 'App',
               shortcut: primary ? formatAccelerator(primary) : '',
               run: command.run,

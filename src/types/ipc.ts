@@ -67,6 +67,48 @@ export const AppChannels = {
   focused: 'app:focused',
 } as const;
 
+export const OpenChannels = {
+  /** Renderer -> main (invoke): installed editors/terminals and the chosen ones. */
+  tools: 'open:tools',
+  /** Renderer -> main (invoke): persist the editor id (`system`, `custom` or a detected one). */
+  setEditor: 'open:set-editor',
+  /** Renderer -> main (invoke): persist the terminal id. */
+  setTerminal: 'open:set-terminal',
+  /** Renderer -> main (invoke): pick a custom editor executable/app; returns the new state. */
+  pickCustomEditor: 'open:pick-custom-editor',
+  /** Renderer -> main (invoke): open a repo, or a file in it, in the chosen editor. */
+  inEditor: 'open:in-editor',
+  /** Renderer -> main (invoke): open a terminal in a repo folder. */
+  inTerminal: 'open:in-terminal',
+  /** Renderer -> main (invoke): show a repo folder, or select a file in it, in the file manager. */
+  reveal: 'open:reveal',
+  /** Renderer -> main (invoke): open a file with the OS default app for its type. */
+  withDefaultApp: 'open:with-default-app',
+} as const;
+
+/** An installed editor or terminal the user can pick. */
+export interface ToolOption {
+  id: string;
+  name: string;
+}
+
+export interface OpenToolsState {
+  /** Installed editors, in catalog order. */
+  editors: ToolOption[];
+  /** Installed terminals, in catalog order. */
+  terminals: ToolOption[];
+  /** The chosen editor: a detected id, `system` (OS default app) or `custom`. */
+  editor: string;
+  /** The chosen terminal id. */
+  terminal: string;
+  /** The executable/app picked as the custom editor, if any. */
+  customEditorPath: string | null;
+  /** Display name of the chosen editor ("VS Code", "Default App", or the custom app's name). */
+  editorName: string;
+}
+
+export type OpenResult = { status: 'ok' } | { status: 'error'; message: string };
+
 export const MenuChannels = {
   /** Main -> renderer (send): a native menu item (or its accelerator) was chosen. */
   command: 'menu:command',
@@ -99,7 +141,10 @@ export type AppCommandId =
   | 'repo.undo'
   | 'repo.redo'
   | 'repo.resolve'
-  | 'repo.settings';
+  | 'repo.settings'
+  | 'repo.openEditor'
+  | 'repo.openTerminal'
+  | 'repo.reveal';
 
 export type AppCommandCategory = 'App' | 'Tabs' | 'Repository';
 
@@ -123,6 +168,13 @@ export interface AppCommandSpec {
   menu?: AppCommandMenu;
   /** Scoped to an open repository — greyed out in the menu otherwise. */
   repo?: boolean;
+  /** A platform's own wording (e.g. "Reveal in Finder"), overriding `label` there. */
+  platformLabel?: { darwin?: string; win32?: string };
+}
+
+/** A command's label as the given platform words it. */
+export function commandLabel(spec: AppCommandSpec, platform: string): string {
+  return spec.platformLabel?.[platform as 'darwin' | 'win32'] ?? spec.label;
 }
 
 /**
@@ -151,6 +203,9 @@ export const APP_COMMANDS: readonly AppCommandSpec[] = [
   { id: 'repo.search', label: 'Find Commit…', category: 'Repository', accelerator: 'CmdOrCtrl+F', menu: 'repository', repo: true },
   { id: 'repo.undo', label: 'Undo', category: 'Repository', accelerator: 'CmdOrCtrl+Z', repo: true },
   { id: 'repo.redo', label: 'Redo', category: 'Repository', accelerator: 'CmdOrCtrl+R', aliases: ['CmdOrCtrl+Shift+Z', 'CmdOrCtrl+Y'], repo: true },
+  { id: 'repo.openEditor', label: 'Open in Editor', category: 'Repository', accelerator: 'CmdOrCtrl+Shift+E', menu: 'repository', repo: true },
+  { id: 'repo.openTerminal', label: 'Open in Terminal', category: 'Repository', menu: 'repository', repo: true },
+  { id: 'repo.reveal', label: 'Show in File Manager', category: 'Repository', menu: 'repository', repo: true, platformLabel: { darwin: 'Reveal in Finder', win32: 'Show in Explorer' } },
   { id: 'repo.resolve', label: 'Resolve Conflicts…', category: 'Repository', menu: 'repository', repo: true },
   { id: 'repo.settings', label: 'Repository Settings…', category: 'Repository', menu: 'repository', repo: true },
 ];
@@ -1752,6 +1807,19 @@ export interface AppApi {
   onWindowFocus(callback: () => void): () => void;
 }
 
+export interface OpenApi {
+  tools(): Promise<OpenToolsState>;
+  setEditor(id: string): Promise<OpenToolsState>;
+  setTerminal(id: string): Promise<OpenToolsState>;
+  /** Null when the picker was cancelled. */
+  pickCustomEditor(): Promise<OpenToolsState | null>;
+  /** `relPath` is relative to `repoPath`; omit it to open the repository folder. */
+  inEditor(repoPath: string, relPath?: string): Promise<OpenResult>;
+  inTerminal(repoPath: string): Promise<OpenResult>;
+  reveal(repoPath: string, relPath?: string): Promise<OpenResult>;
+  withDefaultApp(repoPath: string, relPath: string): Promise<OpenResult>;
+}
+
 export interface MenuApi {
   /** Subscribe to native menu picks (by command id). Returns an unsubscribe function. */
   onCommand(callback: (id: AppCommandId) => void): () => void;
@@ -2587,4 +2655,5 @@ export interface ExposedApi {
   signing: SigningApi;
   update: UpdateApi;
   menu: MenuApi;
+  open: OpenApi;
 }

@@ -170,6 +170,12 @@
   padding: 6px 9px;
 }
 
+/* Keep room for the select's chevron (forms.css) past the tighter padding. */
+.settings-control select.form-input {
+  padding-left: 12px;
+  padding-right: 30px;
+}
+
 .settings-control input.form-input {
   min-width: 200px;
 }
@@ -189,3 +195,10 @@
   color: var(--fg-muted);
 }
 
+
+/* A control with a companion button beside it (e.g. a select + "Choose…"). */
+.settings-inline-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

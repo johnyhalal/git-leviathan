@@ -48,3 +48,4 @@ export { InlineViewIcon } from './InlineViewIcon';
 export { SplitViewIcon } from './SplitViewIcon';
 export { WhitespaceIcon } from './WhitespaceIcon';
 export { WrapIcon } from './WrapIcon';
+export { ExternalIcon } from './ExternalIcon';

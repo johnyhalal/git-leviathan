@@ -1,4 +1,4 @@
-import { APP_COMMANDS, type AppCommandCategory } from '../../../../../types/ipc';
+import { APP_COMMANDS, commandLabel, type AppCommandCategory } from '../../../../../types/ipc';
 import { formatAccelerator } from '../../../commands/keys';
 import { SettingsSection } from '../SettingsSection';
 import { SettingsRow } from '../SettingsRow';
@@ -18,7 +18,7 @@ export function ShortcutsPanel() {
                   ? [`${formatAccelerator('CmdOrCtrl+1')}–${formatAccelerator('CmdOrCtrl+9')}`]
                   : [spec.accelerator ?? '', ...(spec.aliases ?? [])].map(formatAccelerator);
               return (
-                <SettingsRow key={spec.id} label={spec.label.replace(/…$/, '')}>
+                <SettingsRow key={spec.id} label={commandLabel(spec, window.api.platform).replace(/…$/, '')}>
                   <span className="shortcut-keys">
                     {keys.map((key) => (
                       <kbd key={key} className="shortcut-kbd">

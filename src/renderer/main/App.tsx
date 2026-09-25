@@ -16,6 +16,7 @@ import { RepoView } from './components/repo/RepoView';
 import { ActivityLog } from './components/repo/ActivityLog';
 import { CommandPalette } from './components/CommandPalette';
 import { CommandProvider, useCommands, useRunCommand } from './commands/CommandRegistry';
+import { setOpenErrorHandler } from './openActions';
 import { GearIcon, FeedbackIcon } from '../../../assets/icons';
 import kofiLogo from '../../../assets/kofi_logo.webp';
 import type { RepoInfo, UpdateInfo, UpdateStatus } from '../../types/ipc';
@@ -293,6 +294,11 @@ function AppShell() {
       },
     ]);
   };
+
+  // "Open in editor/terminal/Finder" failures, from wherever they were raised.
+  useEffect(() => {
+    setOpenErrorHandler((title, message) => showToast(title, message, 'error'));
+  });
 
   const addTab = () => {
     const id = `tab-${nextTabId++}`;

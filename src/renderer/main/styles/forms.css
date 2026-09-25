@@ -42,6 +42,19 @@
   transition: border-color 0.15s ease;
 }
 
+/* Draw the dropdown chevron ourselves: the native one sits inside the right
+   padding and ends up touching the border. The mid-grey reads on both themes. */
+select.form-input {
+  appearance: none;
+  padding-left: 12px;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8e' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+  cursor: pointer;
+}
+
 textarea.form-input {
   resize: vertical;
   line-height: 1.5;

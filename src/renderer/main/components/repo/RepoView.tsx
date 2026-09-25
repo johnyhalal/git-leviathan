@@ -27,6 +27,7 @@ import { ConflictResolver } from './ConflictResolver';
 import { CommitPlanEditor } from './CommitPlanEditor';
 import { ConfirmProvider } from '../ConfirmBar';
 import { useCommands } from '../../commands/CommandRegistry';
+import { openInEditor, openInTerminal, revealInFileManager } from '../../openActions';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
 import type { SubmoduleDeinitOutcome } from './SubmoduleContextMenu';
 
@@ -1246,6 +1247,9 @@ export function RepoView({
     { id: 'repo.pop', run: () => void stashPop(0), enabled: (refs?.stashes.length ?? 0) > 0 },
     { id: 'repo.resolve', run: () => openResolver(null), enabled: !!mergeState },
     { id: 'repo.settings', run: () => openRepoSettings() },
+    { id: 'repo.openEditor', run: () => void openInEditor(repoPath) },
+    { id: 'repo.openTerminal', run: () => void openInTerminal(repoPath) },
+    { id: 'repo.reveal', run: () => void revealInFileManager(repoPath) },
     ...branchNames
       .filter((name) => name !== currentBranch)
       .map((name) => ({
@@ -1261,6 +1265,7 @@ export function RepoView({
       {/* Scoped here so its confirm bar can overlay the toolbar below. */}
       <ConfirmProvider>
         <RepoToolbar
+          repoPath={repoPath}
           branch={branchLabel}
           branches={branchNames}
           onCheckout={(branch) => void checkout(branch)}

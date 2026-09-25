@@ -18,10 +18,12 @@ import { useConfirm } from '../ConfirmBar';
 import { CopyButton } from '../CopyButton';
 import { formatDateOnly, useDateFormat } from '../../dateFormat';
 import { ResizeHandle } from './ResizeHandle';
+import { openInEditor, useOpenTools } from '../../openActions';
 import { useResizableColumns } from './useResizableColumns';
 import {
   ChevronDownIcon,
   CloseIcon,
+  ExternalIcon,
   HunkViewIcon,
   InlineViewIcon,
   MinusIcon,
@@ -170,6 +172,7 @@ export function DiffView({
   const { source, path, status } = target;
   const lang = useMemo(() => languageForPath(path), [path]);
   const requestConfirm = useConfirm();
+  const editorName = useOpenTools()?.editorName;
   // Only the left width is used: it sizes the history sidebar.
   const { leftWidth: historyWidth, startResize } = useResizableColumns(historySidebarWidth, 320);
   useEffect(() => {
@@ -484,15 +487,26 @@ export function DiffView({
             <span className="diff-header-name">{baseName(path)}</span>
           </span>
         </div>
-        <button
-          type="button"
-          className="diff-close tooltip-host"
-          data-tooltip="Close diff"
-          aria-label="Close diff"
-          onClick={onClose}
-        >
-          <CloseIcon size={16} />
-        </button>
+        <div className="diff-header-actions">
+          <button
+            type="button"
+            className="diff-close tooltip-host"
+            data-tooltip={`Open in ${editorName ?? 'editor'}`}
+            aria-label="Open file in editor"
+            onClick={() => void openInEditor(repoPath, path)}
+          >
+            <ExternalIcon size={14} />
+          </button>
+          <button
+            type="button"
+            className="diff-close tooltip-host"
+            data-tooltip="Close diff"
+            aria-label="Close diff"
+            onClick={onClose}
+          >
+            <CloseIcon size={16} />
+          </button>
+        </div>
       </header>
 
       <div className="diff-subnav">

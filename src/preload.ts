@@ -4,11 +4,14 @@ import {
   ClaudeChannels,
   IntegrationChannels,
   MenuChannels,
+  OpenChannels,
   RepoChannels,
   SigningChannels,
   ThemeChannels,
   UpdateChannels,
   type AppCommandId,
+  type OpenResult,
+  type OpenToolsState,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -672,6 +675,23 @@ const api: ExposedApi = {
       };
     },
     setEnabled: (ids: AppCommandId[]) => ipcRenderer.send(MenuChannels.setEnabled, ids),
+  },
+  open: {
+    tools: () => ipcRenderer.invoke(OpenChannels.tools) as Promise<OpenToolsState>,
+    setEditor: (id: string) =>
+      ipcRenderer.invoke(OpenChannels.setEditor, id) as Promise<OpenToolsState>,
+    setTerminal: (id: string) =>
+      ipcRenderer.invoke(OpenChannels.setTerminal, id) as Promise<OpenToolsState>,
+    pickCustomEditor: () =>
+      ipcRenderer.invoke(OpenChannels.pickCustomEditor) as Promise<OpenToolsState | null>,
+    inEditor: (repoPath: string, relPath?: string) =>
+      ipcRenderer.invoke(OpenChannels.inEditor, repoPath, relPath) as Promise<OpenResult>,
+    inTerminal: (repoPath: string) =>
+      ipcRenderer.invoke(OpenChannels.inTerminal, repoPath) as Promise<OpenResult>,
+    reveal: (repoPath: string, relPath?: string) =>
+      ipcRenderer.invoke(OpenChannels.reveal, repoPath, relPath) as Promise<OpenResult>,
+    withDefaultApp: (repoPath: string, relPath: string) =>
+      ipcRenderer.invoke(OpenChannels.withDefaultApp, repoPath, relPath) as Promise<OpenResult>,
   },
 };
 

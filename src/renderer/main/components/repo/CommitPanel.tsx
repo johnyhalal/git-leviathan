@@ -15,6 +15,7 @@ import { useConfirm, type ConfirmAction } from '../ConfirmBar';
 import { CopyButton } from '../CopyButton';
 import { formatDateTime, useDateFormat } from '../../dateFormat';
 import { formatAccelerator } from '../../commands/keys';
+import { openMenuItems, useOpenTools } from '../../openActions';
 import {
   CertificateIcon,
   ChevronDownIcon,
@@ -359,6 +360,13 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
   }, [mode]);
   const [viewAll, setViewAll] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // Right-click menu on a file: open the working copy in the user's tools.
+  const [fileMenu, setFileMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const editorName = useOpenTools()?.editorName;
+  const onContextMenuFile = (file: DisplayFile, event: React.MouseEvent) => {
+    event.preventDefault();
+    setFileMenu({ path: file.path, x: event.clientX, y: event.clientY });
+  };
 
   // This section always diffs against the commit; the active row is the one
   // whose path matches an open diff taken from this same commit.
@@ -510,6 +518,7 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
               onToggle={toggleDir}
               onOpenFile={openFile}
               activePath={activePath}
+              onContextMenuFile={onContextMenuFile}
             />
           </div>
         ) : (
@@ -519,10 +528,19 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
               file={file}
               onOpen={() => openFile(file)}
               selected={file.path === activePath}
+              onContextMenu={(event) => onContextMenuFile(file, event)}
             />
           ))
         )}
       </div>
+      {fileMenu && (
+        <FileContextMenu
+          x={fileMenu.x}
+          y={fileMenu.y}
+          onClose={() => setFileMenu(null)}
+          items={openMenuItems(editorName, repoPath, fileMenu.path)}
+        />
+      )}
     </div>
   );
 }
@@ -1260,6 +1278,7 @@ function WorkingChanges({
   const [mode, setMode] = useState<'list' | 'tree'>('list');
   // Destructive actions route through the global confirm bar over the toolbar.
   const requestConfirm = useConfirm();
+  const editorName = useOpenTools()?.editorName;
   // The share of the changes body given to the unstaged (top) section; the
   // staged (bottom) section takes the remainder. Dragged via the divider.
   const [topRatio, setTopRatio] = useState(0.5);
@@ -1878,6 +1897,8 @@ function WorkingChanges({
             'separator',
             { label: 'Ignore', submenu: ignoreSubmenu(fileMenu.file) },
             { label: 'Discard changes', danger: true, onClick: () => discardFile(fileMenu.file) },
+            'separator',
+            ...openMenuItems(editorName, repoPath, fileMenu.file.path),
             'separator',
             { label: 'Delete file', danger: true, onClick: () => deleteFile(fileMenu.file) },
           ]}

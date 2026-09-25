@@ -129,3 +129,27 @@ export function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   if (process.platform === 'win32') return base;
   return { ...base, PATH: augmentedPath(base.PATH) };
 }
+
+/**
+ * Find an executable by bare name on the widened PATH (well-known dirs, the
+ * login shell's PATH, then the process PATH) — what a terminal would run. Used
+ * to locate editor/terminal CLIs a Finder-launched app can't see. Null if absent.
+ */
+export function resolveOnPath(name: string): string | null {
+  const base = process.platform === 'win32' ? process.env.PATH : augmentedPath(process.env.PATH);
+  const exts = process.platform === 'win32' ? ['.exe', ''] : [''];
+  for (const dir of (base ?? '').split(path.delimiter).filter(Boolean)) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext);
+      try {
+        if (fs.statSync(candidate).isFile()) {
+          if (process.platform !== 'win32') fs.accessSync(candidate, fs.constants.X_OK);
+          return candidate;
+        }
+      } catch {
+        /* not here */
+      }
+    }
+  }
+  return null;
+}

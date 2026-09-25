@@ -1,13 +1,17 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { PullMode } from '../../../../types/ipc';
-import { PushIcon, StashIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon, FolderCogIcon, SearchIcon } from '../../../../../assets/icons';
+import { PushIcon, StashIcon, PopIcon, BranchIcon, UndoIcon, RedoIcon, FolderCogIcon, SearchIcon, ExternalIcon } from '../../../../../assets/icons';
 import { BranchSelect } from './BranchSelect';
 import { PullAction } from './PullAction';
 import { useConfirm } from '../ConfirmBar';
 import { useCommands } from '../../commands/CommandRegistry';
 import { withShortcut } from '../../commands/keys';
+import { FileContextMenu } from './FileContextMenu';
+import { openMenuItems, useOpenTools } from '../../openActions';
 
 interface RepoToolbarProps {
+  /** The open repository, for the "Open in…" menu. */
+  repoPath: string;
   /** The checked-out branch name (from the real repo). */
   branch: string;
   /** All local branch names, for the switcher dropdown. */
@@ -68,6 +72,7 @@ interface RepoToolbarProps {
  * are all wired to git.
  */
 export function RepoToolbar({
+  repoPath,
   branch,
   branches,
   onCheckout,
@@ -122,6 +127,10 @@ export function RepoToolbar({
   // Registered here, not in RepoView, so a menu or palette push on a branch with
   // no upstream raises the same publish confirm as the button.
   useCommands([{ id: 'repo.push', run: () => void handlePush(), enabled: !pushing }]);
+
+  // "Open in…": the repo folder in the editor, a terminal or the file manager.
+  const editorName = useOpenTools()?.editorName;
+  const [openMenu, setOpenMenu] = useState<{ x: number; y: number } | null>(null);
 
   return (
     <div className="repo-toolbar">
@@ -207,6 +216,28 @@ export function RepoToolbar({
         >
           <SearchIcon size={20} />
         </button>
+        <button
+          type="button"
+          className={`repo-settings-button tooltip-host${openMenu ? ' is-active' : ''}`}
+          data-tooltip="Open in…"
+          aria-label="Open repository in…"
+          aria-haspopup="menu"
+          aria-expanded={openMenu !== null}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            setOpenMenu({ x: rect.left, y: rect.bottom + 4 });
+          }}
+        >
+          <ExternalIcon size={18} />
+        </button>
+        {openMenu && (
+          <FileContextMenu
+            x={openMenu.x}
+            y={openMenu.y}
+            onClose={() => setOpenMenu(null)}
+            items={openMenuItems(editorName, repoPath)}
+          />
+        )}
         <button
           type="button"
           className="repo-settings-button tooltip-host"

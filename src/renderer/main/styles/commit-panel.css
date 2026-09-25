@@ -687,6 +687,13 @@ body.is-row-resizing {
   background: var(--control-bg);
 }
 
+/* Open-in-editor and close, side by side at the header's end. */
+.diff-header-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
 /* Secondary nav: a centered file/diff switch, with the blame/history toggles and
    the prev/next steppers grouped at the end. */
 .diff-subnav {
