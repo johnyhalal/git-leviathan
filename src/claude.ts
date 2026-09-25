@@ -301,7 +301,8 @@ const COMMIT_INSTRUCTION = [
   'The type is a lowercase noun such as feat (a new feature), fix (a bug fix), docs, style, refactor, perf, test, build, ci, chore, or revert.',
   'An optional scope in parentheses may follow the type to give extra context, e.g. "feat(parser): ...".',
   'After the type/scope comes a colon, a single space, then a short imperative description; keep the whole first line under 72 characters with no trailing period.',
-  'If the change is non-trivial, add a blank line then a body (wrapped ~72 cols) explaining what changed and why, in one or more paragraphs.',
+  'If the change is non-trivial, add a blank line then a body explaining what changed and why, in one or more paragraphs.',
+  'Do NOT hard-wrap the body at any column: write each paragraph or bullet point as a single line, however long, and separate paragraphs with a blank line. Viewers soft-wrap the text themselves.',
   'For breaking changes, either append "!" before the colon (e.g. "feat!:") and/or add a footer starting with "BREAKING CHANGE: " describing the break.',
   'Other footers use the "Token: value" form (e.g. "Refs: #123", "Reviewed-by: name"), one per line after a blank line.',
   'Prefer a type/scope consistent with the recent commit subjects listed on stdin when they already follow this convention.',
@@ -337,6 +338,8 @@ interface ClaudeJsonResult {
   is_error?: boolean;
   total_cost_usd?: number;
   usage?: ClaudeUsage;
+  /** Per-model usage keyed by the concrete model id the CLI ran. */
+  modelUsage?: Record<string, { outputTokens?: unknown } | undefined>;
 }
 
 /** Normalized token usage/cost parsed from a single generation. */
@@ -352,10 +355,28 @@ export interface TokenUsage {
 export interface CommitMessageResult {
   message: string;
   usage?: TokenUsage;
+  /** The concrete model id that wrote it (e.g. "claude-sonnet-5"), when reported. */
+  modelId?: string;
+}
+
+/**
+ * The model that did the work, from the envelope's per-model usage: the one
+ * with the most output tokens, in case the CLI also ran a helper model.
+ */
+function primaryModelId(modelUsage: ClaudeJsonResult['modelUsage']): string | undefined {
+  if (!modelUsage || typeof modelUsage !== 'object') return undefined;
+  let best: { id: string; out: number } | undefined;
+  for (const [id, entry] of Object.entries(modelUsage)) {
+    const out = typeof entry?.outputTokens === 'number' ? entry.outputTokens : 0;
+    if (!best || out > best.out) best = { id, out };
+  }
+  return best?.id;
 }
 
 /** Read the model's answer and token usage out of a `--output-format json` envelope. */
-function readEnvelope(stdout: string): { text: string; usage?: TokenUsage } | null {
+function readEnvelope(
+  stdout: string,
+): { text: string; usage?: TokenUsage; modelId?: string } | null {
   let parsed: ClaudeJsonResult;
   try {
     parsed = JSON.parse(stdout.trim()) as ClaudeJsonResult;
@@ -373,6 +394,7 @@ function readEnvelope(stdout: string): { text: string; usage?: TokenUsage } | nu
       cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
       costUsd: typeof parsed.total_cost_usd === 'number' ? parsed.total_cost_usd : undefined,
     },
+    modelId: primaryModelId(parsed.modelUsage),
   };
 }
 
@@ -416,6 +438,38 @@ function stripAiAttribution(message: string): string {
     .trim();
 }
 
+/** A list item's opening line: "- x", "* x", "+ x" or "1. x" / "1) x". */
+const LIST_ITEM_RE = /^\s*(?:[-*+]|\d+[.)])\s/;
+
+/**
+ * Undo hard wrapping in the body, which the model tends to apply out of habit
+ * despite the prompt: within each paragraph, a line that doesn't start a list
+ * item is joined onto the previous one, so every paragraph and list item ends
+ * up on one line and viewers soft-wrap it. The subject line, paragraph breaks
+ * and a trailer block ("Refs: #12", "Co-Authored-By: …") are left as they are.
+ */
+function unwrapBody(message: string): string {
+  const nl = message.indexOf('\n');
+  if (nl === -1) return message;
+  const subject = message.slice(0, nl);
+  const paragraphs = message
+    .slice(nl + 1)
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .map((paragraph) => {
+      const lines = paragraph.split('\n');
+      if (lines.every((line) => TRAILER_LINE_RE.test(line))) return paragraph;
+      const joined: string[] = [];
+      for (const line of lines) {
+        if (joined.length === 0 || LIST_ITEM_RE.test(line)) joined.push(line.trimEnd());
+        else joined[joined.length - 1] += ` ${line.trim()}`;
+      }
+      return joined.join('\n');
+    });
+  return paragraphs.length ? `${subject}\n\n${paragraphs.join('\n\n')}` : subject;
+}
+
 /**
  * Parse the `--output-format json` envelope into the message plus its token
  * usage. Falls back to treating the raw stdout as the message (with no usage)
@@ -424,11 +478,50 @@ function stripAiAttribution(message: string): string {
  */
 function parseCommitResult(stdout: string): CommitMessageResult {
   const envelope = readEnvelope(stdout);
-  if (!envelope) return { message: stripAiAttribution(stripCommitPreamble(stdout.trim())) };
+  const clean = (text: string) =>
+    unwrapBody(stripAiAttribution(stripCommitPreamble(text.trim())));
+  if (!envelope) return { message: clean(stdout) };
   return {
-    message: stripAiAttribution(stripCommitPreamble(envelope.text.trim())),
+    message: clean(envelope.text),
     usage: envelope.usage,
+    modelId: envelope.modelId,
   };
+}
+
+/**
+ * "Claude Opus 5.5" from a model id like "claude-opus-5-5" or
+ * "claude-haiku-4-5-20251001" (the dated snapshot suffix is dropped); plain
+ * "Claude" when the id is missing or doesn't follow that shape.
+ */
+export function claudeModelName(modelId?: string): string {
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(?:\[.*\])?$/i.exec(
+    modelId ?? '',
+  );
+  if (!match) return 'Claude';
+  const [, family, major, minor] = match;
+  const version = minor ? `${major}.${minor}` : major;
+  return `Claude ${family[0].toUpperCase()}${family.slice(1).toLowerCase()} ${version}`;
+}
+
+/** The `Co-Authored-By` trailer crediting the model that wrote a message. */
+export const claudeCoAuthorTrailer = (modelId?: string) =>
+  `Co-Authored-By: ${claudeModelName(modelId)} <noreply@anthropic.com>`;
+
+/** A git trailer line: "Token: value", or the spec's "BREAKING CHANGE: value". */
+const TRAILER_LINE_RE = /^(?:[A-Za-z][A-Za-z0-9-]*|BREAKING CHANGE): \S/;
+
+/**
+ * Append `trailer` to `message` as git would: onto the existing trailer block
+ * when the last paragraph already is one (e.g. "Refs: #12"), otherwise as a new
+ * paragraph. A subject-only message always gets a blank line first, since git
+ * never treats the subject as trailers.
+ */
+export function appendTrailer(message: string, trailer: string): string {
+  const trimmed = message.trim();
+  const paragraphs = trimmed.split(/\n\s*\n/);
+  const last = paragraphs[paragraphs.length - 1].split('\n');
+  const lastIsTrailers = paragraphs.length > 1 && last.every((line) => TRAILER_LINE_RE.test(line));
+  return `${trimmed}${lastIsTrailers ? '\n' : '\n\n'}${trailer}`;
 }
 
 /**

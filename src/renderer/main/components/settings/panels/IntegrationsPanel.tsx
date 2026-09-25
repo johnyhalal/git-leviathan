@@ -354,6 +354,14 @@ function ClaudeSection() {
       .finally(() => setBusy(false));
   };
 
+  const setCoAuthorTrailer = (enabled: boolean) => {
+    setBusy(true);
+    window.api.claude
+      .setCoAuthorTrailer(enabled)
+      .then(setStatus)
+      .finally(() => setBusy(false));
+  };
+
   const selectedModel = status?.model ?? DEFAULT_CLAUDE_MODEL;
   // Keep a saved choice the CLI no longer lists selectable rather than silently
   // showing a different model than the one generation will actually use.
@@ -439,6 +447,26 @@ function ClaudeSection() {
               <option value="">Loading models…</option>
             )}
           </select>
+        </SettingsRow>
+      )}
+      {connected && (
+        <SettingsRow
+          label="Credit Claude as co-author"
+          description={
+            <>
+              End generated commit messages with a &ldquo;Co-Authored-By: Claude …&rdquo; line
+              naming the model that wrote it.
+              <br />
+              GitHub and GitLab show it as a co-author on the commit.
+            </>
+          }
+        >
+          <input
+            type="checkbox"
+            checked={status?.coAuthorTrailer ?? false}
+            disabled={busy}
+            onChange={(e) => setCoAuthorTrailer(e.target.checked)}
+          />
         </SettingsRow>
       )}
     </SettingsSection>

@@ -30,6 +30,8 @@ import {
   isCommitContextExcluded,
   isValidModelValue,
   listClaudeModels,
+  appendTrailer,
+  claudeCoAuthorTrailer,
   type TokenUsage,
 } from './claude';
 import {
@@ -92,6 +94,7 @@ import {
   type LinesResult,
   type CommitRefDecoration,
   type CommitDetailData,
+  type CommitPerson,
   type CommitResult,
   type RebaseInteractivePreview,
   type CherryPickPreview,
@@ -321,6 +324,8 @@ interface Settings {
   claudeConnection?: ClaudeConnection;
   /** Model used for commit messages and conflict resolution; absent means the default. */
   claudeModel?: ClaudeModel;
+  /** Whether generated commit messages get a "Co-Authored-By: Claude …" trailer; absent means off. */
+  claudeCoAuthorTrailer?: boolean;
   /**
    * Whether anonymous usage analytics are sent to Aptabase. On by default
    * (absent means enabled); toggled from General settings.
@@ -555,6 +560,9 @@ function loadSettings(): void {
     }
     if (isClaudeModel(parsed.claudeModel)) {
       settings.claudeModel = parsed.claudeModel;
+    }
+    if (typeof parsed.claudeCoAuthorTrailer === 'boolean') {
+      settings.claudeCoAuthorTrailer = parsed.claudeCoAuthorTrailer;
     }
     if (typeof parsed.telemetryEnabled === 'boolean') {
       settings.telemetryEnabled = parsed.telemetryEnabled;
@@ -1929,7 +1937,73 @@ function parseDecorations(raw: string, remotes: Set<string>): CommitRefDecoratio
 // Field/record separators unlikely to appear in commit metadata.
 const LOG_FS = '\x1f';
 const LOG_FORMAT = ['%H', '%h', '%P', '%an', '%ae', '%aI', '%s', '%D'].join(LOG_FS);
+/**
+ * `Co-authored-by:` trailer values ("Name <email>"), one per \x1e so they can't
+ * collide with LOG_FS. git matches the key case-insensitively.
+ */
+const COAUTHOR_TRAILERS = '%(trailers:key=Co-authored-by,valueonly,separator=%x1e)';
+/** The graph log's format: LOG_FORMAT plus committer + co-authors for the Author column. */
+const GRAPH_LOG_FORMAT = [LOG_FORMAT, '%cn', '%ce', COAUTHOR_TRAILERS].join(LOG_FS);
 const DEFAULT_LOG_LIMIT = 2000;
+
+/**
+ * Parse COAUTHOR_TRAILERS output into people, skipping malformed entries,
+ * deduping by email, and leaving out the author crediting themselves.
+ */
+function parseCoAuthors(
+  trailers: string,
+  authorEmail: string,
+): { name: string; email: string }[] {
+  const seen = new Set([authorEmail.trim().toLowerCase()]);
+  const people: { name: string; email: string }[] = [];
+  for (const entry of trailers.split('\x1e')) {
+    const match = /^\s*(.*?)\s*<([^<>\s]+)>\s*$/.exec(entry);
+    if (!match) continue;
+    const [, name, email] = match;
+    const key = email.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    people.push({ name: name || email, email });
+  }
+  return people;
+}
+
+/**
+ * Whether the committer is a different person from the author. A same-person
+ * committer that differs only by date (after a rebase/reword/amend) doesn't count.
+ */
+function isDifferentCommitter(authorEmail: string, committerEmail: string): boolean {
+  return committerEmail.trim().toLowerCase() !== authorEmail.trim().toLowerCase();
+}
+
+/**
+ * A commit's extra credits — co-authors from COAUTHOR_TRAILERS output and the
+ * committer when a different person — with avatars, shaped to spread onto a
+ * CommitLogEntry/BlameLine (fields omitted when empty).
+ */
+function commitCredits(
+  authorEmail: string,
+  committerName: string,
+  committerEmail: string,
+  trailers: string,
+  isGithubRepo: boolean,
+): { coAuthors?: CommitPerson[]; committer?: CommitPerson } {
+  const coAuthors = parseCoAuthors(trailers, authorEmail).map((person) => ({
+    ...person,
+    avatarUrl: avatarUrl(person.email, isGithubRepo),
+  }));
+  return {
+    ...(coAuthors.length > 0 && { coAuthors }),
+    ...(committerEmail &&
+      isDifferentCommitter(authorEmail, committerEmail) && {
+        committer: {
+          name: committerName,
+          email: committerEmail,
+          avatarUrl: avatarUrl(committerEmail, isGithubRepo),
+        },
+      }),
+  };
+}
 
 /**
  * Gravatar URL for an email, with a per-address `identicon` so authors without
@@ -2131,7 +2205,7 @@ async function readLogCommits(
     '--all',
     '--date-order',
     `--max-count=${limit}`,
-    `--pretty=format:${LOG_FORMAT}`,
+    `--pretty=format:${GRAPH_LOG_FORMAT}`,
   ]);
   return nonEmptyLines(out).map((line) => {
     const [
@@ -2143,6 +2217,9 @@ async function readLogCommits(
       date,
       subject,
       decorations = '',
+      committerName = '',
+      committerEmail = '',
+      trailers = '',
     ] = line.split(LOG_FS);
     return {
       hash,
@@ -2152,6 +2229,7 @@ async function readLogCommits(
       authorEmail,
       authorAvatarUrl: avatarUrl(authorEmail, isGithubRepo),
       date,
+      ...commitCredits(authorEmail, committerName, committerEmail, trailers, isGithubRepo),
       subject,
       refs: parseDecorations(decorations, remotes),
     };
@@ -2669,11 +2747,22 @@ async function readFileContent(
  * header on repeats, so we cache each commit's metadata by hash as we walk. An
  * all-zero hash marks a line that isn't committed yet (a working-tree edit).
  */
-function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
+function parseBlamePorcelain(
+  out: string,
+  isGithubRepo: boolean,
+  trailersByHash: Map<string, string>,
+): BlameLine[] {
   const lines: BlameLine[] = [];
   const meta = new Map<
     string,
-    { author: string; email: string; date: string; summary: string }
+    {
+      author: string;
+      email: string;
+      date: string;
+      summary: string;
+      committerName: string;
+      committerEmail: string;
+    }
   >();
   const raw = out.split('\n');
   let i = 0;
@@ -2687,7 +2776,14 @@ function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
     const hash = header[1];
     const lineNo = parseInt(header[2], 10);
     const cached = meta.get(hash);
-    const info = cached ?? { author: '', email: '', date: '', summary: '' };
+    const info = cached ?? {
+      author: '',
+      email: '',
+      date: '',
+      summary: '',
+      committerName: '',
+      committerEmail: '',
+    };
     i += 1;
     // The metadata block runs until the "\t<content>" line; absent on a repeat.
     let authorTime = 0;
@@ -2700,6 +2796,8 @@ function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
       else if (key === 'author-mail') info.email = value.replace(/^<|>$/g, '');
       else if (key === 'author-time') authorTime = parseInt(value, 10);
       else if (key === 'summary') info.summary = value;
+      else if (key === 'committer') info.committerName = value;
+      else if (key === 'committer-mail') info.committerEmail = value.replace(/^<|>$/g, '');
       i += 1;
     }
     if (authorTime) info.date = new Date(authorTime * 1000).toISOString();
@@ -2716,6 +2814,13 @@ function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
       authorAvatarUrl: avatarUrl(info.email, isGithubRepo),
       date: info.date,
       summary: info.summary,
+      ...commitCredits(
+        info.email,
+        info.committerName,
+        info.committerEmail,
+        trailersByHash.get(hash) ?? '',
+        isGithubRepo,
+      ),
       uncommitted: /^0{40}$/.test(hash),
     });
     i += 1;
@@ -2741,7 +2846,52 @@ async function readFileBlame(
   const isGithubRepo = remoteInfos.some(
     (remote) => parseRepoHost(remote.url)?.provider === 'github',
   );
-  return { path: file, lines: parseBlamePorcelain(out, isGithubRepo) };
+  const trailersByHash = await readCoAuthorTrailers(cwd, blameCommitHashes(out));
+  return { path: file, lines: parseBlamePorcelain(out, isGithubRepo, trailersByHash) };
+}
+
+/** The distinct committed hashes a `git blame --porcelain` output attributes lines to. */
+function blameCommitHashes(out: string): string[] {
+  const hashes = new Set<string>();
+  for (const match of out.matchAll(/^([0-9a-f]{40}) \d+ \d+/gm)) {
+    if (!/^0{40}$/.test(match[1])) hashes.add(match[1]);
+  }
+  return [...hashes];
+}
+
+/** Hashes per `git log --no-walk` call, keeping the command line well under Windows' limit. */
+const TRAILER_BATCH = 200;
+
+/**
+ * Read the COAUTHOR_TRAILERS output for each of `hashes` (blame's porcelain has
+ * the committer but not the message trailers). Hashes without co-authors are
+ * simply absent from the map.
+ */
+async function readCoAuthorTrailers(
+  cwd: string,
+  hashes: string[],
+): Promise<Map<string, string>> {
+  const batches: string[][] = [];
+  for (let i = 0; i < hashes.length; i += TRAILER_BATCH) {
+    batches.push(hashes.slice(i, i + TRAILER_BATCH));
+  }
+  const outputs = await Promise.all(
+    batches.map((batch) =>
+      runGit(cwd, [
+        'log',
+        '--no-walk=unsorted',
+        `--format=%H${LOG_FS}${COAUTHOR_TRAILERS}`,
+        ...batch,
+        '--',
+      ]),
+    ),
+  );
+  const byHash = new Map<string, string>();
+  for (const line of outputs.flatMap(nonEmptyLines)) {
+    const [hash, trailers = ''] = line.split(LOG_FS);
+    if (trailers) byHash.set(hash, trailers);
+  }
+  return byHash;
 }
 
 /**
@@ -2769,7 +2919,7 @@ async function readFileLog(
     '--date-order',
     '-z',
     `--max-count=${limit}`,
-    `--pretty=format:${LOG_FORMAT}${LOG_FS}%b`,
+    `--pretty=format:${GRAPH_LOG_FORMAT}${LOG_FS}%b`,
     '--',
     file,
   ]);
@@ -2777,8 +2927,20 @@ async function readFileLog(
     .split('\0')
     .filter((record) => record.length > 0)
     .map((record) => {
-      const [hash, shortHash, parents, author, authorEmail, date, subject, decorations = '', ...rest] =
-        record.split(LOG_FS);
+      const [
+        hash,
+        shortHash,
+        parents,
+        author,
+        authorEmail,
+        date,
+        subject,
+        decorations = '',
+        committerName = '',
+        committerEmail = '',
+        trailers = '',
+        ...rest
+      ] = record.split(LOG_FS);
       return {
         hash,
         shortHash,
@@ -2787,6 +2949,7 @@ async function readFileLog(
         authorEmail,
         authorAvatarUrl: avatarUrl(authorEmail, isGithubRepo),
         date,
+        ...commitCredits(authorEmail, committerName, committerEmail, trailers, isGithubRepo),
         subject,
         body: rest.join(LOG_FS).trim(),
         refs: parseDecorations(decorations, remoteNames),
@@ -2797,23 +2960,45 @@ async function readFileLog(
 /**
  * Read a single commit's full message and GPG signature status. `%G?` triggers
  * signature verification for just this one commit (cheap, unlike doing it across
- * the whole log), and `%B` is the raw message (subject + body).
+ * the whole log), and `%B` is the raw message (subject + body). Also carries the
+ * committer (only when a different person from the author) and the co-authors;
+ * `%B` stays last since the message can hold anything.
  */
 async function readCommitDetail(
   cwd: string,
   hash: string,
-): Promise<{ message: string; signature: string }> {
-  const out = await runGit(cwd, [
-    'show',
-    '--no-patch',
-    `--format=%G?${LOG_FS}%B`,
-    hash,
+): Promise<CommitDetailData> {
+  const [out, remotes] = await Promise.all([
+    runGit(cwd, [
+      'show',
+      '--no-patch',
+      `--format=${['%ae', '%cn', '%ce', '%cI', COAUTHOR_TRAILERS, '%G?', '%B'].join(LOG_FS)}`,
+      hash,
+    ]),
+    readRemotes(cwd),
   ]);
-  const sep = out.indexOf(LOG_FS);
-  const signature = sep === -1 ? '' : out.slice(0, sep);
-  const message = (sep === -1 ? out : out.slice(sep + 1)).replace(/\s+$/, '');
-  return { signature, message };
+  const fields = out.split(LOG_FS);
+  if (fields.length < 7) return { ...EMPTY_COMMIT_DETAIL };
+  const [authorEmail, committerName, committerEmail, committerDate, trailers, signature] = fields;
+  const message = fields.slice(6).join(LOG_FS).replace(/\s+$/, '');
+  const isGithubRepo = remotes.some(
+    (remote) => parseRepoHost(remote.url)?.provider === 'github',
+  );
+  const credits = commitCredits(authorEmail, committerName, committerEmail, trailers, isGithubRepo);
+  return {
+    message,
+    signature,
+    committer: credits.committer ? { ...credits.committer, date: committerDate } : null,
+    coAuthors: credits.coAuthors ?? [],
+  };
 }
+
+const EMPTY_COMMIT_DETAIL: CommitDetailData = {
+  message: '',
+  signature: '',
+  committer: null,
+  coAuthors: [],
+};
 
 /**
  * Rewrite commit `hash`'s message to `message`. HEAD is amended in place; an
@@ -4378,9 +4563,9 @@ function registerRepoIpc(): void {
     RepoChannels.commitDetail,
     async (_event, repoPath: unknown, hash: unknown): Promise<CommitDetailData> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath))
-        return { message: '', signature: '' };
+        return { ...EMPTY_COMMIT_DETAIL };
       if (typeof hash !== 'string' || hash.length === 0)
-        return { message: '', signature: '' };
+        return { ...EMPTY_COMMIT_DETAIL };
       return readCommitDetail(repoPath, hash);
     },
   );
@@ -8084,6 +8269,7 @@ function registerClaudeIpc(): void {
     binaryPath: settings.claudeConnection?.binaryPath,
     version: settings.claudeConnection?.version,
     model: settings.claudeModel ?? DEFAULT_CLAUDE_MODEL,
+    coAuthorTrailer: settings.claudeCoAuthorTrailer ?? false,
     error,
   });
 
@@ -8130,6 +8316,16 @@ function registerClaudeIpc(): void {
     (_event, model: unknown): ClaudeStatus => {
       if (!isClaudeModel(model)) return currentStatus('Unknown model.');
       settings.claudeModel = model;
+      saveSettings();
+      return currentStatus();
+    },
+  );
+
+  ipcMain.handle(
+    ClaudeChannels.setCoAuthorTrailer,
+    (_event, enabled: unknown): ClaudeStatus => {
+      if (typeof enabled !== 'boolean') return currentStatus();
+      settings.claudeCoAuthorTrailer = enabled;
       saveSettings();
       return currentStatus();
     },
@@ -8224,7 +8420,7 @@ function registerClaudeIpc(): void {
         });
       }
       try {
-        const { message, usage } = await generateCommitMessage(
+        const { message, usage, modelId } = await generateCommitMessage(
           bin,
           diff,
           changedFiles,
@@ -8257,7 +8453,14 @@ function registerClaudeIpc(): void {
           });
         }
         emitActivity({ repoPath, op: 'generate', kind: 'end', ok: true, ts: Date.now() });
-        return { status: 'ok', message: message.trim() };
+        // Any attribution the model wrote itself was stripped; when the user
+        // wants credit given, append our own, naming the model that ran.
+        return {
+          status: 'ok',
+          message: settings.claudeCoAuthorTrailer
+            ? appendTrailer(message, claudeCoAuthorTrailer(modelId))
+            : message.trim(),
+        };
       } catch (err) {
         emitActivity({ repoPath, op: 'generate', kind: 'end', ok: false, ts: Date.now() });
         return { status: 'error', message: claudeErrorMessage(err) };

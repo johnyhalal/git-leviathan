@@ -765,6 +765,13 @@ export interface CommitLogEntry {
   authorAvatarUrl: string;
   /** ISO 8601 author date. */
   date: string;
+  /**
+   * Graph and file-history logs only: people credited via `Co-authored-by:`
+   * trailers (deduped, author excluded), and the committer when a different
+   * person from the author. Shown after the author as names and avatars.
+   */
+  coAuthors?: CommitPerson[];
+  committer?: CommitPerson;
   /** First line of the commit message. */
   subject: string;
   /**
@@ -865,6 +872,20 @@ export interface CommitDetailData {
   message: string;
   /** GPG signature status from `%G?`. */
   signature: string;
+  /**
+   * Who applied/rewrote the commit (e.g. GitHub on a squash merge), with the ISO
+   * 8601 committer date. `null` when it's the same person as the author.
+   */
+  committer: (CommitPerson & { date: string }) | null;
+  /** People credited via `Co-authored-by:` trailers, deduped, author excluded. */
+  coAuthors: CommitPerson[];
+}
+
+/** A named identity on a commit (committer or co-author) with its avatar. */
+export interface CommitPerson {
+  name: string;
+  email: string;
+  avatarUrl: string;
 }
 
 /** The working tree split into staged (index) and unstaged changes. */
@@ -966,6 +987,9 @@ export interface BlameLine {
   date: string;
   /** First line of that commit's message. */
   summary: string;
+  /** The commit's co-authors and differing committer, as on a log entry. */
+  coAuthors?: CommitPerson[];
+  committer?: CommitPerson;
   /**
    * True for a line not yet committed (git's all-zero blame hash) — an uncommitted
    * working-tree edit. Such lines are shown uncolored and unlinked.
@@ -1651,6 +1675,12 @@ export interface ClaudeStatus {
   version?: string;
   /** The model Claude features (commit messages, conflict resolution) run on. */
   model: ClaudeModel;
+  /**
+   * Whether generated commit messages end with a "Co-Authored-By: Claude …"
+   * trailer. Off by default; any attribution the model adds on its own is
+   * always stripped, and this app appends its own when on.
+   */
+  coAuthorTrailer: boolean;
   /** Message from the most recent failed connect attempt. */
   error?: string;
 }
@@ -1700,6 +1730,8 @@ export const ClaudeChannels = {
   disconnect: 'claude:disconnect',
   /** Renderer -> main (invoke): choose the model Claude features run on. */
   setModel: 'claude:set-model',
+  /** Renderer -> main (invoke): turn the generated message's co-author trailer on/off. */
+  setCoAuthorTrailer: 'claude:set-co-author-trailer',
   /** Renderer -> main (invoke): list the models the local `claude` CLI offers. */
   listModels: 'claude:list-models',
   /** Renderer -> main (invoke): generate a commit message from the staged diff. */
@@ -2620,6 +2652,8 @@ export interface ClaudeApi {
   disconnect(): Promise<ClaudeStatus>;
   /** Choose the model Claude features (commit messages, conflict resolution) run on. */
   setModel(model: ClaudeModel): Promise<ClaudeStatus>;
+  /** Whether generated commit messages carry a "Co-Authored-By: Claude …" trailer. */
+  setCoAuthorTrailer(enabled: boolean): Promise<ClaudeStatus>;
   /**
    * The models the connected `claude` CLI offers (asked once per binary and
    * cached); falls back to the plain aliases when the CLI can't be asked.

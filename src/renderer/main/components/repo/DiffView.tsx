@@ -16,7 +16,8 @@ import { highlightBuffer, highlightLine, languageForPath } from './syntax';
 import { authorColor } from './authorColor';
 import { useConfirm } from '../ConfirmBar';
 import { CopyButton } from '../CopyButton';
-import { formatDateOnly, useDateFormat } from '../../dateFormat';
+import { AvatarStack, creditLines, creditNames, entryCredits, hasExtraCredits } from './credits';
+import { formatDateOnly, formatDateTime, useDateFormat } from '../../dateFormat';
 import { ResizeHandle } from './ResizeHandle';
 import { openInEditor, useOpenTools } from '../../openActions';
 import { useResizableColumns } from './useResizableColumns';
@@ -70,9 +71,15 @@ const dirName = (path: string) => {
   return slash === -1 ? '' : path.slice(0, slash + 1);
 };
 
-/** The blame avatar's tooltip: the commit's hash, author, date, and title. */
+/**
+ * The blame author avatar's tooltip: the commit's hash, author, date, and title,
+ * then each credited person with their role when there are co-authors or a
+ * differing committer.
+ */
 function blameTooltip(line: BlameLine, dateFormat: DateFormat): string {
-  return `${line.shortHash} · ${line.author} · ${formatDateOnly(line.date, dateFormat)}\n${line.summary}`;
+  const credits = entryCredits(line);
+  const summary = `${line.shortHash} · ${line.author} · ${formatDateOnly(line.date, dateFormat)}\n${line.summary}`;
+  return hasExtraCredits(credits) ? `${summary}\n\n${creditLines(credits)}` : summary;
 }
 
 /** What the body shows: the change to the file, or the file itself. */
@@ -129,6 +136,9 @@ function saveDiffPrefs(prefs: DiffPrefs) {
 // The history sidebar's width, remembered across viewers for the session so a
 // resized sidebar comes back the same when the next file is opened.
 let historySidebarWidth = 280;
+// The history sidebar can't be dragged narrower than this (its rows hold an
+// avatar stack, the title and the date + credited names).
+const HISTORY_MIN_WIDTH = 350;
 
 interface DiffViewProps {
   repoPath: string;
@@ -174,7 +184,11 @@ export function DiffView({
   const requestConfirm = useConfirm();
   const editorName = useOpenTools()?.editorName;
   // Only the left width is used: it sizes the history sidebar.
-  const { leftWidth: historyWidth, startResize } = useResizableColumns(historySidebarWidth, 320);
+  const { leftWidth: historyWidth, startResize } = useResizableColumns(
+    historySidebarWidth,
+    320,
+    HISTORY_MIN_WIDTH,
+  );
   useEffect(() => {
     historySidebarWidth = historyWidth;
   }, [historyWidth]);
@@ -1461,15 +1475,12 @@ function BlameCell({
           <span className="blame-uncommitted">Uncommitted</span>
         ) : (
           <button type="button" className="blame-commit" onClick={() => onPickRev(line.hash)}>
-            <img
-              className="blame-avatar tooltip-host"
-              data-tooltip={blameTooltip(line, dateFormat)}
-              src={line.authorAvatarUrl}
-              alt={line.author}
-              width={16}
-              height={16}
-              loading="lazy"
-              draggable={false}
+            <AvatarStack
+              credits={entryCredits(line)}
+              className="blame-avatar"
+              stackClassName="blame-avatars"
+              size={16}
+              authorTooltip={blameTooltip(line, dateFormat)}
             />
             <span className="blame-summary">{line.summary}</span>
             <span className="blame-date">{formatDateOnly(line.date, dateFormat)}</span>
@@ -1481,8 +1492,8 @@ function BlameCell({
 
 /**
  * The history sidebar's timeline: the commits that touched this file, newest
- * first. Each row is the author's avatar (edged in their blame color), the
- * commit title over its date + author, and the short hash. Clicking a row shows
+ * first. Each row is the author's avatar (co-authors/committer tucked behind),
+ * the commit title over its date + credited names, and the short hash. Clicking a row shows
  * that commit's version of the file in the body (the viewed revision is
  * highlighted); clicking the hash leaves the viewer for that commit in the graph.
  */
@@ -1504,7 +1515,7 @@ function HistoryBody({
   return (
     <div className="file-history" role="group">
       {history.map((commit) => {
-        const color = authorColor(commit.authorEmail, commit.author);
+        const credits = entryCredits(commit);
         const pick = () => onPickRev(commit.hash);
         // A div rather than a button: the row hosts the hash's copy button, and
         // buttons can't nest. Enter/Space select it for keyboard users.
@@ -1522,13 +1533,11 @@ function HistoryBody({
               }
             }}
           >
-            <img
+            <AvatarStack
+              credits={credits}
               className="file-history-avatar"
-              src={commit.authorAvatarUrl}
-              alt=""
-              loading="lazy"
-              draggable={false}
-              style={{ borderColor: color.accent }}
+              stackClassName="file-history-avatars"
+              size={34}
             />
             <span className="file-history-main">
               <span
@@ -1538,7 +1547,7 @@ function HistoryBody({
                 {commit.subject}
               </span>
               <span className="file-history-meta">
-                {formatDateOnly(commit.date, dateFormat)} · {commit.author}
+                {formatDateTime(commit.date, dateFormat)} · {creditNames(credits)}
               </span>
             </span>
             {/* The hash is its own hover target: it jumps to the commit in the

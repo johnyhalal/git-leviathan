@@ -43,8 +43,10 @@
   cursor: pointer;
 }
 
+/* Primary-tinted rather than solid, so the item's text stays readable in both
+   themes (matching how the graph highlights its selected row). */
 .command-palette-item.is-active {
-  background: var(--selection);
+  background: color-mix(in srgb, var(--primary) 28%, transparent);
 }
 
 .command-palette-category {

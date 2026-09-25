@@ -25,6 +25,7 @@ import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
 import { TagContextMenu } from './TagContextMenu';
 import { CommitGraph, graphCellWidth } from './CommitGraph';
 import { computeGraph, GRAPH_COLORS, type GraphNode } from './graph';
+import { creditLines, creditNames, entryCredits, hasExtraCredits } from './credits';
 import {
   COMMIT_COLUMNS,
   useCommitColumns,
@@ -904,12 +905,21 @@ function renderCell(key: CommitColumnKey, ctx: CellContext) {
           <div className="commit-cell-inset">{formatDateTime(commit.date, ctx.dateFormat)}</div>
         </td>
       );
-    case 'author':
+    case 'author': {
+      // Author, co-authors, then a differing committer; the tooltip lists each
+      // with their role, only when anyone beyond the author is credited.
+      const credits = entryCredits(commit);
       return (
         <td key={key} className="commit-author">
-          <div className="commit-cell-inset">{commit.author}</div>
+          <div
+            className="commit-cell-inset"
+            data-tooltip={hasExtraCredits(credits) ? creditLines(credits) : undefined}
+          >
+            {creditNames(credits)}
+          </div>
         </td>
       );
+    }
   }
 }
 

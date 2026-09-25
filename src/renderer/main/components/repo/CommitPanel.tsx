@@ -14,6 +14,7 @@ import type { DiffTarget } from './DiffView';
 import { FileContextMenu, type FileMenuItem } from './FileContextMenu';
 import { useConfirm, type ConfirmAction } from '../ConfirmBar';
 import { CopyButton } from '../CopyButton';
+import { AvatarStack, entryCredits } from './credits';
 import { formatDateTime, useDateFormat } from '../../dateFormat';
 import { formatAccelerator } from '../../commands/keys';
 import { openMenuItems, useOpenTools } from '../../openActions';
@@ -53,6 +54,9 @@ const dirName = (path: string) => {
   const slash = path.lastIndexOf('/');
   return slash === -1 ? '' : path.slice(0, slash + 1);
 };
+
+/** Co-authors named beside the author in the detail panel; the rest become "+N". */
+const MAX_NAMED_COAUTHORS = 2;
 
 /** Split a commit message into its subject (first line) and body (the rest). */
 const splitMessage = (message: string) => {
@@ -617,6 +621,13 @@ function CommitDetail({
   // Fall back to the subject (already in hand) until the full message arrives.
   const message = detail?.message ?? commit.subject;
   const signed = detail ? isSigned(detail.signature) : false;
+  // Committer/co-authors arrive with the detail; the name line lists the author
+  // plus a couple of co-authors and folds the rest into a "+N".
+  const committer = detail?.committer ?? null;
+  const coAuthors = detail?.coAuthors ?? [];
+  const shownCoAuthors = coAuthors.slice(0, MAX_NAMED_COAUTHORS);
+  const hiddenCoAuthors = coAuthors.slice(MAX_NAMED_COAUTHORS);
+  const credits = { ...entryCredits(commit), coAuthors, committer };
 
   const startEdit = () => {
     const parts = splitMessage(message);
@@ -751,18 +762,35 @@ function CommitDetail({
           </div>
         )}
         <div className="commit-detail-meta">
-          <img
+          <AvatarStack
+            credits={credits}
             className="commit-detail-avatar"
-            src={commit.authorAvatarUrl}
-            alt=""
-            width={36}
-            height={36}
+            stackClassName="commit-detail-avatars"
+            size={36}
           />
           <div className="commit-detail-author">
-            <span className="commit-detail-author-name">{commit.author}</span>
+            <span className="commit-detail-author-name">
+              {[commit.author, ...shownCoAuthors.map((person) => person.name)].join(', ')}
+              {hiddenCoAuthors.length > 0 && (
+                <span
+                  className="commit-detail-coauthor-more"
+                  data-tooltip={hiddenCoAuthors.map((person) => person.name).join(', ')}
+                >
+                  {' '}+{hiddenCoAuthors.length}
+                </span>
+              )}
+            </span>
             <span className="commit-detail-author-date">
               <i>authored</i> {formatDateTime(commit.date, dateFormat)}
             </span>
+            {committer && (
+              <span
+                className="commit-detail-author-date commit-detail-committer"
+                data-tooltip={`${committer.name} <${committer.email}>`}
+              >
+                <i>committed by</i> {committer.name} {formatDateTime(committer.date, dateFormat)}
+              </span>
+            )}
           </div>
           {commit.parents.length > 0 && (
             <div className="commit-detail-parents">

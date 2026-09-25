@@ -572,6 +572,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(ClaudeChannels.disconnect) as Promise<ClaudeStatus>,
     setModel: (model: ClaudeModel) =>
       ipcRenderer.invoke(ClaudeChannels.setModel, model) as Promise<ClaudeStatus>,
+    setCoAuthorTrailer: (enabled: boolean) =>
+      ipcRenderer.invoke(ClaudeChannels.setCoAuthorTrailer, enabled) as Promise<ClaudeStatus>,
     listModels: () =>
       ipcRenderer.invoke(ClaudeChannels.listModels) as Promise<ClaudeModelOption[]>,
     generateCommitMessage: (path: string) =>
