@@ -196,6 +196,7 @@ export function CommitSigningPanel() {
         >
           <input
               type="checkbox"
+              className="checkbox"
               checked={config?.signCommits ?? false}
               disabled={working}
               onChange={(e) =>
@@ -211,6 +212,7 @@ export function CommitSigningPanel() {
         >
           <input
               type="checkbox"
+              className="checkbox"
               checked={config?.signTags ?? false}
               disabled={working}
               onChange={(e) =>

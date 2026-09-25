@@ -463,6 +463,7 @@ function ClaudeSection() {
         >
           <input
             type="checkbox"
+            className="checkbox"
             checked={status?.coAuthorTrailer ?? false}
             disabled={busy}
             onChange={(e) => setCoAuthorTrailer(e.target.checked)}

@@ -632,7 +632,9 @@
 
 .merge-block-tools button {
   height: 18px;
-  font-size: 11px;
+  font-size: 10px;
+  line-height: 10px;
+  border-radius: 3px;
 }
 
 /* Per-block "Auto Resolve" (asks Claude); its purple → pink fill and border
@@ -642,11 +644,12 @@
   align-items: center;
   gap: 4px;
   height: 18px;
+  line-height: 10px;
   padding: 0 7px;
-  border-radius: 6px;
+  border-radius: 3px;
   font: inherit;
   font-family: system-ui, sans-serif;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;

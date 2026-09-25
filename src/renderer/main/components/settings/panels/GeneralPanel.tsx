@@ -259,6 +259,7 @@ export function GeneralPanel() {
         >
           <input
             type="checkbox"
+            className="checkbox"
             checked={telemetry}
             onChange={(e) => onToggleTelemetry(e.target.checked)}
           />

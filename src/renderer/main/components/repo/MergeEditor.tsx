@@ -677,6 +677,7 @@ function BlockCheckbox({ checked, indeterminate, onChange }: BlockCheckboxProps)
     <input
       ref={ref}
       type="checkbox"
+      className="checkbox"
       checked={checked}
       onChange={onChange}
       aria-label={checked ? 'Remove block from output' : 'Add block to output'}

@@ -1885,6 +1885,7 @@ function WorkingChanges({
           <label className="commit-action-check">
             <input
               type="checkbox"
+              className="checkbox"
               checked={pushAfterCommit}
               onChange={(event) => setPushAfterCommit(event.target.checked)}
             />
@@ -1893,6 +1894,7 @@ function WorkingChanges({
           <label className="commit-action-check">
             <input
               type="checkbox"
+              className="checkbox"
               checked={amendCommit}
               onChange={(event) => void toggleAmend(event.target.checked)}
             />
