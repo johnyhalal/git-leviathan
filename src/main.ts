@@ -8087,7 +8087,25 @@ function registerClaudeIpc(): void {
     error,
   });
 
-  ipcMain.handle(ClaudeChannels.status, (): ClaudeStatus => currentStatus());
+  // The CLI updates itself (or via Homebrew) behind our back, so the version
+  // recorded at connect time goes stale — re-read it from the stored binary.
+  ipcMain.handle(ClaudeChannels.status, async (): Promise<ClaudeStatus> => {
+    const conn = settings.claudeConnection;
+    if (!conn) return currentStatus();
+    const probe = await probeClaude(conn.binaryPath);
+    if (
+      probe.installed &&
+      probe.binaryPath &&
+      (probe.binaryPath !== conn.binaryPath || probe.version !== conn.version)
+    ) {
+      settings.claudeConnection = {
+        binaryPath: probe.binaryPath,
+        version: probe.version,
+      };
+      saveSettings();
+    }
+    return currentStatus();
+  });
 
   ipcMain.handle(
     ClaudeChannels.connect,
