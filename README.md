@@ -52,31 +52,48 @@ Swap `x64` for `arm64` on ARM machines (e.g. a Raspberry Pi or an arm64 server).
   an open-folder picker, and a clone entry point.
 - **Clone** with live progress reporting and cancellation; remembers the last
   clone directory.
+- **Remotes** — add, rename, edit fetch/push URLs, and remove remotes from repo
+  settings or the sidebar.
 - **Worktrees** — add, remove, and lock linked worktrees.
 - **Submodules** — add, init, update (incl. `--remote`), sync, deinit, and
   remove, with per-submodule status.
 - **Git LFS** — view LFS status and track / untrack patterns.
+- **Open in…** — open the repo or a file in your editor, terminal, or file
+  manager (e.g. "Reveal in Finder"), with installed editors and terminals
+  detected per platform and a custom editor option.
 - **Bundled git** — ships its own git binary and falls back to the system git,
   so it works even on machines with no git installed.
 
 ### Commit graph & history
 
 - **Commit graph** with topo-ordered lane layout and branch/tag leader lines.
+- **Branch filtering** — hide branches from the graph, or show only selected
+  ones; a banner above the graph says what's hidden and offers "Show all".
+- **Commit search** (⌘F) across the whole history by message, author, or hash
+  prefix, with a match counter and previous/next stepping.
 - **Working-tree row** — a synthetic entry for uncommitted changes woven into
   the graph.
 - **Stashes** woven into the graph alongside commits.
 - **Commit detail panel** with metadata, changed files, and author avatars.
+- **Co-authors and committers** — `Co-authored-by` trailers and a differing
+  committer are shown as avatar stacks and credits in the graph, commit
+  details, file history, and blame.
 
 ### Diffs & files
 
-- **Diff viewer** for staged, unstaged, and per-commit changes.
+- **Diff viewer** for staged, unstaged, and per-commit changes, with **hunk**,
+  **inline whole-file**, and **split side-by-side** layouts, ignore-whitespace
+  and soft-wrap toggles, and previous/next hunk stepping.
+- **Blame** (author-coloured runs, scroll-synced gutter) and a resizable
+  **file history** sidebar, usable together over any file view.
 - **Multi-commit range diff** — aggregate a selection of commits into one diff.
 - **File content** view and commit-level file lists.
 
 ### Staging & committing
 
-- Stage / unstage / discard changes at the **file and hunk** level, and
-  **commit** from a status view.
+- Stage / unstage / discard changes at the **file, hunk, and line** level —
+  including multi-line selections built from the gutter — and **commit** from
+  a status view (⌘/Ctrl+Enter).
 - **Ignore** files (write to `.gitignore`) and **delete** untracked files.
 - **Reword** commits — amends in place for HEAD, scripted non-interactive
   rebase for older commits.
@@ -95,22 +112,27 @@ Swap `x64` for `arm64` on ARM machines (e.g. a Raspberry Pi or an arm64 server).
   and **fast-forward**.
 - **Cherry-pick** (single, multi-commit editor, and preview) and **revert**.
 - **Reset** — soft / mixed / hard, with a preview of the effect.
-- **Conflict resolution** — merge-state view, per-file conflict resolving, mark
-  resolved, and continue / abort / skip.
+- **Conflict resolution** — merge-state view and a line-by-line ours / theirs /
+  output editor with per-line and per-block picks, image-conflict previews,
+  mark resolved (or resolved as-is), and continue / abort / skip. Merge commits
+  are prefilled from git's merge message.
 - **Push** / push with set-upstream / **pull** (configurable pull mode) plus a
-  background **fetch**.
+  background **fetch**, with optional `--prune`.
 - **Gitflow** — configurable feature/release/hotfix flows: start and finish.
-- **Stash** push / apply / pop / drop.
+- **Stash** push / apply / pop / drop, with variants (with message, keep index,
+  staged only, tracked only) and **per-file stash**.
 
 ### Live sync
 
 - **Working-tree watching** that auto re-syncs the UI on external edits and
   commits, plus a re-sync on app focus.
-- **Live git activity** streamed to a footer log.
+- **Live git activity** streamed to a footer log, kept per repository across
+  tab switches.
 
 ### Integrations
 
-- Connect **GitHub** and **GitLab** accounts via OAuth device flow.
+- Connect **GitHub** and **GitLab** accounts via OAuth device flow or a
+  personal access token (with a per-scope explanation of what's needed).
 - **List remote repositories** and **pull requests** from connected accounts,
   and **create a pull request**.
 - **Authenticated clone URLs** with secrets redacted from any output shown.
@@ -118,15 +140,26 @@ Swap `x64` for `arm64` on ARM machines (e.g. a Raspberry Pi or an arm64 server).
 
 ### AI
 
-- **AI-drafted commit messages** via a locally installed `claude` CLI, using the
-  staged diff — no credentials stored in the app.
+Uses a locally installed `claude` CLI — no credentials are stored in the app.
+
+- **AI-drafted commit messages** from the staged diff, with a per-file diff
+  budget to keep token usage low.
+- **AI-assisted conflict resolution** — "Ask Claude" per conflict block, or
+  auto-resolve a whole file, using the common ancestor as context.
+- **Model selection** from the models your CLI reports, and an opt-in
+  `Co-Authored-By` trailer naming the model that wrote the message.
 
 ### App & UX
 
+- **Command palette** (⌘P) and a native menu driven by one shortcut table, with
+  shortcut hints in tooltips and a Keyboard Shortcuts settings panel.
 - **Light/dark theme** driven by the OS preference with a persisted override.
+- **Configurable date format** — system, ISO 8601, US, European, or relative.
 - **Splash screen** boot sequence and an in-app **update** banner
   (check / download / install) with a configurable check interval.
-- **Settings** modal, collapsible sidebar sections, resizable columns, and toast
-  notifications.
+- **Settings** modal (General, Appearance, Git, Commit Signing, Integrations, Shortcuts),
+  collapsible sidebar sections, resizable columns, and toast notifications.
+- **Hardened renderer** — strict Content-Security-Policy, sandboxed windows,
+  and a single-instance lock.
 - **Cross-platform** builds for Windows, macOS, and Linux (including a macOS
   universal build).
