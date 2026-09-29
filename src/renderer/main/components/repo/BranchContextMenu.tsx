@@ -2,6 +2,12 @@ import { useState } from 'react';
 import type { ResetMode, ResetPreview } from '../../../../types/ipc';
 import { useConfirm } from '../ConfirmBar';
 import {
+  isRefVisible,
+  targetRefs,
+  useGraphFilter,
+  type GraphFilterControls,
+} from './GraphFilterContext';
+import {
   ContextMenu,
   MenuRow,
   type ContextMenuEntry,
@@ -118,7 +124,7 @@ type Handlers = Pick<
 
 /**
  * Build the actions available for one branch: checkout, merge/rebase relative to
- * the checked-out branch, rename, and delete (local / remote). The destructive
+ * the checked-out branch, rename, hide/solo in the graph, and delete (local / remote). The destructive
  * delete rows are separated from the rest, and each delete — plus rename, which
  * needs a name — routes through the shared confirm bar rather than acting at once.
  */
@@ -127,6 +133,7 @@ function targetEntries(
   currentBranch: string | undefined,
   requestConfirm: ReturnType<typeof useConfirm>,
   h: Handlers,
+  graph: GraphFilterControls | null,
 ): MenuEntry[] {
   const actions: MenuItem[] = [];
   const dangers: MenuItem[] = [];
@@ -183,6 +190,28 @@ function targetEntries(
           ],
         }),
     });
+  }
+
+  // Graph visibility. The checked-out branch can't be hidden (the graph always
+  // walks HEAD), but it can be soloed. Solo on the branch that is already the
+  // whole solo set turns into "show all" instead.
+  const refs = targetRefs(target);
+  if (graph && refs.length) {
+    const { filter } = graph;
+    if (!target.isCurrent) {
+      const visible = refs.some((ref) => isRefVisible(filter, ref));
+      actions.push({
+        label: `${visible ? 'Hide' : 'Show'} ${target.name} in graph`,
+        onClick: () => graph.setVisible(refs, !visible),
+      });
+    }
+    const soloedAlone =
+      filter.solo.length === refs.length && refs.every((ref) => filter.solo.includes(ref));
+    actions.push(
+      soloedAlone
+        ? { label: 'Show all branches in graph', onClick: () => graph.solo(null) }
+        : { label: `Solo ${target.name} in graph`, onClick: () => graph.solo(refs) },
+    );
   }
 
   // Delete — destructive, so each first raises the confirm bar.
@@ -264,6 +293,7 @@ export function BranchContextMenu({
   onCreateAnnotatedTagHere,
 }: BranchContextMenuProps) {
   const requestConfirm = useConfirm();
+  const graph = useGraphFilter();
   // The row whose submenu is currently open (index into `entries`), if any.
   const [openIndex, setOpenIndex] = useState<number | null>(null);
   const handlers: Handlers = {
@@ -278,7 +308,7 @@ export function BranchContextMenu({
   // Flatten every target's entries, dividing one branch's group from the next.
   const entries: MenuEntry[] = [];
   for (const target of targets) {
-    const group = targetEntries(target, currentBranch, requestConfirm, handlers);
+    const group = targetEntries(target, currentBranch, requestConfirm, handlers, graph);
     if (group.length === 0) continue;
     if (entries.length) entries.push('separator');
     entries.push(...group);

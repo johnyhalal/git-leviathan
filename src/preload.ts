@@ -42,6 +42,7 @@ import {
   type CloneResult,
   type CommitLogEntry,
   type CommitSearchResult,
+  type GraphFilter,
   type DiffLineRef,
   type DiffOptions,
   type LinesResult,
@@ -160,6 +161,10 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.log, path, limit) as Promise<CommitLogEntry[]>,
     search: (path: string, query: string) =>
       ipcRenderer.invoke(RepoChannels.search, path, query) as Promise<CommitSearchResult>,
+    getGraphFilter: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.getGraphFilter, path) as Promise<GraphFilter>,
+    setGraphFilter: (path: string, filter: GraphFilter) =>
+      ipcRenderer.invoke(RepoChannels.setGraphFilter, path, filter) as Promise<GraphFilter>,
     commitFiles: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.commitFiles, path, hash) as Promise<FileChange[]>,
     commitTree: (path: string, hash: string) =>

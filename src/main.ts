@@ -89,6 +89,7 @@ import {
   type SubmoduleAddOptions,
   type CommitLogEntry,
   type CommitSearchResult,
+  type GraphFilter,
   type DiffLineRef,
   type DiffOptions,
   type LinesResult,
@@ -302,6 +303,8 @@ interface Settings {
   activeTab?: string;
   /** Repo sidebar collapsible sections' open/closed state, keyed by section id. */
   sidebarSections?: Record<string, boolean>;
+  /** Each repository's hidden / solo graph branches, keyed by repo path; unfiltered repos are absent. */
+  graphFilters?: Record<string, GraphFilter>;
   /** Default pull mode for the toolbar's pull action (global, not per-repo). */
   pullMode?: PullMode;
   /** Last-opened section id of the Settings dialog, restored on next open. */
@@ -510,6 +513,14 @@ function loadSettings(): void {
       }
       settings.sidebarSections = valid;
     }
+    if (parsed.graphFilters && typeof parsed.graphFilters === 'object') {
+      const valid: Record<string, GraphFilter> = {};
+      for (const [repoPath, raw] of Object.entries(parsed.graphFilters as Record<string, unknown>)) {
+        const filter = sanitizeGraphFilter(raw);
+        if (filter) valid[repoPath] = filter;
+      }
+      settings.graphFilters = valid;
+    }
     if (PULL_MODES.includes(parsed.pullMode as PullMode)) {
       settings.pullMode = parsed.pullMode as PullMode;
     }
@@ -584,6 +595,34 @@ function loadSettings(): void {
   } catch {
     // No settings file yet or it is unreadable — fall back to defaults.
   }
+}
+
+/** Most refs one graph filter list may hold. */
+const MAX_GRAPH_FILTER_REFS = 200;
+
+/**
+ * A branch ref the graph filter may name: a full `refs/heads/…` or
+ * `refs/remotes/…` name. The `refs/` prefix keeps it from ever reading as a git
+ * option, and refusing glob characters (which git's ref-name rules forbid
+ * anyway) keeps `--exclude=<ref>` an exact match.
+ */
+function isGraphRef(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= 255 &&
+    /^refs\/(heads|remotes)\/./.test(value) &&
+    !/[\s*?[\\~^:]|\.\./.test(value)
+  );
+}
+
+/** A validated, de-duplicated graph filter, or null when it filters nothing. */
+function sanitizeGraphFilter(value: unknown): GraphFilter | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const refs = (list: unknown) =>
+    Array.isArray(list) ? [...new Set(list.filter(isGraphRef))].slice(0, MAX_GRAPH_FILTER_REFS) : [];
+  const filter = { hidden: refs(raw.hidden), solo: refs(raw.solo) };
+  return filter.hidden.length || filter.solo.length ? filter : null;
 }
 
 function saveSettings(): void {
@@ -2182,6 +2221,31 @@ async function enrichGithubAvatars(
   }
 }
 
+/**
+ * The revisions the graph walks, honoring the repo's graph filter. Unfiltered it
+ * is every ref minus the stash (see {@link readLogCommits}). Hidden branches are
+ * `--exclude`d from that `--all` (which still includes HEAD, so the checked-out
+ * branch never vanishes). Remote HEAD symrefs (`origin/HEAD`) are always
+ * excluded: they only alias a branch `--all` already walks, and would otherwise
+ * keep a hidden `origin/main` in the graph through the alias. Solo walks just the named refs plus HEAD, with
+ * `--ignore-missing` so a since-deleted branch can't fail the whole log.
+ * `log` and `search` share this walk so a search hit's position stays a valid
+ * `--max-count` for the graph.
+ */
+function graphWalk(repoPath: string): string[] {
+  const filter = settings.graphFilters?.[repoPath];
+  if (filter?.solo.length) return ['--ignore-missing', ...filter.solo, 'HEAD'];
+  const hidden = (filter?.hidden ?? []).map((ref) => `--exclude=${ref}`);
+  return ['--exclude=refs/stash', '--exclude=refs/remotes/*/HEAD', ...hidden, '--all'];
+}
+
+/** Drops hidden branches' labels too, from commits still reachable through another ref. */
+function graphDecorateArgs(repoPath: string): string[] {
+  const filter = settings.graphFilters?.[repoPath];
+  if (!filter || filter.solo.length) return [];
+  return filter.hidden.map((ref) => `--decorate-refs-exclude=${ref}`);
+}
+
 async function readLogCommits(
   cwd: string,
   limit: number,
@@ -2199,10 +2263,11 @@ async function readLogCommits(
   // keeps the stash out of this walk: a stash is a merge commit and --all would
   // otherwise pull in both the stash tip and its synthetic "index on …" parent.
   // Stashes are woven in separately, once each, by readStashCommits/mergeStashes.
+  // The repo's graph filter narrows that walk (see graphWalk).
   const out = await runGit(cwd, [
     'log',
-    '--exclude=refs/stash',
-    '--all',
+    ...graphWalk(cwd),
+    ...graphDecorateArgs(cwd),
     '--date-order',
     `--max-count=${limit}`,
     `--pretty=format:${GRAPH_LOG_FORMAT}`,
@@ -2321,7 +2386,7 @@ const MAX_SEARCH_QUERY = 200;
  * hits are unioned here.
  */
 async function searchLog(cwd: string, query: string): Promise<CommitSearchResult> {
-  const walk = ['--exclude=refs/stash', '--all', '--date-order'];
+  const walk = [...graphWalk(cwd), '--date-order'];
   const [all, byMessage, byAuthor] = await Promise.all([
     runGit(cwd, ['rev-list', ...walk]),
     runGit(cwd, ['log', ...walk, '-i', '-F', `--grep=${query}`, '--format=%H']),
@@ -4399,6 +4464,32 @@ function registerRepoIpc(): void {
       const trimmed = query.trim().slice(0, MAX_SEARCH_QUERY);
       if (!trimmed) return none;
       return searchLog(repoPath, trimmed);
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.getGraphFilter,
+    (_event, repoPath: unknown): GraphFilter => {
+      const filter = typeof repoPath === 'string' ? settings.graphFilters?.[repoPath] : undefined;
+      return filter
+        ? { hidden: [...filter.hidden], solo: [...filter.solo] }
+        : { hidden: [], solo: [] };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.setGraphFilter,
+    (_event, repoPath: unknown, filter: unknown): GraphFilter => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        throw new Error('Invalid graph filter payload');
+      }
+      const next = sanitizeGraphFilter(filter);
+      const filters = { ...(settings.graphFilters ?? {}) };
+      if (next) filters[repoPath] = next;
+      else delete filters[repoPath];
+      settings.graphFilters = filters;
+      saveSettings();
+      return next ?? { hidden: [], solo: [] };
     },
   );
 

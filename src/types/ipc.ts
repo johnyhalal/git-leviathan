@@ -734,6 +734,21 @@ export interface CommitRefDecoration {
 }
 
 /** One commit in the history, with the parent links the graph is drawn from. */
+/**
+ * Which branches the commit graph walks, persisted per repository. Refs are full
+ * names (`refs/heads/main`, `refs/remotes/origin/main`). HEAD is always walked,
+ * so the checked-out branch and the working-tree row never drop out.
+ */
+export interface GraphFilter {
+  /** Branches left out of the graph (their unique commits and their labels). */
+  hidden: string[];
+  /** When non-empty, the graph shows only these branches' history; `hidden` is then ignored. */
+  solo: string[];
+}
+
+/** The unfiltered graph: every branch, tag and remote. */
+export const EMPTY_GRAPH_FILTER: GraphFilter = { hidden: [], solo: [] };
+
 /** Result of a {@link RepoChannels.search} over the whole commit history. */
 export interface CommitSearchResult {
   /** Matching commit hashes, in graph (`--date-order`) order, newest first. */
@@ -1147,6 +1162,10 @@ export const RepoChannels = {
   log: 'repo:log',
   /** Renderer -> main (invoke): search the whole history by message, author or hash prefix. */
   search: 'repo:search',
+  /** Renderer -> main (invoke): read which branches the commit graph hides / solos. */
+  getGraphFilter: 'repo:get-graph-filter',
+  /** Renderer -> main (invoke): replace the graph's hidden / solo branches; returns what was stored. */
+  setGraphFilter: 'repo:set-graph-filter',
   /** Renderer -> main (invoke): read the files changed by a single commit. */
   commitFiles: 'repo:commit-files',
   /** Renderer -> main (invoke): list every file in a commit's tree snapshot. */
@@ -1895,6 +1914,13 @@ export interface RepoApi {
    * hash prefixes. Resolves with no matches for an empty query or a non-repo.
    */
   search(path: string, query: string): Promise<CommitSearchResult>;
+  /** Read the repository's graph filter (empty lists when unfiltered). */
+  getGraphFilter(path: string): Promise<GraphFilter>;
+  /**
+   * Replace the repository's graph filter and persist it. Resolves with the
+   * filter as stored (invalid refs dropped); `log` and `search` then honor it.
+   */
+  setGraphFilter(path: string, filter: GraphFilter): Promise<GraphFilter>;
   /** Read the files changed by the commit `hash` (vs its first parent). */
   commitFiles(path: string, hash: string): Promise<FileChange[]>;
   /**

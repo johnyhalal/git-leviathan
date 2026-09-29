@@ -20,7 +20,57 @@
 .repo-column-center {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* The center column's scroller, below the (fixed) graph filter strip. */
+.repo-column-center-scroll {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   overflow: auto;
+}
+
+/* "N branches hidden" / "Showing only …" above the graph, with a way back. */
+.graph-filter-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px 7px 9px;
+  border-left: 3px solid var(--primary);
+  background: color-mix(in srgb, var(--primary) 30%, var(--bg));
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.graph-filter-bar > svg {
+  flex: 0 0 auto;
+  color: var(--recent-item-fg);
+}
+
+.graph-filter-bar-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-filter-bar-clear {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--primary);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--recent-item-fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.graph-filter-bar-clear:hover {
+  background: color-mix(in srgb, var(--primary) 18%, var(--control-bg));
 }
 
 .repo-column-right {
@@ -116,12 +166,12 @@ body.is-col-resizing {
 }
 
 .repo-section-body {
-  padding: 2px 4px 8px 8px;
+  padding: 2px 0 8px;
 }
 
 .repo-section-empty {
   margin: 0;
-  padding: 4px 8px;
+  padding: 4px 12px 4px 16px;
   color: var(--fg-muted);
   font-size: 12px;
 }
@@ -133,7 +183,7 @@ body.is-col-resizing {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 5px 4px;
+  padding: 5px 8px 5px 4px;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -191,7 +241,7 @@ body.is-col-resizing {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  left: 4px;
+  left: 10px;
   display: inline-flex;
 }
 
@@ -452,13 +502,39 @@ body.is-col-resizing {
   color: var(--fg);
 }
 
+/* A row action that stays visible without hover (the hidden-branch eye). */
+.repo-row-action.is-pinned {
+  opacity: 1;
+}
+
+/* The show/hide-in-graph eye: out of the flex flow in the row's leading gutter,
+   centered on the same column as the checked-out branch's check, so branch
+   icons stay aligned whether or not a row has one. */
+.repo-row-action.repo-row-eye {
+  position: absolute;
+  top: 50%;
+  left: 7px;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  /* Drop the UA button padding (1px 6px): it left an 8px-wide content box that
+     squeezed the icon to 8px whatever its size prop. */
+  padding: 0;
+  color: var(--primary);
+}
+
+/* A branch left out of the commit graph: its label fades. */
+.repo-list-item.is-graph-hidden .repo-row-main {
+  opacity: 0.5;
+}
+
 /* Collapsible folder rows in the branch tree. */
 .repo-tree-folder-header {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 5px 8px;
+  padding: 5px 12px 5px 8px;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -491,7 +567,7 @@ body.is-col-resizing {
 .repo-tree-folder-row {
   display: flex;
   align-items: center;
-  padding-right: 4px;
+  padding-right: 8px;
   border-radius: 6px;
 }
 
@@ -502,6 +578,7 @@ body.is-col-resizing {
 .repo-tree-folder-row .repo-tree-folder-header {
   flex: 1 1 auto;
   min-width: 0;
+  padding-right: 8px;
 }
 
 .repo-tree-folder-row .repo-tree-folder-header:hover {
@@ -624,7 +701,7 @@ body.is-col-resizing {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  left: 4px;
+  left: 10px;
   display: inline-flex;
   color: var(--fg-muted);
 }
