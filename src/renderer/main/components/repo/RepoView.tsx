@@ -172,15 +172,15 @@ export function RepoView({
     hadMergeRef.current = next !== null;
     setMergeState(next);
     if (next && !was) {
+      // The resolver (and the merge banner behind it) says it all; no toast too.
       setResolverOpen(true);
-      onNotice?.('Conflicts', `${next.description} — resolve the conflicts to continue.`);
       // A conflicted merge still gets the message a clean merge would record;
       // prefill it (without clobbering a message the user already typed).
       const mergeMessage = next.op === 'merge' ? next.message : undefined;
       if (mergeMessage) setCommitMessage((prev) => (prev.trim() ? prev : mergeMessage));
     }
     if (!next) setResolverOpen(false);
-  }, [onNotice]);
+  }, []);
   const applyMergeRef = useRef(applyMergeState);
   applyMergeRef.current = applyMergeState;
 
@@ -1246,6 +1246,16 @@ export function RepoView({
     [repoPath],
   );
 
+  // A conflict resolved from the commit panel's file menu (a side picked, or the
+  // external merge tool): the resolved file moves into the working-tree lists.
+  const conflictsChanged = useCallback(
+    (merge: MergeState | null) => {
+      applyMergeRef.current(merge);
+      void window.api.repo.status(repoPath).then(setWorkingStatus);
+    },
+    [repoPath],
+  );
+
   // Open the full-screen resolver, optionally pre-selecting a file (clicking a
   // conflicted file in the commit panel jumps straight to it).
   const openResolver = useCallback((file: string | null) => {
@@ -1385,6 +1395,7 @@ export function RepoView({
             conflicts={mergeState?.conflicts ?? []}
             onMarkResolved={(file) => void markResolved(file)}
             onOpenConflict={(file) => openResolver(file)}
+            onConflictsChanged={conflictsChanged}
             commitMessage={commitMessage}
             onCommitMessageChange={setCommitMessage}
             loadingMore={loadingMore}

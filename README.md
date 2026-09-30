@@ -61,6 +61,10 @@ Swap `x64` for `arm64` on ARM machines (e.g. a Raspberry Pi or an arm64 server).
 - **Open in…** — open the repo or a file in your editor, terminal, or file
   manager (e.g. "Reveal in Finder"), with installed editors and terminals
   detected per platform and a custom editor option.
+- **External diff / merge tools** — show a file's change in Beyond Compare,
+  Kaleidoscope, VS Code, Meld, FileMerge… or resolve a conflict there, driven
+  by `git difftool` / `git mergetool` and honouring your `diff.tool` /
+  `merge.tool` config. Off by default; pick a tool in Settings › General.
 - **Bundled git** — ships its own git binary and falls back to the system git,
   so it works even on machines with no git installed.
 

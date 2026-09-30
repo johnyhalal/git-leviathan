@@ -19,11 +19,18 @@ import { CopyButton } from '../CopyButton';
 import { AvatarStack, creditLines, creditNames, entryCredits, hasExtraCredits } from './credits';
 import { formatDateOnly, formatDateTime, useDateFormat } from '../../dateFormat';
 import { ResizeHandle } from './ResizeHandle';
-import { openInEditor, useOpenTools } from '../../openActions';
+import {
+  externalDiffLabel,
+  openExternalDiff,
+  openInEditor,
+  useExternalTools,
+  useOpenTools,
+} from '../../openActions';
 import { useResizableColumns } from './useResizableColumns';
 import {
   ChevronDownIcon,
   CloseIcon,
+  CompareIcon,
   ExternalIcon,
   HunkViewIcon,
   InlineViewIcon,
@@ -183,6 +190,7 @@ export function DiffView({
   const lang = useMemo(() => languageForPath(path), [path]);
   const requestConfirm = useConfirm();
   const editorName = useOpenTools()?.editorName;
+  const diffToolName = useExternalTools()?.diffToolName;
   // Only the left width is used: it sizes the history sidebar.
   const { leftWidth: historyWidth, startResize } = useResizableColumns(
     historySidebarWidth,
@@ -502,6 +510,17 @@ export function DiffView({
           </span>
         </div>
         <div className="diff-header-actions">
+          {diffToolName && (
+            <button
+              type="button"
+              className="diff-close tooltip-host"
+              data-tooltip={externalDiffLabel(diffToolName)}
+              aria-label="Open diff in external tool"
+              onClick={() => void openExternalDiff(repoPath, viewSource, path)}
+            >
+              <CompareIcon size={14} />
+            </button>
+          )}
           <button
             type="button"
             className="diff-close tooltip-host"

@@ -1,13 +1,22 @@
 import { useEffect, useState } from 'react';
 import {
   DEFAULT_UPDATE_CHECK_INTERVAL,
+  EXTERNAL_TOOL_AUTO,
+  EXTERNAL_TOOL_NONE,
+  type ExternalToolKind,
+  type ToolOption,
   type UpdateCheckInterval,
   type UpdateInfo,
   type UpdateStatus,
 } from '../../../../../types/ipc';
 import { SettingsSection } from '../SettingsSection';
 import { SettingsRow } from '../SettingsRow';
-import { setOpenTools, useOpenTools } from '../../../openActions';
+import {
+  setExternalTools,
+  setOpenTools,
+  useExternalTools,
+  useOpenTools,
+} from '../../../openActions';
 
 /**
  * Which editor and terminal the "Open in…" actions use. The lists hold only
@@ -76,6 +85,69 @@ function OpenInSection() {
         ) : (
           <span className="settings-desc">No terminal app found</span>
         )}
+      </SettingsRow>
+    </SettingsSection>
+  );
+}
+
+/**
+ * Which tools `git difftool` / `git mergetool` launch from the diff header, file
+ * menus and the conflict resolver. "None" (the default) hides those actions;
+ * "Automatic" defers to the user's own `diff.tool` / `merge.tool` config; the
+ * rest are what git can drive here.
+ */
+function ExternalToolsSection() {
+  const tools = useExternalTools();
+
+  // Re-probe on open, so a tool installed since launch shows up.
+  useEffect(() => {
+    void window.api.open.externalTools(true).then(setExternalTools);
+  }, []);
+
+  if (!tools) return null;
+
+  const onChange = (kind: ExternalToolKind, id: string) =>
+    void window.api.open.setExternalTool(kind, id).then(setExternalTools);
+
+  const row = (kind: ExternalToolKind, options: ToolOption[], value: string, name: string | null) => (
+    <select className="form-input" value={value} onChange={(e) => onChange(kind, e.target.value)}>
+      <option value={EXTERNAL_TOOL_NONE}>None</option>
+      <option value={EXTERNAL_TOOL_AUTO}>
+        {name && value === EXTERNAL_TOOL_AUTO ? `Automatic (${name})` : 'Automatic'}
+      </option>
+      {options.map((tool) => (
+        <option key={tool.id} value={tool.id}>
+          {tool.name}
+        </option>
+      ))}
+    </select>
+  );
+
+  return (
+    <SettingsSection title="External tools">
+      <SettingsRow
+        label="Diff tool"
+        description={
+          tools.diffTool === EXTERNAL_TOOL_NONE
+            ? 'Pick a tool to add “Open diff in…” to files and the diff header.'
+            : tools.diffToolName
+              ? '“Open diff in…” on a file or the diff header shows the change there.'
+              : 'No diff tool found. Install one (Beyond Compare, Kaleidoscope, Meld…) or set diff.tool in your git config.'
+        }
+      >
+        {row('diff', tools.diffTools, tools.diffTool, tools.diffToolName)}
+      </SettingsRow>
+      <SettingsRow
+        label="Merge tool"
+        description={
+          tools.mergeTool === EXTERNAL_TOOL_NONE
+            ? 'Pick a tool to resolve conflicted files in it from the conflict resolver.'
+            : tools.mergeToolName
+              ? 'Resolves a conflicted file from the conflict resolver.'
+              : 'No merge tool found. Install one or set merge.tool in your git config.'
+        }
+      >
+        {row('merge', tools.mergeTools, tools.mergeTool, tools.mergeToolName)}
       </SettingsRow>
     </SettingsSection>
   );
@@ -266,6 +338,7 @@ export function GeneralPanel() {
         </SettingsRow>
       </SettingsSection>
       <OpenInSection />
+      <ExternalToolsSection />
     </>
   );
 }

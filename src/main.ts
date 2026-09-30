@@ -40,6 +40,8 @@ import {
   AppChannels,
   commandLabel,
   OpenChannels,
+  EXTERNAL_TOOL_AUTO,
+  EXTERNAL_TOOL_NONE,
   ClaudeChannels,
   IntegrationChannels,
   MenuChannels,
@@ -51,6 +53,10 @@ import {
   type AppCommandMenu,
   type OpenResult,
   type OpenToolsState,
+  type ExternalToolsState,
+  type ExternalToolKind,
+  type ToolOption,
+  type ExternalMergeResult,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -165,6 +171,14 @@ import {
 } from './signing';
 import { configureTelemetry, trackEvent } from './telemetry';
 import { detectEditors, detectTerminals, openInEditor, openInTerminal } from './openers';
+import {
+  detectExternalTools,
+  cancelMerge,
+  externalToolInfo,
+  openExternalDiff,
+  openExternalMerge,
+  toolOptions,
+} from './difftools';
 
 // Name the app before anything reads it, so app.getName(), the userData path,
 // notifications and the About panel all say "GitLeviathan" rather than
@@ -345,6 +359,10 @@ interface Settings {
   terminal?: string;
   /** The executable (or macOS `.app`) picked as the custom editor. */
   customEditorPath?: string;
+  /** The `git difftool` pick for "Open in external diff tool": `auto` or a tool id. Absent: none. */
+  diffTool?: string;
+  /** The `git mergetool` pick for "Open in external merge tool": `auto` or a tool id. Absent: none. */
+  mergeTool?: string;
   /**
    * Stable anonymous id for this install, minted once and sent with each usage
    * event so active users can be counted without any PII. Not tied to identity.
@@ -586,6 +604,8 @@ function loadSettings(): void {
     if (typeof parsed.customEditorPath === 'string' && parsed.customEditorPath) {
       settings.customEditorPath = parsed.customEditorPath;
     }
+    if (typeof parsed.diffTool === 'string' && parsed.diffTool) settings.diffTool = parsed.diffTool;
+    if (typeof parsed.mergeTool === 'string' && parsed.mergeTool) settings.mergeTool = parsed.mergeTool;
     if (typeof parsed.telemetryId === 'string' && parsed.telemetryId) {
       settings.telemetryId = parsed.telemetryId;
     }
@@ -4426,6 +4446,29 @@ function startRepoWatch(wc: Electron.WebContents, repoPath: string): void {
   });
 }
 
+/** Narrow an untrusted IPC value to a DiffSource; null when it isn't one. */
+function asDiffSource(value: unknown): DiffSource | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const source = value as { kind?: unknown; hash?: unknown };
+  if (source.kind === 'staged' || source.kind === 'unstaged') {
+    return { kind: source.kind };
+  }
+  if (source.kind === 'commit' && typeof source.hash === 'string' && source.hash.length > 0) {
+    return { kind: 'commit', hash: source.hash };
+  }
+  const range = value as { from?: unknown; to?: unknown };
+  if (
+    source.kind === 'range' &&
+    typeof range.from === 'string' &&
+    range.from.length > 0 &&
+    typeof range.to === 'string' &&
+    range.to.length > 0
+  ) {
+    return { kind: 'range', from: range.from, to: range.to };
+  }
+  return null;
+}
+
 function registerRepoIpc(): void {
   ipcMain.on(RepoChannels.watch, (event, repoPath: unknown) => {
     const wc = event.sender;
@@ -4524,29 +4567,6 @@ function registerRepoIpc(): void {
       return readCommitTree(repoPath, hash);
     },
   );
-
-  // Narrow an untrusted IPC value to a DiffSource, or null if it isn't one.
-  const asDiffSource = (value: unknown): DiffSource | null => {
-    if (typeof value !== 'object' || value === null) return null;
-    const source = value as { kind?: unknown; hash?: unknown };
-    if (source.kind === 'staged' || source.kind === 'unstaged') {
-      return { kind: source.kind };
-    }
-    if (source.kind === 'commit' && typeof source.hash === 'string' && source.hash.length > 0) {
-      return { kind: 'commit', hash: source.hash };
-    }
-    const range = value as { from?: unknown; to?: unknown };
-    if (
-      source.kind === 'range' &&
-      typeof range.from === 'string' &&
-      range.from.length > 0 &&
-      typeof range.to === 'string' &&
-      range.to.length > 0
-    ) {
-      return { kind: 'range', from: range.from, to: range.to };
-    }
-    return null;
-  };
 
   // Narrow an untrusted IPC value to DiffOptions (unknown/invalid fields dropped).
   const asDiffOptions = (value: unknown): DiffOptions => {
@@ -9642,6 +9662,70 @@ function openToolsState(): OpenToolsState {
 }
 
 /**
+ * A saved external tool pick, checked against what's installed: absent is
+ * none, and a tool that's since been uninstalled falls back to automatic.
+ */
+function externalToolPick(saved: string | undefined, tools: ToolOption[]): string {
+  if (!saved || saved === EXTERNAL_TOOL_NONE) return EXTERNAL_TOOL_NONE;
+  return tools.some((t) => t.id === saved) ? saved : EXTERNAL_TOOL_AUTO;
+}
+
+/** A pick as `difftools.ts` takes it: `''` for automatic, else the tool id. Null for none. */
+const externalToolChoice = (pick: string): string | null =>
+  pick === EXTERNAL_TOOL_NONE ? null : pick === EXTERNAL_TOOL_AUTO ? '' : pick;
+
+/** The external diff/merge tools found and the user's picks. */
+async function externalToolsState(refresh = false): Promise<ExternalToolsState> {
+  const [diffTools, mergeTools] = await Promise.all([
+    detectExternalTools('diff', refresh),
+    detectExternalTools('merge', refresh),
+  ]);
+  const diffTool = externalToolPick(settings.diffTool, diffTools);
+  const mergeTool = externalToolPick(settings.mergeTool, mergeTools);
+  const toolInfo = (kind: ExternalToolKind, pick: string) => {
+    const choice = externalToolChoice(pick);
+    return choice === null ? Promise.resolve(null) : externalToolInfo(kind, choice);
+  };
+  const [diffInfo, mergeInfo] = await Promise.all([toolInfo('diff', diffTool), toolInfo('merge', mergeTool)]);
+  return {
+    diffTools: toolOptions(diffTools),
+    mergeTools: toolOptions(mergeTools),
+    diffTool,
+    mergeTool,
+    diffToolName: diffInfo?.name ?? null,
+    mergeToolName: mergeInfo?.name ?? null,
+    mergeToolFinishHint: mergeInfo?.finishHint ?? null,
+  };
+}
+
+/** Git's empty tree, the "before" side of a root commit. */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+/**
+ * The `git difftool` arguments that show `file`'s change for `source` — the
+ * same change the diff view shows. Null for a revision that could be read as
+ * an option.
+ */
+async function externalDiffArgs(cwd: string, source: DiffSource, file: string): Promise<string[] | null> {
+  switch (source.kind) {
+    case 'unstaged':
+      // An untracked file has no index side; compare it against nothing, like the diff view.
+      return (await isUntracked(cwd, file)) ? ['--no-index', '--', '/dev/null', file] : ['--', file];
+    case 'staged':
+      return ['--cached', '-M', '--', file];
+    case 'commit': {
+      if (source.hash.startsWith('-')) return null;
+      // First parent, so a merge (or a stash) compares against the branch it landed on.
+      const parent = (await runGit(cwd, ['rev-parse', '--verify', '--quiet', `${source.hash}^1`])).trim();
+      return ['-M', parent || EMPTY_TREE, source.hash, '--', file];
+    }
+    case 'range':
+      if (source.from.startsWith('-') || source.to.startsWith('-')) return null;
+      return ['-M', source.from, source.to, '--', file];
+  }
+}
+
+/**
  * Resolve an "open" request's target: the repository folder, or a file inside
  * it. Untrusted IPC args, so the repo must be a git repo and the file must not
  * escape it (same containment check as deleting a file). A file that's gone
@@ -9757,6 +9841,69 @@ function registerOpenIpc(): void {
       return message ? { status: 'error', message } : { status: 'ok' };
     },
   );
+
+  ipcMain.handle(
+    OpenChannels.externalTools,
+    (_event, refresh: unknown): Promise<ExternalToolsState> => externalToolsState(refresh === true),
+  );
+
+  ipcMain.handle(
+    OpenChannels.setExternalTool,
+    async (_event, kind: unknown, id: unknown): Promise<ExternalToolsState> => {
+      if ((kind === 'diff' || kind === 'merge') && typeof id === 'string') {
+        const key = kind === 'diff' ? 'diffTool' : 'mergeTool';
+        if (id && id !== EXTERNAL_TOOL_NONE) settings[key] = id;
+        else delete settings[key];
+        saveSettings();
+      }
+      return externalToolsState();
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.externalDiff,
+    async (_event, repoPath: unknown, source: unknown, file: unknown): Promise<OpenResult> => {
+      const src = asDiffSource(source);
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (src === null || typeof file !== 'string' || file.length === 0) {
+        return { status: 'error', message: 'Invalid file.' };
+      }
+      const args = await externalDiffArgs(repoPath, src, file);
+      if (!args) return { status: 'error', message: 'Invalid revision.' };
+      const choice = externalToolChoice((await externalToolsState()).diffTool);
+      if (choice === null) {
+        return { status: 'error', message: 'No external diff tool is set. Pick one in Settings › General.' };
+      }
+      return openExternalDiff(repoPath, choice, args);
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.externalMerge,
+    async (_event, repoPath: unknown, file: unknown): Promise<ExternalMergeResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { result: { status: 'error', message: 'Not a git repository.' }, merge: null };
+      }
+      const before = await readMergeState(repoPath);
+      // Only a file git still lists as conflicted — mergetool would otherwise do nothing.
+      if (typeof file !== 'string' || !before?.conflicts.some((c) => c.path === file)) {
+        return { result: { status: 'error', message: 'That file has no conflict to resolve.' }, merge: before };
+      }
+      const choice = externalToolChoice((await externalToolsState()).mergeTool);
+      if (choice === null) {
+        const message = 'No external merge tool is set. Pick one in Settings › General.';
+        return { result: { status: 'error', message }, merge: before };
+      }
+      const result = await openExternalMerge(repoPath, choice, file);
+      return { result, merge: await readMergeState(repoPath) };
+    },
+  );
+
+  ipcMain.handle(OpenChannels.cancelExternalMerge, (_event, repoPath: unknown): void => {
+    if (typeof repoPath === 'string') cancelMerge(repoPath);
+  });
 }
 
 /**

@@ -12,6 +12,9 @@ import {
   type AppCommandId,
   type OpenResult,
   type OpenToolsState,
+  type ExternalToolsState,
+  type ExternalToolKind,
+  type ExternalMergeResult,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -700,6 +703,16 @@ const api: ExposedApi = {
       ipcRenderer.invoke(OpenChannels.reveal, repoPath, relPath) as Promise<OpenResult>,
     withDefaultApp: (repoPath: string, relPath: string) =>
       ipcRenderer.invoke(OpenChannels.withDefaultApp, repoPath, relPath) as Promise<OpenResult>,
+    externalTools: (refresh?: boolean) =>
+      ipcRenderer.invoke(OpenChannels.externalTools, refresh) as Promise<ExternalToolsState>,
+    setExternalTool: (kind: ExternalToolKind, id: string) =>
+      ipcRenderer.invoke(OpenChannels.setExternalTool, kind, id) as Promise<ExternalToolsState>,
+    externalDiff: (repoPath: string, source: DiffSource, file: string) =>
+      ipcRenderer.invoke(OpenChannels.externalDiff, repoPath, source, file) as Promise<OpenResult>,
+    externalMerge: (repoPath: string, file: string) =>
+      ipcRenderer.invoke(OpenChannels.externalMerge, repoPath, file) as Promise<ExternalMergeResult>,
+    cancelExternalMerge: (repoPath: string) =>
+      ipcRenderer.invoke(OpenChannels.cancelExternalMerge, repoPath) as Promise<void>,
   },
 };
 

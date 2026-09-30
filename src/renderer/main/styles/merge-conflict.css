@@ -757,6 +757,29 @@
   margin-left: auto;
 }
 
+/* "Open in <merge tool>": icon plus label. */
+.merge-external {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* While the merge tool is open: spinner, how to finish there, and "Stop Waiting". */
+.merge-external-wait {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.merge-external-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Whole-file Auto Resolve; fill and border from the shared .pill-btn-rainbow
    (not .merge-side-button, whose background would override the gradient). */
 .merge-auto-file {

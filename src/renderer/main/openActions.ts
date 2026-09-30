@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { OpenResult, OpenToolsState } from '../../types/ipc';
+import type {
+  DiffSource,
+  ExternalMergeResult,
+  ExternalToolsState,
+  OpenResult,
+  OpenToolsState,
+} from '../../types/ipc';
 
 /**
  * "Open in editor / terminal / file manager" for any repo folder or file in it.
@@ -12,11 +18,12 @@ let tools: OpenToolsState | null = null;
 let loading: Promise<void> | null = null;
 const listeners = new Set<() => void>();
 
-let reportError: (title: string, message: string) => void = (title, message) =>
-  console.warn(title, message);
+type ReportHandler = (title: string, message: string, variant?: 'error' | 'info') => void;
 
-/** Route open failures somewhere visible (App points this at its toast stack). */
-export function setOpenErrorHandler(handler: (title: string, message: string) => void): void {
+let reportError: ReportHandler = (title, message) => console.warn(title, message);
+
+/** Route open failures (and merge-tool notices) somewhere visible (App points this at its toast stack). */
+export function setOpenErrorHandler(handler: ReportHandler): void {
   reportError = handler;
 }
 
@@ -38,6 +45,33 @@ export function useOpenTools(): OpenToolsState | null {
     listener();
     return () => {
       listeners.delete(listener);
+    };
+  }, []);
+  return state;
+}
+
+let externalTools: ExternalToolsState | null = null;
+let externalLoading: Promise<void> | null = null;
+const externalListeners = new Set<() => void>();
+
+/** Swap in fresh external diff/merge tool state (after a Settings change). */
+export function setExternalTools(next: ExternalToolsState): void {
+  externalTools = next;
+  for (const listener of externalListeners) listener();
+}
+
+/** The external diff/merge tools found and the user's picks; null until first loaded. */
+export function useExternalTools(): ExternalToolsState | null {
+  const [state, setState] = useState(externalTools);
+  useEffect(() => {
+    const listener = () => setState(externalTools);
+    externalListeners.add(listener);
+    if (!externalTools && !externalLoading) {
+      externalLoading = window.api.open.externalTools().then(setExternalTools);
+    }
+    listener();
+    return () => {
+      externalListeners.delete(listener);
     };
   }, []);
   return state;
@@ -66,6 +100,48 @@ export const revealInFileManager = (repoPath: string, relPath?: string) =>
 
 export const openWithDefaultApp = (repoPath: string, relPath: string) =>
   report('Couldn’t open the file', window.api.open.withDefaultApp(repoPath, relPath));
+
+export const openExternalDiff = (repoPath: string, source: DiffSource, file: string) =>
+  report('Couldn’t open the diff tool', window.api.open.externalDiff(repoPath, source, file));
+
+/**
+ * Resolve a conflicted file in the external merge tool. Resolves when the tool
+ * closes (or `cancelExternalMerge` stops the wait), with the merge state after
+ * it; anything short of resolved is also toasted. `announce` toasts how to
+ * finish there as it opens, for call sites with no waiting state of their own.
+ */
+export async function openExternalMerge(
+  repoPath: string,
+  file: string,
+  toolName: string,
+  opts?: { announce?: string },
+): Promise<ExternalMergeResult> {
+  if (opts?.announce) reportError(`Opened ${file} in ${toolName}`, opts.announce, 'info');
+  const outcome = await window.api.open.externalMerge(repoPath, file);
+  const { result } = outcome;
+  if (result.status === 'error') {
+    reportError('Merge tool didn’t resolve the file', result.message);
+  } else if (result.status === 'unchanged') {
+    reportError(
+      `${file} is still conflicted`,
+      `${toolName} closed without saving the merge to the file.`,
+      'info',
+    );
+  } else if (result.status === 'unresolved') {
+    reportError(
+      `${file} is still conflicted`,
+      `The merge saved from ${toolName} still has conflict markers. It’s kept on disk; finish it here or in ${toolName}.`,
+      'info',
+    );
+  }
+  return outcome;
+}
+
+/** Stop waiting for the merge tool open in `repoPath`; the file stays as last saved, still conflicted. */
+export const cancelExternalMerge = (repoPath: string) => window.api.open.cancelExternalMerge(repoPath);
+
+/** The label for "show this change in the external diff tool". */
+export const externalDiffLabel = (toolName: string) => `Open Diff in ${toolName}`;
 
 /**
  * Context-menu rows for opening `relPath` in `repoPath` (or the folder itself

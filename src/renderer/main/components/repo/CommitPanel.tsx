@@ -7,17 +7,26 @@ import type {
   DiffSource,
   FileChange,
   FileStatus,
+  MergeResolution,
+  MergeState,
   StashPushOptions,
   WorkingStatus,
 } from '../../../../types/ipc';
 import type { DiffTarget } from './DiffView';
-import { FileContextMenu, type FileMenuItem } from './FileContextMenu';
+import { FileContextMenu, type FileMenuEntry, type FileMenuItem } from './FileContextMenu';
 import { useConfirm, type ConfirmAction } from '../ConfirmBar';
 import { CopyButton } from '../CopyButton';
 import { AvatarStack, entryCredits } from './credits';
 import { formatDateTime, useDateFormat } from '../../dateFormat';
 import { formatAccelerator } from '../../commands/keys';
-import { openMenuItems, useOpenTools } from '../../openActions';
+import {
+  externalDiffLabel,
+  openExternalDiff,
+  openExternalMerge,
+  openMenuItems,
+  useExternalTools,
+  useOpenTools,
+} from '../../openActions';
 import {
   CertificateIcon,
   ChevronDownIcon,
@@ -368,6 +377,7 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
   // Right-click menu on a file: open the working copy in the user's tools.
   const [fileMenu, setFileMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   const editorName = useOpenTools()?.editorName;
+  const diffToolName = useExternalTools()?.diffToolName;
   const onContextMenuFile = (file: DisplayFile, event: React.MouseEvent) => {
     event.preventDefault();
     setFileMenu({ path: file.path, x: event.clientX, y: event.clientY });
@@ -543,7 +553,18 @@ function CommitFiles({ repoPath, hash, files, onOpenDiff, activeDiff }: CommitFi
           x={fileMenu.x}
           y={fileMenu.y}
           onClose={() => setFileMenu(null)}
-          items={openMenuItems(editorName, repoPath, fileMenu.path)}
+          items={[
+            ...(diffToolName
+              ? [
+                  {
+                    label: externalDiffLabel(diffToolName),
+                    onClick: () => void openExternalDiff(repoPath, source, fileMenu.path),
+                  },
+                  'separator' as const,
+                ]
+              : []),
+            ...openMenuItems(editorName, repoPath, fileMenu.path),
+          ]}
         />
       )}
     </div>
@@ -1255,6 +1276,8 @@ interface WorkingChangesProps {
   onMarkResolved: (file: string | null) => void;
   /** Open the conflict resolver focused on a specific conflicted file. */
   onOpenConflict: (file: string) => void;
+  /** A conflict was resolved outside the resolver (the file menu): swap in the fresh merge state. */
+  onConflictsChanged: (merge: MergeState | null) => void;
   /** Shared commit message, mirrored with the working row's inline input. */
   message: string;
   /** Update the shared commit message. */
@@ -1283,6 +1306,7 @@ function WorkingChanges({
   conflicts,
   onMarkResolved,
   onOpenConflict,
+  onConflictsChanged,
   message,
   onMessageChange,
   onCommitted,
@@ -1311,6 +1335,13 @@ function WorkingChanges({
   // Destructive actions route through the global confirm bar over the toolbar.
   const requestConfirm = useConfirm();
   const editorName = useOpenTools()?.editorName;
+  const externalTools = useExternalTools();
+  const diffToolName = externalTools?.diffToolName;
+  const mergeToolName = externalTools?.mergeToolName;
+  // The right-click menu open on a conflicted file, and the file the external
+  // merge tool has open (one at a time; git runs it until the tool closes).
+  const [conflictMenu, setConflictMenu] = useState<{ file: ConflictFile; x: number; y: number } | null>(null);
+  const [externalMerging, setExternalMerging] = useState<string | null>(null);
   // The share of the changes body given to the unstaged (top) section; the
   // staged (bottom) section takes the remainder. Dragged via the divider.
   const [topRatio, setTopRatio] = useState(0.5);
@@ -1622,6 +1653,63 @@ function WorkingChanges({
     );
   }
 
+  // Take one whole side of a conflicted file (the resolver's "Use ours/theirs").
+  const resolveConflictSide = async (file: ConflictFile, resolution: MergeResolution) => {
+    onConflictsChanged(await window.api.repo.resolveFile(repoPath, file.path, resolution));
+  };
+
+  // Hand a conflicted file to the external merge tool; the conflict list updates
+  // once the tool closes.
+  const mergeExternally = async (file: ConflictFile) => {
+    if (!mergeToolName) return;
+    setExternalMerging(file.path);
+    try {
+      const { merge } = await openExternalMerge(repoPath, file.path, mergeToolName, {
+        announce: externalTools?.mergeToolFinishHint ?? undefined,
+      });
+      onConflictsChanged(merge);
+    } finally {
+      setExternalMerging(null);
+    }
+  };
+
+  // What makes sense for one conflict: its sides depend on which side deleted
+  // the file, the merge tool needs two sides to merge, and a file both sides
+  // deleted has nothing on disk to open.
+  const conflictMenuItems = (file: ConflictFile): FileMenuEntry[] => {
+    const onDisk = file.kind !== 'both-deleted';
+    const twoSided = file.kind === 'both-modified' || file.kind === 'both-added';
+    const sides: FileMenuEntry[] =
+      file.kind === 'both-deleted'
+        ? [{ label: 'Accept deletion', onClick: () => void resolveConflictSide(file, { kind: 'ours' }) }]
+        : [
+            {
+              label: file.kind === 'deleted-by-us' ? 'Use ours (delete file)' : 'Use ours',
+              onClick: () => void resolveConflictSide(file, { kind: 'ours' }),
+            },
+            {
+              label: file.kind === 'deleted-by-them' ? 'Use theirs (delete file)' : 'Use theirs',
+              onClick: () => void resolveConflictSide(file, { kind: 'theirs' }),
+            },
+          ];
+    return [
+      { label: 'Open in Conflict Resolver', onClick: () => onOpenConflict(file.path) },
+      ...(mergeToolName && twoSided && !externalMerging
+        ? [{ label: `Open in ${mergeToolName}`, onClick: () => void mergeExternally(file) }]
+        : []),
+      'separator',
+      ...sides,
+      { label: 'Mark Resolved', onClick: () => onMarkResolved(file.path) },
+      'separator',
+      {
+        label: 'View history',
+        onClick: () =>
+          onOpenDiff({ source: unstagedSource, path: file.path, status: conflictStatus(file.kind), history: true }),
+      },
+      ...(onDisk ? ['separator' as const, ...openMenuItems(editorName, repoPath, file.path)] : []),
+    ];
+  };
+
   const { staged, unstaged } = status;
   const changedCount = countWorkingFiles(status);
   const hasChanges = changedCount > 0;
@@ -1727,6 +1815,11 @@ function WorkingChanges({
                   })}
                   onOpenFile={(file) => onOpenConflict(file.path)}
                   activePath={null}
+                  onContextMenuFile={(file, event) => {
+                    event.preventDefault();
+                    const conflict = conflicts.find((c) => c.path === file.path);
+                    if (conflict) setConflictMenu({ file: conflict, x: event.clientX, y: event.clientY });
+                  }}
                 />
               </div>
             </>
@@ -1923,6 +2016,15 @@ function WorkingChanges({
         </button>
       </div>
 
+      {conflictMenu && (
+        <FileContextMenu
+          x={conflictMenu.x}
+          y={conflictMenu.y}
+          onClose={() => setConflictMenu(null)}
+          items={conflictMenuItems(conflictMenu.file)}
+        />
+      )}
+
       {fileMenu && (
         <FileContextMenu
           x={fileMenu.x}
@@ -1954,6 +2056,19 @@ function WorkingChanges({
                   history: true,
                 }),
             },
+            ...(diffToolName
+              ? [
+                  {
+                    label: externalDiffLabel(diffToolName),
+                    onClick: () =>
+                      void openExternalDiff(
+                        repoPath,
+                        fileMenu.section === 'staged' ? stagedSource : unstagedSource,
+                        fileMenu.file.path,
+                      ),
+                  },
+                ]
+              : []),
             'separator',
             { label: 'Ignore', submenu: ignoreSubmenu(fileMenu.file) },
             { label: 'Discard changes', danger: true, onClick: () => discardFile(fileMenu.file) },
@@ -1990,6 +2105,8 @@ interface CommitPanelProps {
   onMarkResolved: (file: string | null) => void;
   /** Open the conflict resolver focused on a specific conflicted file. */
   onOpenConflict: (file: string) => void;
+  /** A conflict was resolved outside the resolver (the file menu): swap in the fresh merge state. */
+  onConflictsChanged: (merge: MergeState | null) => void;
   /** Shared commit message, mirrored with the working row's inline input. */
   commitMessage: string;
   /** Update the shared commit message. */
@@ -2026,6 +2143,7 @@ export function CommitPanel({
   conflicts,
   onMarkResolved,
   onOpenConflict,
+  onConflictsChanged,
   commitMessage,
   onCommitMessageChange,
   onCommitted,
@@ -2073,6 +2191,7 @@ export function CommitPanel({
       conflicts={conflicts}
       onMarkResolved={onMarkResolved}
       onOpenConflict={onOpenConflict}
+      onConflictsChanged={onConflictsChanged}
       message={commitMessage}
       onMessageChange={onCommitMessageChange}
       onCommitted={onCommitted}

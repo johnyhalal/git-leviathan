@@ -297,7 +297,7 @@ function AppShell() {
 
   // "Open in editor/terminal/Finder" failures, from wherever they were raised.
   useEffect(() => {
-    setOpenErrorHandler((title, message) => showToast(title, message, 'error'));
+    setOpenErrorHandler((title, message, variant) => showToast(title, message, variant ?? 'error'));
   });
 
   const addTab = () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CloseIcon, SparkleIcon } from '../../../../../assets/icons';
+import { CloseIcon, CompareIcon, SparkleIcon } from '../../../../../assets/icons';
 import type {
   ConflictFile,
   ConflictFileContent,
@@ -9,6 +9,7 @@ import type {
   ResolveBlockRequest,
 } from '../../../../types/ipc';
 import { MergeEditor, type MergeEditorHandle } from './MergeEditor';
+import { cancelExternalMerge, openExternalMerge, useExternalTools } from '../../openActions';
 
 interface ConflictResolverProps {
   repoPath: string;
@@ -66,6 +67,12 @@ export function ConflictResolver({
   const editorRef = useRef<MergeEditorHandle>(null);
   // A whole-file Auto Resolve is running.
   const [autoResolving, setAutoResolving] = useState(false);
+  const externalTools = useExternalTools();
+  const mergeToolName = externalTools?.mergeToolName;
+  // The external merge tool is open on the selected file.
+  const [externalOpen, setExternalOpen] = useState(false);
+  // Bumped to re-read the selected file after the external tool touched it.
+  const [reloadKey, setReloadKey] = useState(0);
 
   // Keep a valid selection as the conflict list shrinks (resolved files drop off).
   useEffect(() => {
@@ -93,7 +100,7 @@ export function ConflictResolver({
     return () => {
       live = false;
     };
-  }, [repoPath, selected]);
+  }, [repoPath, selected, reloadKey]);
 
   const resolve = useCallback(
     async (resolution: MergeResolution) => {
@@ -115,6 +122,22 @@ export function ConflictResolver({
       setBusy(false);
     }
   }, [selected, busy, onMarkAsIs]);
+
+  // Hand the file to the external merge tool and wait for it to close. Resolved
+  // there, it drops off the list; otherwise re-read what the tool left on disk.
+  const resolveExternally = useCallback(async () => {
+    if (!selected || busy || !mergeToolName) return;
+    setBusy(true);
+    setExternalOpen(true);
+    try {
+      const { merge } = await openExternalMerge(repoPath, selected, mergeToolName);
+      if (!merge?.conflicts.some((c) => c.path === selected)) onResolved(merge);
+      else setReloadKey((k) => k + 1);
+    } finally {
+      setExternalOpen(false);
+      setBusy(false);
+    }
+  }, [repoPath, selected, busy, mergeToolName, onResolved]);
 
   // One conflict block to Claude; failures become a toast and a null answer.
   const askClaude = useCallback(
@@ -159,6 +182,10 @@ export function ConflictResolver({
   // resolved by picking a whole side (which removes or keeps the file).
   const canMarkResolved =
     merged !== null && kind !== 'both-deleted' && !content?.binary;
+  // Only with a merge tool set, and only a conflict with two sides to merge;
+  // git's mergetool asks on the terminal (which the app doesn't have) for a
+  // modify/delete one.
+  const canMergeExternally = !!mergeToolName && (kind === 'both-modified' || kind === 'both-added');
 
   return (
     <div className="merge-overlay" onClick={onClose}>
@@ -237,6 +264,34 @@ export function ConflictResolver({
                     )}
                     {autoResolving ? 'Resolving…' : 'Auto Resolve File'}
                   </button>
+                )}
+                {externalOpen ? (
+                  // Waiting on the tool: say what finishes it, and offer a way out.
+                  <span className="merge-external-wait">
+                    <span className="mini-spinner" aria-hidden="true" />
+                    <span className="merge-external-hint">
+                      {externalTools?.mergeToolFinishHint ?? `Waiting for ${mergeToolName}…`}
+                    </span>
+                    <button
+                      className="merge-side-button tooltip-host"
+                      onClick={() => void cancelExternalMerge(repoPath)}
+                      data-tooltip="Stop waiting; the file stays as last saved and still conflicted"
+                    >
+                      Stop Waiting
+                    </button>
+                  </span>
+                ) : (
+                  canMergeExternally && (
+                    <button
+                      className="merge-side-button merge-external tooltip-host"
+                      disabled={busy}
+                      onClick={() => void resolveExternally()}
+                      data-tooltip={`Resolve this file in ${mergeToolName}; it’s marked resolved when you save the merge there`}
+                    >
+                      <CompareIcon size={14} />
+                      Open in {mergeToolName}
+                    </button>
+                  )
                 )}
                 <button
                   className="merge-side-button merge-as-is tooltip-host"

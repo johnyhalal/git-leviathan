@@ -84,6 +84,16 @@ export const OpenChannels = {
   reveal: 'open:reveal',
   /** Renderer -> main (invoke): open a file with the OS default app for its type. */
   withDefaultApp: 'open:with-default-app',
+  /** Renderer -> main (invoke): installed external diff/merge tools and the chosen ones. */
+  externalTools: 'open:external-tools',
+  /** Renderer -> main (invoke): persist the external diff or merge tool pick (see `ExternalToolsState`). */
+  setExternalTool: 'open:set-external-tool',
+  /** Renderer -> main (invoke): show a file's change in the external diff tool. */
+  externalDiff: 'open:external-diff',
+  /** Renderer -> main (invoke): resolve a conflicted file in the external merge tool. */
+  externalMerge: 'open:external-merge',
+  /** Renderer -> main (invoke): stop waiting for the external merge tool running in a repo. */
+  cancelExternalMerge: 'open:cancel-external-merge',
 } as const;
 
 /** An installed editor or terminal the user can pick. */
@@ -108,6 +118,54 @@ export interface OpenToolsState {
 }
 
 export type OpenResult = { status: 'ok' } | { status: 'error'; message: string };
+
+/** Which external tool a setting or launch is about: `git difftool` or `git mergetool`. */
+export type ExternalToolKind = 'diff' | 'merge';
+
+/** External tool pick: off, so no "Open in …" action is offered anywhere. The default. */
+export const EXTERNAL_TOOL_NONE = 'none';
+/** External tool pick: git's own `diff.tool` / `merge.tool`, else the first tool found. */
+export const EXTERNAL_TOOL_AUTO = 'auto';
+
+/**
+ * The external diff/merge tools git can drive on this machine and the user's
+ * picks: `EXTERNAL_TOOL_NONE`, `EXTERNAL_TOOL_AUTO` or a detected tool id.
+ */
+export interface ExternalToolsState {
+  diffTools: ToolOption[];
+  mergeTools: ToolOption[];
+  diffTool: string;
+  mergeTool: string;
+  /**
+   * Display name of the tool a launch would use now; null when the pick is none
+   * or no tool is available. The "Open in …" actions show only when it's set.
+   */
+  diffToolName: string | null;
+  mergeToolName: string | null;
+  /**
+   * What finishes a merge in that tool, shown while the app waits for it —
+   * FileMerge only hands control back once the whole app is quit.
+   */
+  mergeToolFinishHint: string | null;
+}
+
+/**
+ * How an external merge ended: resolved and staged (`ok`); closed with the file
+ * unsaved (`unchanged`) or saved with conflict markers left (`unresolved`) —
+ * either way still conflicted, with whatever was saved kept; stopped from the
+ * app (`cancelled`); or failed to run (`error`).
+ */
+export type ExternalMergeStatus =
+  | OpenResult
+  | { status: 'unchanged' }
+  | { status: 'unresolved' }
+  | { status: 'cancelled' };
+
+/** Outcome of an external merge: how the launch went, then the fresh merge state. */
+export interface ExternalMergeResult {
+  result: ExternalMergeStatus;
+  merge: MergeState | null;
+}
 
 export const MenuChannels = {
   /** Main -> renderer (send): a native menu item (or its accelerator) was chosen. */
@@ -1883,6 +1941,15 @@ export interface OpenApi {
   inTerminal(repoPath: string): Promise<OpenResult>;
   reveal(repoPath: string, relPath?: string): Promise<OpenResult>;
   withDefaultApp(repoPath: string, relPath: string): Promise<OpenResult>;
+  /** Pass `refresh` to re-probe what's installed (Settings does). */
+  externalTools(refresh?: boolean): Promise<ExternalToolsState>;
+  setExternalTool(kind: ExternalToolKind, id: string): Promise<ExternalToolsState>;
+  /** Resolves once the tool is up (or failed to start); git keeps it running. */
+  externalDiff(repoPath: string, source: DiffSource, file: string): Promise<OpenResult>;
+  /** Resolves when the merge tool closes, with the repo's merge state after it. */
+  externalMerge(repoPath: string, file: string): Promise<ExternalMergeResult>;
+  /** Stop waiting for the merge tool running in `repoPath`; its `externalMerge` resolves `cancelled`. */
+  cancelExternalMerge(repoPath: string): Promise<void>;
 }
 
 export interface MenuApi {

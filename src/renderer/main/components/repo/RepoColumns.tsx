@@ -4,6 +4,7 @@ import type {
   ConflictFile,
   GitflowConfig,
   GitflowKind,
+  MergeState,
   RefsMutationResult,
   RepoRefs,
   ResetMode,
@@ -45,6 +46,8 @@ interface RepoColumnsProps {
   onMarkResolved: (file: string | null) => void;
   /** Open the conflict resolver focused on a specific conflicted file. */
   onOpenConflict: (file: string) => void;
+  /** A conflict was resolved outside the resolver (the file menu): swap in the fresh merge state. */
+  onConflictsChanged: (merge: MergeState | null) => void;
   /** The shared commit message (mirrored between the working row and the panel). */
   commitMessage: string;
   /** Update the shared commit message. */
@@ -202,6 +205,7 @@ export function RepoColumns({
   conflicts,
   onMarkResolved,
   onOpenConflict,
+  onConflictsChanged,
   commitMessage,
   onCommitMessageChange,
   loadingMore,
@@ -573,6 +577,7 @@ export function RepoColumns({
           conflicts={conflicts}
           onMarkResolved={onMarkResolved}
           onOpenConflict={onOpenConflict}
+          onConflictsChanged={onConflictsChanged}
           commitMessage={commitMessage}
           onCommitMessageChange={onCommitMessageChange}
           onCommitted={handleCommitted}
