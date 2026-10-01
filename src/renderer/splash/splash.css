@@ -46,7 +46,19 @@ body {
   justify-content: center;
   gap: 22px;
   border-radius: 16px;
-  background: linear-gradient(180deg,rgba(38, 53, 72, 1) 10%, rgba(9, 9, 21, 1) 100%);
+  /* Deep-sea backdrop behind assets/leviathan.svg: a soft glow at the top
+     centre over a top-down fade that darkens fastest in the upper half. */
+  background:
+    radial-gradient(ellipse 85% 55% at 50% 0%, rgba(40, 58, 76, 0.55), rgba(40, 58, 76, 0) 100%),
+    linear-gradient(
+      180deg,
+      #232f41 0%,
+      #1b2537 20%,
+      #141927 40%,
+      #0e0f1c 60%,
+      #0b0916 80%,
+      #0a0815 100%
+    );
   color: #43d7c7;
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
@@ -55,8 +67,9 @@ body {
 }
 
 .logo {
-  width: 150px;
-  height: 215px;
+  width: 128px;
+  height: auto;
+  aspect-ratio: 519 / 745; /* leviathan.svg's viewBox: the height always follows the width */
   display: block;
   margin-bottom: 30px;
   animation: logo-bounce 2s ease-in-out infinite;
