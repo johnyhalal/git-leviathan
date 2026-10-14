@@ -48,6 +48,10 @@ interface RepoColumnsProps {
   commitMessage: string;
   /** Update the shared commit message. */
   onCommitMessageChange: (message: string) => void;
+  /** Whether a Claude commit-message generation is in flight for this repo. */
+  generatingMessage: boolean;
+  /** Draft the commit message with Claude from the staged changes. */
+  onGenerateMessage: () => void;
   /** Whether another page of history is currently being fetched. */
   loadingMore: boolean;
   /** Request the next page of history (scrolled near the bottom of the list). */
@@ -203,6 +207,8 @@ export function RepoColumns({
   onOpenConflict,
   commitMessage,
   onCommitMessageChange,
+  generatingMessage,
+  onGenerateMessage,
   loadingMore,
   onLoadMore,
   onCommitted,
@@ -570,6 +576,8 @@ export function RepoColumns({
           onOpenConflict={onOpenConflict}
           commitMessage={commitMessage}
           onCommitMessageChange={onCommitMessageChange}
+          generatingMessage={generatingMessage}
+          onGenerateMessage={onGenerateMessage}
           onCommitted={handleCommitted}
           onViewWorking={() => selectSingle(commits?.[0]?.hash ?? null)}
           onSelectCommit={selectSingle}
@@ -577,7 +585,6 @@ export function RepoColumns({
           onCloseDiff={() => setDiffTarget(null)}
           activeDiff={diffTarget}
           onError={onError}
-          onOpenSettings={onOpenSettings}
           onStash={onStash}
         />
       </div>

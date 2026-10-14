@@ -184,6 +184,53 @@ export function RepoView({
   // stored draft (the load is async).
   const draftLoadedFor = useRef<string | null>(null);
 
+  // The repo currently on screen, read by async work (a Claude generation) that
+  // must find out on completion whether its source repo is still the visible one.
+  const repoPathRef = useRef(repoPath);
+  repoPathRef.current = repoPath;
+  // Repos with a commit-message generation in flight. Keyed by path because the
+  // user may switch tabs mid-generation: the spinner belongs to the source repo.
+  const [generatingFor, setGeneratingFor] = useState<ReadonlySet<string>>(() => new Set());
+
+  // Draft a commit message with Claude for the *current* repo. The result is
+  // delivered to the repo that started it: straight into the box if it's still
+  // on screen, otherwise into its persisted draft so it's waiting there when the
+  // user switches back (instead of landing in whichever repo is now visible).
+  const generateCommitMessage = useCallback(async () => {
+    const source = repoPath;
+    setGeneratingFor((prev) => new Set(prev).add(source));
+    try {
+      const result = await window.api.claude.generateCommitMessage(source);
+      if (result.status === 'not-connected') {
+        // Not connected yet — send the user to connect Claude Code in Settings.
+        onOpenSettings?.('integrations');
+        return;
+      }
+      if (result.status === 'error') {
+        onError?.('Generate failed', result.message);
+        return;
+      }
+      if (repoPathRef.current === source) {
+        setCommitMessage(result.message);
+      } else {
+        await window.api.repo.setCommitDraft(source, result.message);
+      }
+    } catch (err) {
+      // Guard against an unexpected IPC rejection so the button can't get stuck
+      // spinning — always fall back to the active state and surface the error.
+      onError?.(
+        'Generate failed',
+        err instanceof Error ? err.message : 'Could not generate a message.',
+      );
+    } finally {
+      setGeneratingFor((prev) => {
+        const next = new Set(prev);
+        next.delete(source);
+        return next;
+      });
+    }
+  }, [repoPath, onError, onOpenSettings]);
+
   // A typed-but-uncommitted message belongs to one repo. Load its persisted
   // draft when the tab switches to another repo (this view is reused across
   // repos, not remounted), so a message survives restarts like staged files do.
@@ -1338,6 +1385,8 @@ export function RepoView({
           onOpenConflict={(file) => openResolver(file)}
           commitMessage={commitMessage}
           onCommitMessageChange={setCommitMessage}
+          generatingMessage={generatingFor.has(repoPath)}
+          onGenerateMessage={() => void generateCommitMessage()}
           loadingMore={loadingMore}
           onLoadMore={() => void loadMore()}
           onCommitted={reload}
