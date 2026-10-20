@@ -1231,6 +1231,10 @@ interface WorkingChangesProps {
   message: string;
   /** Update the shared commit message. */
   onMessageChange: (message: string) => void;
+  /** Whether a Claude commit-message generation is in flight for this repo. */
+  generating: boolean;
+  /** Draft the commit message with Claude from the staged changes. */
+  onGenerate: () => void;
   /** Reload history/refs after a commit lands. */
   onCommitted: () => void;
   /** Open a working-tree file in the center diff viewer. */
@@ -1240,8 +1244,6 @@ interface WorkingChangesProps {
   /** The diff target currently shown, so its row can be highlighted. */
   activeDiff: DiffTarget | null;
   onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
-  /** Open the settings modal, optionally to a specific section id. */
-  onOpenSettings?: (section?: string) => void;
   /** Stash working-tree changes with the given options (`git stash push`). */
   onStash: (options?: StashPushOptions) => Promise<unknown>;
 }
@@ -1257,19 +1259,19 @@ function WorkingChanges({
   onOpenConflict,
   message,
   onMessageChange,
+  generating,
+  onGenerate,
   onCommitted,
   onOpenDiff,
   onCloseDiff,
   activeDiff,
   onError,
-  onOpenSettings,
   onStash,
 }: WorkingChangesProps) {
   const [busy, setBusy] = useState(false);
   // What the in-flight commit is doing, so the button can say so — a slow
   // pre-commit hook (or the follow-up push) otherwise looks like a hang.
   const [busyPhase, setBusyPhase] = useState<'committing' | 'pushing'>('committing');
-  const [generating, setGenerating] = useState(false);
   // When set, a successful commit is immediately pushed to its upstream.
   const [pushAfterCommit, setPushAfterCommit] = useState(false);
   // When set, the commit rewrites HEAD in place instead of adding a new one.
@@ -1489,32 +1491,6 @@ function WorkingChanges({
       ],
     });
   }, [requestConfirm, repoPath, onStatusChange, onCloseDiff]);
-
-  const generate = useCallback(async () => {
-    setGenerating(true);
-    try {
-      const result = await window.api.claude.generateCommitMessage(repoPath);
-      if (result.status === 'not-connected') {
-        // Not connected yet — send the user to connect Claude Code in Settings.
-        onOpenSettings?.('integrations');
-        return;
-      }
-      if (result.status === 'error') {
-        onError?.('Generate failed', result.message);
-        return;
-      }
-      onMessageChange(result.message);
-    } catch (err) {
-      // Guard against an unexpected IPC rejection so the button can't get stuck
-      // spinning — always fall back to the active state and surface the error.
-      onError?.(
-        'Generate failed',
-        err instanceof Error ? err.message : 'Could not generate a message.',
-      );
-    } finally {
-      setGenerating(false);
-    }
-  }, [repoPath, onMessageChange, onError, onOpenSettings]);
 
   const commit = useCallback(async () => {
     setBusy(true);
@@ -1833,7 +1809,7 @@ function WorkingChanges({
                   className="pill-btn pill-btn-rainbow commit-generate-btn"
                   aria-label="Generate commit message with Claude"
                   disabled={generating || staged.length === 0}
-                  onClick={() => void generate()}
+                  onClick={onGenerate}
                 >
                   {generating ? (
                     <span className="mini-spinner" aria-hidden="true" />
@@ -1964,6 +1940,10 @@ interface CommitPanelProps {
   commitMessage: string;
   /** Update the shared commit message. */
   onCommitMessageChange: (message: string) => void;
+  /** Whether a Claude commit-message generation is in flight for this repo. */
+  generatingMessage: boolean;
+  /** Draft the commit message with Claude from the staged changes. */
+  onGenerateMessage: () => void;
   onCommitted: () => void;
   /** Return to the working-tree view from the commit detail alert bar. */
   onViewWorking: () => void;
@@ -1976,8 +1956,6 @@ interface CommitPanelProps {
   /** The diff target currently shown, so its file row can be highlighted. */
   activeDiff: DiffTarget | null;
   onError?: (title: string, message: string, opts?: { activityLog?: boolean }) => void;
-  /** Open the settings modal, optionally to a specific section id. */
-  onOpenSettings?: (section?: string) => void;
   /** Stash working-tree changes with the given options (`git stash push`). */
   onStash: (options?: StashPushOptions) => Promise<unknown>;
 }
@@ -1998,6 +1976,8 @@ export function CommitPanel({
   onOpenConflict,
   commitMessage,
   onCommitMessageChange,
+  generatingMessage,
+  onGenerateMessage,
   onCommitted,
   onViewWorking,
   onSelectCommit,
@@ -2005,7 +1985,6 @@ export function CommitPanel({
   onCloseDiff,
   activeDiff,
   onError,
-  onOpenSettings,
   onStash,
 }: CommitPanelProps) {
   // 2+ selected commits → the multi-commit boxes view, regardless of which one is
@@ -2045,12 +2024,13 @@ export function CommitPanel({
       onOpenConflict={onOpenConflict}
       message={commitMessage}
       onMessageChange={onCommitMessageChange}
+      generating={generatingMessage}
+      onGenerate={onGenerateMessage}
       onCommitted={onCommitted}
       onOpenDiff={onOpenDiff}
       onCloseDiff={onCloseDiff}
       activeDiff={activeDiff}
       onError={onError}
-      onOpenSettings={onOpenSettings}
       onStash={onStash}
     />
   );
