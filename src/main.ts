@@ -2359,7 +2359,9 @@ async function readStashCommits(
  * (nothing points at it), so it can sit anywhere before its base commit; we
  * splice it in immediately above that base, which keeps topo order valid and
  * places the dotted connector right next to where the stash branched. When the
- * base isn't within this page, the stash is shown standalone at the top.
+ * base isn't within this page (an old stash, or a base the graph filter hides),
+ * the stash is left out — it has no right place yet — and appears once paging
+ * re-reads the log far enough to load its base.
  */
 function mergeStashes(
   commits: CommitLogEntry[],
@@ -2370,8 +2372,7 @@ function mergeStashes(
   for (const stash of stashes) {
     const base = stash.parents[0];
     const at = base ? result.findIndex((commit) => commit.hash === base) : -1;
-    if (at === -1) result.unshift({ ...stash, parents: [] });
-    else result.splice(at, 0, stash);
+    if (at !== -1) result.splice(at, 0, stash);
   }
   return result;
 }
