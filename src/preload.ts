@@ -12,6 +12,9 @@ import {
   type AppCommandId,
   type OpenResult,
   type OpenToolsState,
+  type ExternalToolsState,
+  type ExternalToolKind,
+  type ExternalMergeResult,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -42,6 +45,7 @@ import {
   type CloneResult,
   type CommitLogEntry,
   type CommitSearchResult,
+  type GraphFilter,
   type DiffLineRef,
   type DiffOptions,
   type LinesResult,
@@ -160,6 +164,10 @@ const api: ExposedApi = {
       ipcRenderer.invoke(RepoChannels.log, path, limit) as Promise<CommitLogEntry[]>,
     search: (path: string, query: string) =>
       ipcRenderer.invoke(RepoChannels.search, path, query) as Promise<CommitSearchResult>,
+    getGraphFilter: (path: string) =>
+      ipcRenderer.invoke(RepoChannels.getGraphFilter, path) as Promise<GraphFilter>,
+    setGraphFilter: (path: string, filter: GraphFilter) =>
+      ipcRenderer.invoke(RepoChannels.setGraphFilter, path, filter) as Promise<GraphFilter>,
     commitFiles: (path: string, hash: string) =>
       ipcRenderer.invoke(RepoChannels.commitFiles, path, hash) as Promise<FileChange[]>,
     commitTree: (path: string, hash: string) =>
@@ -572,6 +580,8 @@ const api: ExposedApi = {
       ipcRenderer.invoke(ClaudeChannels.disconnect) as Promise<ClaudeStatus>,
     setModel: (model: ClaudeModel) =>
       ipcRenderer.invoke(ClaudeChannels.setModel, model) as Promise<ClaudeStatus>,
+    setCoAuthorTrailer: (enabled: boolean) =>
+      ipcRenderer.invoke(ClaudeChannels.setCoAuthorTrailer, enabled) as Promise<ClaudeStatus>,
     listModels: () =>
       ipcRenderer.invoke(ClaudeChannels.listModels) as Promise<ClaudeModelOption[]>,
     generateCommitMessage: (path: string) =>
@@ -693,6 +703,16 @@ const api: ExposedApi = {
       ipcRenderer.invoke(OpenChannels.reveal, repoPath, relPath) as Promise<OpenResult>,
     withDefaultApp: (repoPath: string, relPath: string) =>
       ipcRenderer.invoke(OpenChannels.withDefaultApp, repoPath, relPath) as Promise<OpenResult>,
+    externalTools: (refresh?: boolean) =>
+      ipcRenderer.invoke(OpenChannels.externalTools, refresh) as Promise<ExternalToolsState>,
+    setExternalTool: (kind: ExternalToolKind, id: string) =>
+      ipcRenderer.invoke(OpenChannels.setExternalTool, kind, id) as Promise<ExternalToolsState>,
+    externalDiff: (repoPath: string, source: DiffSource, file: string) =>
+      ipcRenderer.invoke(OpenChannels.externalDiff, repoPath, source, file) as Promise<OpenResult>,
+    externalMerge: (repoPath: string, file: string) =>
+      ipcRenderer.invoke(OpenChannels.externalMerge, repoPath, file) as Promise<ExternalMergeResult>,
+    cancelExternalMerge: (repoPath: string) =>
+      ipcRenderer.invoke(OpenChannels.cancelExternalMerge, repoPath) as Promise<void>,
   },
 };
 

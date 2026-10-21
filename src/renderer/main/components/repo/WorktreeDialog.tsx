@@ -247,6 +247,7 @@ export function WorktreeDialog({
           <label className="form-check">
             <input
               type="checkbox"
+              className="checkbox"
               checked={openAfter}
               onChange={(event) => setOpenAfter(event.target.checked)}
             />

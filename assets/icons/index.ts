@@ -49,3 +49,6 @@ export { SplitViewIcon } from './SplitViewIcon';
 export { WhitespaceIcon } from './WhitespaceIcon';
 export { WrapIcon } from './WrapIcon';
 export { ExternalIcon } from './ExternalIcon';
+export { EyeIcon } from './EyeIcon';
+export { EyeOffIcon } from './EyeOffIcon';
+export { CompareIcon } from './CompareIcon';

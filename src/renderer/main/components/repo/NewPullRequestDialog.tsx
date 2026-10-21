@@ -179,6 +179,7 @@ export function NewPullRequestDialog({
           <label className="form-check">
             <input
               type="checkbox"
+              className="checkbox"
               checked={draft}
               onChange={(event) => setDraft(event.target.checked)}
             />

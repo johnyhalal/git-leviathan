@@ -263,6 +263,52 @@ body.is-row-resizing {
   background: var(--control-bg);
 }
 
+/* AvatarStack (credits.tsx): author avatar in front, co-authors and a differing
+   committer tucked behind it (z-index set inline, descending); the ring in the
+   surface colour separates each front avatar's edge from the one behind it.
+   Each call site tunes --avatar-overlap / --avatar-ring. */
+.avatar-stack {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  isolation: isolate;
+  --avatar-overlap: 20px;
+  --avatar-ring: 2px;
+}
+
+.avatar-stack > img {
+  position: relative;
+}
+
+.avatar-stack > img:not(:only-child) {
+  box-shadow: 0 0 0 var(--avatar-ring) var(--panel-bg);
+}
+
+.avatar-stack > img + img {
+  margin-left: calc(-1 * var(--avatar-overlap));
+}
+
+.file-history-avatars {
+  align-self: center;
+  --avatar-overlap: 18px;
+}
+
+.blame-avatars {
+  --avatar-overlap: 10px;
+  --avatar-ring: 1px;
+}
+
+.commit-detail-coauthor-more {
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+
+.commit-detail-committer {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .commit-detail-author {
   display: flex;
   flex-direction: column;
@@ -1367,8 +1413,7 @@ body.is-row-resizing {
   align-self: stretch;
   width: 34px;
   height: 34px;
-  border: 2px solid transparent;
-  border-radius: 4px;
+  border-radius: 5px;
   object-fit: cover;
   background: var(--control-bg);
 }

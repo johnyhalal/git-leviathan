@@ -30,6 +30,8 @@ import {
   isCommitContextExcluded,
   isValidModelValue,
   listClaudeModels,
+  appendTrailer,
+  claudeCoAuthorTrailer,
   type TokenUsage,
 } from './claude';
 import {
@@ -38,6 +40,8 @@ import {
   AppChannels,
   commandLabel,
   OpenChannels,
+  EXTERNAL_TOOL_AUTO,
+  EXTERNAL_TOOL_NONE,
   ClaudeChannels,
   IntegrationChannels,
   MenuChannels,
@@ -49,6 +53,10 @@ import {
   type AppCommandMenu,
   type OpenResult,
   type OpenToolsState,
+  type ExternalToolsState,
+  type ExternalToolKind,
+  type ToolOption,
+  type ExternalMergeResult,
   type ClaudeStatus,
   type ClaudeModel,
   type ClaudeModelOption,
@@ -87,11 +95,13 @@ import {
   type SubmoduleAddOptions,
   type CommitLogEntry,
   type CommitSearchResult,
+  type GraphFilter,
   type DiffLineRef,
   type DiffOptions,
   type LinesResult,
   type CommitRefDecoration,
   type CommitDetailData,
+  type CommitPerson,
   type CommitResult,
   type RebaseInteractivePreview,
   type CherryPickPreview,
@@ -161,6 +171,14 @@ import {
 } from './signing';
 import { configureTelemetry, trackEvent } from './telemetry';
 import { detectEditors, detectTerminals, openInEditor, openInTerminal } from './openers';
+import {
+  detectExternalTools,
+  cancelMerge,
+  externalToolInfo,
+  openExternalDiff,
+  openExternalMerge,
+  toolOptions,
+} from './difftools';
 
 // Name the app before anything reads it, so app.getName(), the userData path,
 // notifications and the About panel all say "GitLeviathan" rather than
@@ -299,6 +317,8 @@ interface Settings {
   activeTab?: string;
   /** Repo sidebar collapsible sections' open/closed state, keyed by section id. */
   sidebarSections?: Record<string, boolean>;
+  /** Each repository's hidden / solo graph branches, keyed by repo path; unfiltered repos are absent. */
+  graphFilters?: Record<string, GraphFilter>;
   /** Default pull mode for the toolbar's pull action (global, not per-repo). */
   pullMode?: PullMode;
   /** Last-opened section id of the Settings dialog, restored on next open. */
@@ -321,6 +341,8 @@ interface Settings {
   claudeConnection?: ClaudeConnection;
   /** Model used for commit messages and conflict resolution; absent means the default. */
   claudeModel?: ClaudeModel;
+  /** Whether generated commit messages get a "Co-Authored-By: Claude …" trailer; absent means off. */
+  claudeCoAuthorTrailer?: boolean;
   /**
    * Whether anonymous usage analytics are sent to Aptabase. On by default
    * (absent means enabled); toggled from General settings.
@@ -337,6 +359,10 @@ interface Settings {
   terminal?: string;
   /** The executable (or macOS `.app`) picked as the custom editor. */
   customEditorPath?: string;
+  /** The `git difftool` pick for "Open in external diff tool": `auto` or a tool id. Absent: none. */
+  diffTool?: string;
+  /** The `git mergetool` pick for "Open in external merge tool": `auto` or a tool id. Absent: none. */
+  mergeTool?: string;
   /**
    * Stable anonymous id for this install, minted once and sent with each usage
    * event so active users can be counted without any PII. Not tied to identity.
@@ -505,6 +531,14 @@ function loadSettings(): void {
       }
       settings.sidebarSections = valid;
     }
+    if (parsed.graphFilters && typeof parsed.graphFilters === 'object') {
+      const valid: Record<string, GraphFilter> = {};
+      for (const [repoPath, raw] of Object.entries(parsed.graphFilters as Record<string, unknown>)) {
+        const filter = sanitizeGraphFilter(raw);
+        if (filter) valid[repoPath] = filter;
+      }
+      settings.graphFilters = valid;
+    }
     if (PULL_MODES.includes(parsed.pullMode as PullMode)) {
       settings.pullMode = parsed.pullMode as PullMode;
     }
@@ -556,6 +590,9 @@ function loadSettings(): void {
     if (isClaudeModel(parsed.claudeModel)) {
       settings.claudeModel = parsed.claudeModel;
     }
+    if (typeof parsed.claudeCoAuthorTrailer === 'boolean') {
+      settings.claudeCoAuthorTrailer = parsed.claudeCoAuthorTrailer;
+    }
     if (typeof parsed.telemetryEnabled === 'boolean') {
       settings.telemetryEnabled = parsed.telemetryEnabled;
     }
@@ -567,6 +604,8 @@ function loadSettings(): void {
     if (typeof parsed.customEditorPath === 'string' && parsed.customEditorPath) {
       settings.customEditorPath = parsed.customEditorPath;
     }
+    if (typeof parsed.diffTool === 'string' && parsed.diffTool) settings.diffTool = parsed.diffTool;
+    if (typeof parsed.mergeTool === 'string' && parsed.mergeTool) settings.mergeTool = parsed.mergeTool;
     if (typeof parsed.telemetryId === 'string' && parsed.telemetryId) {
       settings.telemetryId = parsed.telemetryId;
     }
@@ -576,6 +615,34 @@ function loadSettings(): void {
   } catch {
     // No settings file yet or it is unreadable — fall back to defaults.
   }
+}
+
+/** Most refs one graph filter list may hold. */
+const MAX_GRAPH_FILTER_REFS = 200;
+
+/**
+ * A branch ref the graph filter may name: a full `refs/heads/…` or
+ * `refs/remotes/…` name. The `refs/` prefix keeps it from ever reading as a git
+ * option, and refusing glob characters (which git's ref-name rules forbid
+ * anyway) keeps `--exclude=<ref>` an exact match.
+ */
+function isGraphRef(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= 255 &&
+    /^refs\/(heads|remotes)\/./.test(value) &&
+    !/[\s*?[\\~^:]|\.\./.test(value)
+  );
+}
+
+/** A validated, de-duplicated graph filter, or null when it filters nothing. */
+function sanitizeGraphFilter(value: unknown): GraphFilter | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const refs = (list: unknown) =>
+    Array.isArray(list) ? [...new Set(list.filter(isGraphRef))].slice(0, MAX_GRAPH_FILTER_REFS) : [];
+  const filter = { hidden: refs(raw.hidden), solo: refs(raw.solo) };
+  return filter.hidden.length || filter.solo.length ? filter : null;
 }
 
 function saveSettings(): void {
@@ -1929,7 +1996,73 @@ function parseDecorations(raw: string, remotes: Set<string>): CommitRefDecoratio
 // Field/record separators unlikely to appear in commit metadata.
 const LOG_FS = '\x1f';
 const LOG_FORMAT = ['%H', '%h', '%P', '%an', '%ae', '%aI', '%s', '%D'].join(LOG_FS);
+/**
+ * `Co-authored-by:` trailer values ("Name <email>"), one per \x1e so they can't
+ * collide with LOG_FS. git matches the key case-insensitively.
+ */
+const COAUTHOR_TRAILERS = '%(trailers:key=Co-authored-by,valueonly,separator=%x1e)';
+/** The graph log's format: LOG_FORMAT plus committer + co-authors for the Author column. */
+const GRAPH_LOG_FORMAT = [LOG_FORMAT, '%cn', '%ce', COAUTHOR_TRAILERS].join(LOG_FS);
 const DEFAULT_LOG_LIMIT = 2000;
+
+/**
+ * Parse COAUTHOR_TRAILERS output into people, skipping malformed entries,
+ * deduping by email, and leaving out the author crediting themselves.
+ */
+function parseCoAuthors(
+  trailers: string,
+  authorEmail: string,
+): { name: string; email: string }[] {
+  const seen = new Set([authorEmail.trim().toLowerCase()]);
+  const people: { name: string; email: string }[] = [];
+  for (const entry of trailers.split('\x1e')) {
+    const match = /^\s*(.*?)\s*<([^<>\s]+)>\s*$/.exec(entry);
+    if (!match) continue;
+    const [, name, email] = match;
+    const key = email.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    people.push({ name: name || email, email });
+  }
+  return people;
+}
+
+/**
+ * Whether the committer is a different person from the author. A same-person
+ * committer that differs only by date (after a rebase/reword/amend) doesn't count.
+ */
+function isDifferentCommitter(authorEmail: string, committerEmail: string): boolean {
+  return committerEmail.trim().toLowerCase() !== authorEmail.trim().toLowerCase();
+}
+
+/**
+ * A commit's extra credits — co-authors from COAUTHOR_TRAILERS output and the
+ * committer when a different person — with avatars, shaped to spread onto a
+ * CommitLogEntry/BlameLine (fields omitted when empty).
+ */
+function commitCredits(
+  authorEmail: string,
+  committerName: string,
+  committerEmail: string,
+  trailers: string,
+  isGithubRepo: boolean,
+): { coAuthors?: CommitPerson[]; committer?: CommitPerson } {
+  const coAuthors = parseCoAuthors(trailers, authorEmail).map((person) => ({
+    ...person,
+    avatarUrl: avatarUrl(person.email, isGithubRepo),
+  }));
+  return {
+    ...(coAuthors.length > 0 && { coAuthors }),
+    ...(committerEmail &&
+      isDifferentCommitter(authorEmail, committerEmail) && {
+        committer: {
+          name: committerName,
+          email: committerEmail,
+          avatarUrl: avatarUrl(committerEmail, isGithubRepo),
+        },
+      }),
+  };
+}
 
 /**
  * Gravatar URL for an email, with a per-address `identicon` so authors without
@@ -2108,6 +2241,31 @@ async function enrichGithubAvatars(
   }
 }
 
+/**
+ * The revisions the graph walks, honoring the repo's graph filter. Unfiltered it
+ * is every ref minus the stash (see {@link readLogCommits}). Hidden branches are
+ * `--exclude`d from that `--all` (which still includes HEAD, so the checked-out
+ * branch never vanishes). Remote HEAD symrefs (`origin/HEAD`) are always
+ * excluded: they only alias a branch `--all` already walks, and would otherwise
+ * keep a hidden `origin/main` in the graph through the alias. Solo walks just the named refs plus HEAD, with
+ * `--ignore-missing` so a since-deleted branch can't fail the whole log.
+ * `log` and `search` share this walk so a search hit's position stays a valid
+ * `--max-count` for the graph.
+ */
+function graphWalk(repoPath: string): string[] {
+  const filter = settings.graphFilters?.[repoPath];
+  if (filter?.solo.length) return ['--ignore-missing', ...filter.solo, 'HEAD'];
+  const hidden = (filter?.hidden ?? []).map((ref) => `--exclude=${ref}`);
+  return ['--exclude=refs/stash', '--exclude=refs/remotes/*/HEAD', ...hidden, '--all'];
+}
+
+/** Drops hidden branches' labels too, from commits still reachable through another ref. */
+function graphDecorateArgs(repoPath: string): string[] {
+  const filter = settings.graphFilters?.[repoPath];
+  if (!filter || filter.solo.length) return [];
+  return filter.hidden.map((ref) => `--decorate-refs-exclude=${ref}`);
+}
+
 async function readLogCommits(
   cwd: string,
   limit: number,
@@ -2125,13 +2283,14 @@ async function readLogCommits(
   // keeps the stash out of this walk: a stash is a merge commit and --all would
   // otherwise pull in both the stash tip and its synthetic "index on …" parent.
   // Stashes are woven in separately, once each, by readStashCommits/mergeStashes.
+  // The repo's graph filter narrows that walk (see graphWalk).
   const out = await runGit(cwd, [
     'log',
-    '--exclude=refs/stash',
-    '--all',
+    ...graphWalk(cwd),
+    ...graphDecorateArgs(cwd),
     '--date-order',
     `--max-count=${limit}`,
-    `--pretty=format:${LOG_FORMAT}`,
+    `--pretty=format:${GRAPH_LOG_FORMAT}`,
   ]);
   return nonEmptyLines(out).map((line) => {
     const [
@@ -2143,6 +2302,9 @@ async function readLogCommits(
       date,
       subject,
       decorations = '',
+      committerName = '',
+      committerEmail = '',
+      trailers = '',
     ] = line.split(LOG_FS);
     return {
       hash,
@@ -2152,6 +2314,7 @@ async function readLogCommits(
       authorEmail,
       authorAvatarUrl: avatarUrl(authorEmail, isGithubRepo),
       date,
+      ...commitCredits(authorEmail, committerName, committerEmail, trailers, isGithubRepo),
       subject,
       refs: parseDecorations(decorations, remotes),
     };
@@ -2196,7 +2359,9 @@ async function readStashCommits(
  * (nothing points at it), so it can sit anywhere before its base commit; we
  * splice it in immediately above that base, which keeps topo order valid and
  * places the dotted connector right next to where the stash branched. When the
- * base isn't within this page, the stash is shown standalone at the top.
+ * base isn't within this page (an old stash, or a base the graph filter hides),
+ * the stash is left out — it has no right place yet — and appears once paging
+ * re-reads the log far enough to load its base.
  */
 function mergeStashes(
   commits: CommitLogEntry[],
@@ -2207,8 +2372,7 @@ function mergeStashes(
   for (const stash of stashes) {
     const base = stash.parents[0];
     const at = base ? result.findIndex((commit) => commit.hash === base) : -1;
-    if (at === -1) result.unshift({ ...stash, parents: [] });
-    else result.splice(at, 0, stash);
+    if (at !== -1) result.splice(at, 0, stash);
   }
   return result;
 }
@@ -2243,7 +2407,7 @@ const MAX_SEARCH_QUERY = 200;
  * hits are unioned here.
  */
 async function searchLog(cwd: string, query: string): Promise<CommitSearchResult> {
-  const walk = ['--exclude=refs/stash', '--all', '--date-order'];
+  const walk = [...graphWalk(cwd), '--date-order'];
   const [all, byMessage, byAuthor] = await Promise.all([
     runGit(cwd, ['rev-list', ...walk]),
     runGit(cwd, ['log', ...walk, '-i', '-F', `--grep=${query}`, '--format=%H']),
@@ -2669,11 +2833,22 @@ async function readFileContent(
  * header on repeats, so we cache each commit's metadata by hash as we walk. An
  * all-zero hash marks a line that isn't committed yet (a working-tree edit).
  */
-function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
+function parseBlamePorcelain(
+  out: string,
+  isGithubRepo: boolean,
+  trailersByHash: Map<string, string>,
+): BlameLine[] {
   const lines: BlameLine[] = [];
   const meta = new Map<
     string,
-    { author: string; email: string; date: string; summary: string }
+    {
+      author: string;
+      email: string;
+      date: string;
+      summary: string;
+      committerName: string;
+      committerEmail: string;
+    }
   >();
   const raw = out.split('\n');
   let i = 0;
@@ -2687,7 +2862,14 @@ function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
     const hash = header[1];
     const lineNo = parseInt(header[2], 10);
     const cached = meta.get(hash);
-    const info = cached ?? { author: '', email: '', date: '', summary: '' };
+    const info = cached ?? {
+      author: '',
+      email: '',
+      date: '',
+      summary: '',
+      committerName: '',
+      committerEmail: '',
+    };
     i += 1;
     // The metadata block runs until the "\t<content>" line; absent on a repeat.
     let authorTime = 0;
@@ -2700,6 +2882,8 @@ function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
       else if (key === 'author-mail') info.email = value.replace(/^<|>$/g, '');
       else if (key === 'author-time') authorTime = parseInt(value, 10);
       else if (key === 'summary') info.summary = value;
+      else if (key === 'committer') info.committerName = value;
+      else if (key === 'committer-mail') info.committerEmail = value.replace(/^<|>$/g, '');
       i += 1;
     }
     if (authorTime) info.date = new Date(authorTime * 1000).toISOString();
@@ -2716,6 +2900,13 @@ function parseBlamePorcelain(out: string, isGithubRepo: boolean): BlameLine[] {
       authorAvatarUrl: avatarUrl(info.email, isGithubRepo),
       date: info.date,
       summary: info.summary,
+      ...commitCredits(
+        info.email,
+        info.committerName,
+        info.committerEmail,
+        trailersByHash.get(hash) ?? '',
+        isGithubRepo,
+      ),
       uncommitted: /^0{40}$/.test(hash),
     });
     i += 1;
@@ -2741,7 +2932,52 @@ async function readFileBlame(
   const isGithubRepo = remoteInfos.some(
     (remote) => parseRepoHost(remote.url)?.provider === 'github',
   );
-  return { path: file, lines: parseBlamePorcelain(out, isGithubRepo) };
+  const trailersByHash = await readCoAuthorTrailers(cwd, blameCommitHashes(out));
+  return { path: file, lines: parseBlamePorcelain(out, isGithubRepo, trailersByHash) };
+}
+
+/** The distinct committed hashes a `git blame --porcelain` output attributes lines to. */
+function blameCommitHashes(out: string): string[] {
+  const hashes = new Set<string>();
+  for (const match of out.matchAll(/^([0-9a-f]{40}) \d+ \d+/gm)) {
+    if (!/^0{40}$/.test(match[1])) hashes.add(match[1]);
+  }
+  return [...hashes];
+}
+
+/** Hashes per `git log --no-walk` call, keeping the command line well under Windows' limit. */
+const TRAILER_BATCH = 200;
+
+/**
+ * Read the COAUTHOR_TRAILERS output for each of `hashes` (blame's porcelain has
+ * the committer but not the message trailers). Hashes without co-authors are
+ * simply absent from the map.
+ */
+async function readCoAuthorTrailers(
+  cwd: string,
+  hashes: string[],
+): Promise<Map<string, string>> {
+  const batches: string[][] = [];
+  for (let i = 0; i < hashes.length; i += TRAILER_BATCH) {
+    batches.push(hashes.slice(i, i + TRAILER_BATCH));
+  }
+  const outputs = await Promise.all(
+    batches.map((batch) =>
+      runGit(cwd, [
+        'log',
+        '--no-walk=unsorted',
+        `--format=%H${LOG_FS}${COAUTHOR_TRAILERS}`,
+        ...batch,
+        '--',
+      ]),
+    ),
+  );
+  const byHash = new Map<string, string>();
+  for (const line of outputs.flatMap(nonEmptyLines)) {
+    const [hash, trailers = ''] = line.split(LOG_FS);
+    if (trailers) byHash.set(hash, trailers);
+  }
+  return byHash;
 }
 
 /**
@@ -2769,7 +3005,7 @@ async function readFileLog(
     '--date-order',
     '-z',
     `--max-count=${limit}`,
-    `--pretty=format:${LOG_FORMAT}${LOG_FS}%b`,
+    `--pretty=format:${GRAPH_LOG_FORMAT}${LOG_FS}%b`,
     '--',
     file,
   ]);
@@ -2777,8 +3013,20 @@ async function readFileLog(
     .split('\0')
     .filter((record) => record.length > 0)
     .map((record) => {
-      const [hash, shortHash, parents, author, authorEmail, date, subject, decorations = '', ...rest] =
-        record.split(LOG_FS);
+      const [
+        hash,
+        shortHash,
+        parents,
+        author,
+        authorEmail,
+        date,
+        subject,
+        decorations = '',
+        committerName = '',
+        committerEmail = '',
+        trailers = '',
+        ...rest
+      ] = record.split(LOG_FS);
       return {
         hash,
         shortHash,
@@ -2787,6 +3035,7 @@ async function readFileLog(
         authorEmail,
         authorAvatarUrl: avatarUrl(authorEmail, isGithubRepo),
         date,
+        ...commitCredits(authorEmail, committerName, committerEmail, trailers, isGithubRepo),
         subject,
         body: rest.join(LOG_FS).trim(),
         refs: parseDecorations(decorations, remoteNames),
@@ -2797,23 +3046,45 @@ async function readFileLog(
 /**
  * Read a single commit's full message and GPG signature status. `%G?` triggers
  * signature verification for just this one commit (cheap, unlike doing it across
- * the whole log), and `%B` is the raw message (subject + body).
+ * the whole log), and `%B` is the raw message (subject + body). Also carries the
+ * committer (only when a different person from the author) and the co-authors;
+ * `%B` stays last since the message can hold anything.
  */
 async function readCommitDetail(
   cwd: string,
   hash: string,
-): Promise<{ message: string; signature: string }> {
-  const out = await runGit(cwd, [
-    'show',
-    '--no-patch',
-    `--format=%G?${LOG_FS}%B`,
-    hash,
+): Promise<CommitDetailData> {
+  const [out, remotes] = await Promise.all([
+    runGit(cwd, [
+      'show',
+      '--no-patch',
+      `--format=${['%ae', '%cn', '%ce', '%cI', COAUTHOR_TRAILERS, '%G?', '%B'].join(LOG_FS)}`,
+      hash,
+    ]),
+    readRemotes(cwd),
   ]);
-  const sep = out.indexOf(LOG_FS);
-  const signature = sep === -1 ? '' : out.slice(0, sep);
-  const message = (sep === -1 ? out : out.slice(sep + 1)).replace(/\s+$/, '');
-  return { signature, message };
+  const fields = out.split(LOG_FS);
+  if (fields.length < 7) return { ...EMPTY_COMMIT_DETAIL };
+  const [authorEmail, committerName, committerEmail, committerDate, trailers, signature] = fields;
+  const message = fields.slice(6).join(LOG_FS).replace(/\s+$/, '');
+  const isGithubRepo = remotes.some(
+    (remote) => parseRepoHost(remote.url)?.provider === 'github',
+  );
+  const credits = commitCredits(authorEmail, committerName, committerEmail, trailers, isGithubRepo);
+  return {
+    message,
+    signature,
+    committer: credits.committer ? { ...credits.committer, date: committerDate } : null,
+    coAuthors: credits.coAuthors ?? [],
+  };
 }
+
+const EMPTY_COMMIT_DETAIL: CommitDetailData = {
+  message: '',
+  signature: '',
+  committer: null,
+  coAuthors: [],
+};
 
 /**
  * Rewrite commit `hash`'s message to `message`. HEAD is amended in place; an
@@ -4176,6 +4447,29 @@ function startRepoWatch(wc: Electron.WebContents, repoPath: string): void {
   });
 }
 
+/** Narrow an untrusted IPC value to a DiffSource; null when it isn't one. */
+function asDiffSource(value: unknown): DiffSource | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const source = value as { kind?: unknown; hash?: unknown };
+  if (source.kind === 'staged' || source.kind === 'unstaged') {
+    return { kind: source.kind };
+  }
+  if (source.kind === 'commit' && typeof source.hash === 'string' && source.hash.length > 0) {
+    return { kind: 'commit', hash: source.hash };
+  }
+  const range = value as { from?: unknown; to?: unknown };
+  if (
+    source.kind === 'range' &&
+    typeof range.from === 'string' &&
+    range.from.length > 0 &&
+    typeof range.to === 'string' &&
+    range.to.length > 0
+  ) {
+    return { kind: 'range', from: range.from, to: range.to };
+  }
+  return null;
+}
+
 function registerRepoIpc(): void {
   ipcMain.on(RepoChannels.watch, (event, repoPath: unknown) => {
     const wc = event.sender;
@@ -4218,6 +4512,32 @@ function registerRepoIpc(): void {
   );
 
   ipcMain.handle(
+    RepoChannels.getGraphFilter,
+    (_event, repoPath: unknown): GraphFilter => {
+      const filter = typeof repoPath === 'string' ? settings.graphFilters?.[repoPath] : undefined;
+      return filter
+        ? { hidden: [...filter.hidden], solo: [...filter.solo] }
+        : { hidden: [], solo: [] };
+    },
+  );
+
+  ipcMain.handle(
+    RepoChannels.setGraphFilter,
+    (_event, repoPath: unknown, filter: unknown): GraphFilter => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        throw new Error('Invalid graph filter payload');
+      }
+      const next = sanitizeGraphFilter(filter);
+      const filters = { ...(settings.graphFilters ?? {}) };
+      if (next) filters[repoPath] = next;
+      else delete filters[repoPath];
+      settings.graphFilters = filters;
+      saveSettings();
+      return next ?? { hidden: [], solo: [] };
+    },
+  );
+
+  ipcMain.handle(
     RepoChannels.log,
     async (_event, repoPath: unknown, limit: unknown): Promise<CommitLogEntry[]> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) return [];
@@ -4248,29 +4568,6 @@ function registerRepoIpc(): void {
       return readCommitTree(repoPath, hash);
     },
   );
-
-  // Narrow an untrusted IPC value to a DiffSource, or null if it isn't one.
-  const asDiffSource = (value: unknown): DiffSource | null => {
-    if (typeof value !== 'object' || value === null) return null;
-    const source = value as { kind?: unknown; hash?: unknown };
-    if (source.kind === 'staged' || source.kind === 'unstaged') {
-      return { kind: source.kind };
-    }
-    if (source.kind === 'commit' && typeof source.hash === 'string' && source.hash.length > 0) {
-      return { kind: 'commit', hash: source.hash };
-    }
-    const range = value as { from?: unknown; to?: unknown };
-    if (
-      source.kind === 'range' &&
-      typeof range.from === 'string' &&
-      range.from.length > 0 &&
-      typeof range.to === 'string' &&
-      range.to.length > 0
-    ) {
-      return { kind: 'range', from: range.from, to: range.to };
-    }
-    return null;
-  };
 
   // Narrow an untrusted IPC value to DiffOptions (unknown/invalid fields dropped).
   const asDiffOptions = (value: unknown): DiffOptions => {
@@ -4378,9 +4675,9 @@ function registerRepoIpc(): void {
     RepoChannels.commitDetail,
     async (_event, repoPath: unknown, hash: unknown): Promise<CommitDetailData> => {
       if (typeof repoPath !== 'string' || !isGitRepo(repoPath))
-        return { message: '', signature: '' };
+        return { ...EMPTY_COMMIT_DETAIL };
       if (typeof hash !== 'string' || hash.length === 0)
-        return { message: '', signature: '' };
+        return { ...EMPTY_COMMIT_DETAIL };
       return readCommitDetail(repoPath, hash);
     },
   );
@@ -8084,6 +8381,7 @@ function registerClaudeIpc(): void {
     binaryPath: settings.claudeConnection?.binaryPath,
     version: settings.claudeConnection?.version,
     model: settings.claudeModel ?? DEFAULT_CLAUDE_MODEL,
+    coAuthorTrailer: settings.claudeCoAuthorTrailer ?? false,
     error,
   });
 
@@ -8130,6 +8428,16 @@ function registerClaudeIpc(): void {
     (_event, model: unknown): ClaudeStatus => {
       if (!isClaudeModel(model)) return currentStatus('Unknown model.');
       settings.claudeModel = model;
+      saveSettings();
+      return currentStatus();
+    },
+  );
+
+  ipcMain.handle(
+    ClaudeChannels.setCoAuthorTrailer,
+    (_event, enabled: unknown): ClaudeStatus => {
+      if (typeof enabled !== 'boolean') return currentStatus();
+      settings.claudeCoAuthorTrailer = enabled;
       saveSettings();
       return currentStatus();
     },
@@ -8224,7 +8532,7 @@ function registerClaudeIpc(): void {
         });
       }
       try {
-        const { message, usage } = await generateCommitMessage(
+        const { message, usage, modelId } = await generateCommitMessage(
           bin,
           diff,
           changedFiles,
@@ -8257,7 +8565,14 @@ function registerClaudeIpc(): void {
           });
         }
         emitActivity({ repoPath, op: 'generate', kind: 'end', ok: true, ts: Date.now() });
-        return { status: 'ok', message: message.trim() };
+        // Any attribution the model wrote itself was stripped; when the user
+        // wants credit given, append our own, naming the model that ran.
+        return {
+          status: 'ok',
+          message: settings.claudeCoAuthorTrailer
+            ? appendTrailer(message, claudeCoAuthorTrailer(modelId))
+            : message.trim(),
+        };
       } catch (err) {
         emitActivity({ repoPath, op: 'generate', kind: 'end', ok: false, ts: Date.now() });
         return { status: 'error', message: claudeErrorMessage(err) };
@@ -9348,6 +9663,70 @@ function openToolsState(): OpenToolsState {
 }
 
 /**
+ * A saved external tool pick, checked against what's installed: absent is
+ * none, and a tool that's since been uninstalled falls back to automatic.
+ */
+function externalToolPick(saved: string | undefined, tools: ToolOption[]): string {
+  if (!saved || saved === EXTERNAL_TOOL_NONE) return EXTERNAL_TOOL_NONE;
+  return tools.some((t) => t.id === saved) ? saved : EXTERNAL_TOOL_AUTO;
+}
+
+/** A pick as `difftools.ts` takes it: `''` for automatic, else the tool id. Null for none. */
+const externalToolChoice = (pick: string): string | null =>
+  pick === EXTERNAL_TOOL_NONE ? null : pick === EXTERNAL_TOOL_AUTO ? '' : pick;
+
+/** The external diff/merge tools found and the user's picks. */
+async function externalToolsState(refresh = false): Promise<ExternalToolsState> {
+  const [diffTools, mergeTools] = await Promise.all([
+    detectExternalTools('diff', refresh),
+    detectExternalTools('merge', refresh),
+  ]);
+  const diffTool = externalToolPick(settings.diffTool, diffTools);
+  const mergeTool = externalToolPick(settings.mergeTool, mergeTools);
+  const toolInfo = (kind: ExternalToolKind, pick: string) => {
+    const choice = externalToolChoice(pick);
+    return choice === null ? Promise.resolve(null) : externalToolInfo(kind, choice);
+  };
+  const [diffInfo, mergeInfo] = await Promise.all([toolInfo('diff', diffTool), toolInfo('merge', mergeTool)]);
+  return {
+    diffTools: toolOptions(diffTools),
+    mergeTools: toolOptions(mergeTools),
+    diffTool,
+    mergeTool,
+    diffToolName: diffInfo?.name ?? null,
+    mergeToolName: mergeInfo?.name ?? null,
+    mergeToolFinishHint: mergeInfo?.finishHint ?? null,
+  };
+}
+
+/** Git's empty tree, the "before" side of a root commit. */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+/**
+ * The `git difftool` arguments that show `file`'s change for `source` — the
+ * same change the diff view shows. Null for a revision that could be read as
+ * an option.
+ */
+async function externalDiffArgs(cwd: string, source: DiffSource, file: string): Promise<string[] | null> {
+  switch (source.kind) {
+    case 'unstaged':
+      // An untracked file has no index side; compare it against nothing, like the diff view.
+      return (await isUntracked(cwd, file)) ? ['--no-index', '--', '/dev/null', file] : ['--', file];
+    case 'staged':
+      return ['--cached', '-M', '--', file];
+    case 'commit': {
+      if (source.hash.startsWith('-')) return null;
+      // First parent, so a merge (or a stash) compares against the branch it landed on.
+      const parent = (await runGit(cwd, ['rev-parse', '--verify', '--quiet', `${source.hash}^1`])).trim();
+      return ['-M', parent || EMPTY_TREE, source.hash, '--', file];
+    }
+    case 'range':
+      if (source.from.startsWith('-') || source.to.startsWith('-')) return null;
+      return ['-M', source.from, source.to, '--', file];
+  }
+}
+
+/**
  * Resolve an "open" request's target: the repository folder, or a file inside
  * it. Untrusted IPC args, so the repo must be a git repo and the file must not
  * escape it (same containment check as deleting a file). A file that's gone
@@ -9463,6 +9842,69 @@ function registerOpenIpc(): void {
       return message ? { status: 'error', message } : { status: 'ok' };
     },
   );
+
+  ipcMain.handle(
+    OpenChannels.externalTools,
+    (_event, refresh: unknown): Promise<ExternalToolsState> => externalToolsState(refresh === true),
+  );
+
+  ipcMain.handle(
+    OpenChannels.setExternalTool,
+    async (_event, kind: unknown, id: unknown): Promise<ExternalToolsState> => {
+      if ((kind === 'diff' || kind === 'merge') && typeof id === 'string') {
+        const key = kind === 'diff' ? 'diffTool' : 'mergeTool';
+        if (id && id !== EXTERNAL_TOOL_NONE) settings[key] = id;
+        else delete settings[key];
+        saveSettings();
+      }
+      return externalToolsState();
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.externalDiff,
+    async (_event, repoPath: unknown, source: unknown, file: unknown): Promise<OpenResult> => {
+      const src = asDiffSource(source);
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { status: 'error', message: 'Not a git repository.' };
+      }
+      if (src === null || typeof file !== 'string' || file.length === 0) {
+        return { status: 'error', message: 'Invalid file.' };
+      }
+      const args = await externalDiffArgs(repoPath, src, file);
+      if (!args) return { status: 'error', message: 'Invalid revision.' };
+      const choice = externalToolChoice((await externalToolsState()).diffTool);
+      if (choice === null) {
+        return { status: 'error', message: 'No external diff tool is set. Pick one in Settings › General.' };
+      }
+      return openExternalDiff(repoPath, choice, args);
+    },
+  );
+
+  ipcMain.handle(
+    OpenChannels.externalMerge,
+    async (_event, repoPath: unknown, file: unknown): Promise<ExternalMergeResult> => {
+      if (typeof repoPath !== 'string' || !isGitRepo(repoPath)) {
+        return { result: { status: 'error', message: 'Not a git repository.' }, merge: null };
+      }
+      const before = await readMergeState(repoPath);
+      // Only a file git still lists as conflicted — mergetool would otherwise do nothing.
+      if (typeof file !== 'string' || !before?.conflicts.some((c) => c.path === file)) {
+        return { result: { status: 'error', message: 'That file has no conflict to resolve.' }, merge: before };
+      }
+      const choice = externalToolChoice((await externalToolsState()).mergeTool);
+      if (choice === null) {
+        const message = 'No external merge tool is set. Pick one in Settings › General.';
+        return { result: { status: 'error', message }, merge: before };
+      }
+      const result = await openExternalMerge(repoPath, choice, file);
+      return { result, merge: await readMergeState(repoPath) };
+    },
+  );
+
+  ipcMain.handle(OpenChannels.cancelExternalMerge, (_event, repoPath: unknown): void => {
+    if (typeof repoPath === 'string') cancelMerge(repoPath);
+  });
 }
 
 /**

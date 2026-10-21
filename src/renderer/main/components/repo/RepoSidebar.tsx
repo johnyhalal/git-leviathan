@@ -10,6 +10,8 @@ import {
 import {
   BranchIcon,
   CheckIcon,
+  EyeIcon,
+  EyeOffIcon,
   FolderIcon,
   GitflowIcon,
   LocalIcon,
@@ -28,6 +30,7 @@ import { RemoteAvatar } from './RemoteAvatar';
 import { RemoteContextMenu } from './RemoteContextMenu';
 import { RemoteDialog } from './RemoteDialog';
 import { BranchContextMenu, type BranchMenuTarget } from './BranchContextMenu';
+import { isRefVisible, localRef, remoteRef, useGraphFilter } from './GraphFilterContext';
 import {
   BranchDragMenu,
   hasDragActions,
@@ -175,7 +178,7 @@ function providerOfUrl(url: string | null | undefined): IntegrationProvider | nu
 }
 
 /** Left padding for a row at a given tree depth. */
-const indent = (depth: number) => 24 + depth * 14;
+const indent = (depth: number) => 32 + depth * 14;
 
 // --- Path tree --------------------------------------------------------------
 
@@ -336,6 +339,37 @@ interface RowProps {
   onSelect: (id: string) => void;
 }
 
+/** Whether the branch `ref` is drawn in the graph (true outside a repo view). */
+function useRefVisible(ref: string): boolean {
+  const graph = useGraphFilter();
+  return graph ? isRefVisible(graph.filter, ref) : true;
+}
+
+/**
+ * A branch row's show/hide-in-graph toggle, sitting in the row's leading gutter
+ * (where the checked-out branch shows its check). Like the "more" button it
+ * appears on hover, but it stays pinned while the branch is hidden so the row
+ * reads as such.
+ */
+function GraphEyeButton({ gitRef, name }: { gitRef: string; name: string }) {
+  const graph = useGraphFilter();
+  if (!graph) return null;
+  const visible = isRefVisible(graph.filter, gitRef);
+  const label = `${visible ? 'Hide' : 'Show'} ${name} in graph`;
+  return (
+    <button
+      type="button"
+      className={cx('repo-row-action', 'repo-row-eye', 'tooltip-host', !visible && 'is-pinned')}
+      onClick={() => graph.setVisible([gitRef], !visible)}
+      data-tooltip={label}
+      aria-label={label}
+      aria-pressed={!visible}
+    >
+      {visible ? <EyeIcon size={12} /> : <EyeOffIcon size={12} />}
+    </button>
+  );
+}
+
 function LocalBranchRow({
   branch,
   label,
@@ -364,12 +398,14 @@ function LocalBranchRow({
     { name: branch.name, remote: null },
     dnd,
   );
+  const inGraph = useRefVisible(localRef(branch.name));
   return (
     <div
       className={cx(
         'repo-list-item',
         active === id && 'is-active',
         branch.current && 'is-current',
+        !branch.current && !inGraph && 'is-graph-hidden',
         isEligible && 'is-drop-eligible',
         isHovered && 'is-drop-target',
       )}
@@ -385,9 +421,11 @@ function LocalBranchRow({
           className="repo-branch-check"
           aria-label="Current branch"
         >
-          <CheckIcon size={14} />
+          <CheckIcon size={12} />
         </span>
       )}
+      {/* The checked-out branch is always drawn (the graph walks HEAD). */}
+      {!branch.current && <GraphEyeButton gitRef={localRef(branch.name)} name={branch.name} />}
       <button
         type="button"
         className="repo-row-main tooltip-host"
@@ -455,11 +493,13 @@ function RemoteBranchRow({
     remoteName: remote,
   };
   const { rowProps, isEligible, isHovered } = useRowDrag({ name, remote }, dnd);
+  const inGraph = useRefVisible(remoteRef(remote, name));
   return (
     <div
       className={cx(
         'repo-list-item',
         active === id && 'is-active',
+        !inGraph && 'is-graph-hidden',
         isEligible && 'is-drop-eligible',
         isHovered && 'is-drop-target',
       )}
@@ -470,6 +510,7 @@ function RemoteBranchRow({
       }}
       {...rowProps}
     >
+      <GraphEyeButton gitRef={remoteRef(remote, name)} name={full} />
       <button
         type="button"
         className="repo-row-main tooltip-host"

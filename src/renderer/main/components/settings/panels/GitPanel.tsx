@@ -29,6 +29,7 @@ export function GitPanel() {
       >
         <input
           type="checkbox"
+          className="checkbox"
           checked={fetchPrune}
           onChange={(e) => onToggleFetchPrune(e.target.checked)}
         />

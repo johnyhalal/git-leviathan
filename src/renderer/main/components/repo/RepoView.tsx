@@ -5,6 +5,7 @@ import type {
   GitflowConfig,
   GitflowConfigResult,
   GitflowKind,
+  GraphFilter,
   MergeState,
   PullMode,
   RebaseCommitInfo,
@@ -18,7 +19,7 @@ import type {
   UndoRedoState,
   WorkingStatus,
 } from '../../../../types/ipc';
-import { WORKING_TREE_HASH } from '../../../../types/ipc';
+import { EMPTY_GRAPH_FILTER, WORKING_TREE_HASH } from '../../../../types/ipc';
 import { RepoToolbar } from './RepoToolbar';
 import { CommitSearchBar } from './CommitSearchBar';
 import { RepoSettingsDialog, type RepoSettingsTabId } from './RepoSettingsDialog';
@@ -27,6 +28,7 @@ import { MergeBanner } from './MergeBanner';
 import { ConflictResolver } from './ConflictResolver';
 import { CommitPlanEditor } from './CommitPlanEditor';
 import { ConfirmProvider } from '../ConfirmBar';
+import { GraphFilterContext, type GraphFilterControls } from './GraphFilterContext';
 import { useCommands } from '../../commands/CommandRegistry';
 import { openInEditor, openInTerminal, revealInFileManager } from '../../openActions';
 import type { WorktreeRemoveOutcome } from './WorktreeContextMenu';
@@ -94,6 +96,9 @@ export function RepoView({
   const refreshingRef = useRef(false);
   // Bumped after a checkout to re-run the loader with the new HEAD.
   const [reloadToken, setReloadToken] = useState(0);
+  // Which branches the graph hides / solos (persisted per repo by main, which
+  // applies it to every log and search read).
+  const [graphFilter, setGraphFilter] = useState<GraphFilter>(EMPTY_GRAPH_FILTER);
   // Bumped after a push/pull lands so RepoColumns closes any open diff (a pull
   // can rewrite the file it was showing).
   const [closeDiffToken, setCloseDiffToken] = useState(0);
@@ -167,15 +172,15 @@ export function RepoView({
     hadMergeRef.current = next !== null;
     setMergeState(next);
     if (next && !was) {
+      // The resolver (and the merge banner behind it) says it all; no toast too.
       setResolverOpen(true);
-      onNotice?.('Conflicts', `${next.description} — resolve the conflicts to continue.`);
       // A conflicted merge still gets the message a clean merge would record;
       // prefill it (without clobbering a message the user already typed).
       const mergeMessage = next.op === 'merge' ? next.message : undefined;
       if (mergeMessage) setCommitMessage((prev) => (prev.trim() ? prev : mergeMessage));
     }
     if (!next) setResolverOpen(false);
-  }, [onNotice]);
+  }, []);
   const applyMergeRef = useRef(applyMergeState);
   applyMergeRef.current = applyMergeState;
 
@@ -303,6 +308,49 @@ export function RepoView({
     };
   }, [repoPath, reloadToken]);
 
+  useEffect(() => {
+    let live = true;
+    setGraphFilter(EMPTY_GRAPH_FILTER);
+    void window.api.repo.getGraphFilter(repoPath).then((filter) => {
+      if (live) setGraphFilter(filter);
+    });
+    return () => {
+      live = false;
+    };
+  }, [repoPath]);
+
+  // Store a new graph filter, then re-read the log at the current page cap so the
+  // graph redraws in place (scroll and selection survive, as with `refresh`).
+  const applyGraphFilter = useCallback(
+    async (next: GraphFilter) => {
+      const stored = await window.api.repo.setGraphFilter(repoPath, next);
+      setGraphFilter(stored);
+      const count = loadedCountRef.current || PAGE_SIZE;
+      const nextCommits = await window.api.repo.log(repoPath, count);
+      setCommits(nextCommits);
+      setHasMore(nextCommits.length >= count);
+    },
+    [repoPath],
+  );
+
+  const graphFilterControls = useMemo<GraphFilterControls>(() => {
+    const without = (list: string[], refs: string[]) => list.filter((ref) => !refs.includes(ref));
+    return {
+      filter: graphFilter,
+      setVisible: (refs, visible) => {
+        const { hidden, solo } = graphFilter;
+        void applyGraphFilter(
+          solo.length
+            ? { hidden, solo: visible ? [...without(solo, refs), ...refs] : without(solo, refs) }
+            : { hidden: visible ? without(hidden, refs) : [...without(hidden, refs), ...refs], solo },
+        );
+      },
+      // Soloing keeps the hidden list, so stopping the solo restores it.
+      solo: (refs) => void applyGraphFilter({ hidden: graphFilter.hidden, solo: refs ?? [] }),
+      clear: () => void applyGraphFilter(EMPTY_GRAPH_FILTER),
+    };
+  }, [graphFilter, applyGraphFilter]);
+
   // Fetch the next page by growing the cap and re-reading the log. Re-reading
   // the whole range (rather than appending a slice) keeps the commit graph's
   // lane layout correct, since it's computed across the entire set at once.
@@ -396,7 +444,7 @@ export function RepoView({
   }, [searchOpen, searchQuery, repoPath, goToMatch]);
 
   // History moved under an open search (a commit, pull, fetch or external
-  // change re-read the refs): re-run it quietly so the matches stay current,
+  // change re-read the refs, or the graph filter changed): re-run it quietly so the matches stay current,
   // keeping the focused match if it survived rather than jumping back to the
   // first one.
   const searchStateRef = useRef({ searchQuery, searchResult, searchIndex });
@@ -412,7 +460,7 @@ export function RepoView({
       setSearchResult(result);
       setSearchIndex(focused ? result.hashes.indexOf(focused) : -1);
     });
-  }, [refs, repoPath]);
+  }, [refs, repoPath, graphFilter]);
 
   // Undefined until a search has returned, so the list only dims rows while
   // there's a result set to show.
@@ -1245,6 +1293,16 @@ export function RepoView({
     [repoPath],
   );
 
+  // A conflict resolved from the commit panel's file menu (a side picked, or the
+  // external merge tool): the resolved file moves into the working-tree lists.
+  const conflictsChanged = useCallback(
+    (merge: MergeState | null) => {
+      applyMergeRef.current(merge);
+      void window.api.repo.status(repoPath).then(setWorkingStatus);
+    },
+    [repoPath],
+  );
+
   // Open the full-screen resolver, optionally pre-selecting a file (clicking a
   // conflicted file in the commit panel jumps straight to it).
   const openResolver = useCallback((file: string | null) => {
@@ -1371,83 +1429,86 @@ export function RepoView({
             onSkip={() => void rebaseSkip()}
           />
         )}
-        <RepoColumns
-          repoPath={repoPath}
-          branch={currentBranch}
-          refs={refs}
-          commits={displayCommits}
-          searchMatches={searchMatches}
-          searchFocus={searchFocus}
-          workingStatus={workingStatus}
-          onWorkingStatusChange={setWorkingStatus}
-          conflicts={mergeState?.conflicts ?? []}
-          onMarkResolved={(file) => void markResolved(file)}
-          onOpenConflict={(file) => openResolver(file)}
-          commitMessage={commitMessage}
-          onCommitMessageChange={setCommitMessage}
-          generatingMessage={generatingFor.has(repoPath)}
-          onGenerateMessage={() => void generateCommitMessage()}
-          loadingMore={loadingMore}
-          onLoadMore={() => void loadMore()}
-          onCommitted={reload}
-          closeDiffToken={closeDiffToken}
-          stashedStatus={stashedStatus}
-          onCheckout={(branch, remote) => void checkout(branch, remote)}
-          creatingBranch={creatingBranch}
-          onCreateBranch={(name) => void createBranch(name)}
-          onCancelCreateBranch={() => setCreatingBranch(false)}
-          onMergeBranch={(source, target) => void mergeBranch(source, target)}
-          onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
-          onFastForward={(source, target) => void fastForward(source, target)}
-          onCherryPick={(hash) => void cherryPick(hash)}
-          onCherryPickSelection={(hashes) => void openCherryPick(hashes)}
-          onRevert={(hash) => void revert(hash)}
-          onRebaseOnto={(hash) => void rebaseOnto(hash)}
-          onInteractiveRebase={(hash) => void openInteractiveRebase(hash)}
-          onCheckoutCommit={(hash) => void checkoutCommit(hash)}
-          onReset={(hash, mode) => void resetTo(hash, mode)}
-          onResetPreview={resetPreview}
-          onPushBranch={pushBranch}
-          onRenameBranch={(oldName, newName) => void renameBranch(oldName, newName)}
-          onDeleteBranch={(branch) => void deleteBranch(branch)}
-          onDeleteRemoteBranch={(remote, branch) => void deleteRemoteBranch(remote, branch)}
-          taggingAt={taggingAt}
-          onStartTag={startTag}
-          onStartTagAtBranch={startTagAtBranch}
-          onCreateTag={(hash, name) => void createTag(hash, name)}
-          onCreateAnnotatedTag={(hash, name, message) => void createAnnotatedTag(hash, name, message)}
-          onCancelTag={() => setTaggingAt(null)}
-          onAnnotateTag={(name, message) => void annotateTag(name, message)}
-          tagRemote={tagRemote}
-          pushedTags={pushedTags}
-          onPushTag={(name, remote) => void pushTag(name, remote)}
-          onDeleteRemoteTag={(name, remote) => void deleteRemoteTag(name, remote)}
-          onDeleteTag={(name) => void deleteTag(name)}
-          onStashApply={(index) => void stashApply(index)}
-          onStashPop={(index) => void stashPop(index)}
-          onStashDrop={(index) => void stashDrop(index)}
-          onStash={stashPush}
-          onWorktreeAdded={reload}
-          onWorktreeRemove={worktreeRemove}
-          onWorktreeLock={(path, lock, reason) => void worktreeLock(path, lock, reason)}
-          onOpenWorktreeHere={openWorktreeHere}
-          onOpenWorktreeInNewTab={openWorktreeInNewTab}
-          onSubmoduleAdded={reload}
-          onSubmoduleInit={(path) => void submoduleInit(path)}
-          onSubmoduleUpdate={(path) => void submoduleUpdate(path)}
-          onSubmoduleUpdateRemote={(path) => void submoduleUpdateRemote(path)}
-          onSubmoduleSync={(path) => void submoduleSync(path)}
-          onSubmoduleDeinit={submoduleDeinit}
-          onSubmoduleRemove={(path) => void submoduleRemove(path)}
-          onRemoteMutate={remoteMutation}
-          onRemoteRemove={remoteRemove}
-          gitflowConfig={gitflowConfig}
-          onGitflowStart={(kind, name, source) => void gitflowStart(kind, name, source)}
-          onGitflowFinish={() => void gitflowFinish()}
-          onError={onError}
-          onOpenSettings={onOpenSettings}
-          onOpenRepoSettings={openRepoSettings}
-        />
+        <GraphFilterContext.Provider value={graphFilterControls}>
+          <RepoColumns
+            repoPath={repoPath}
+            branch={currentBranch}
+            refs={refs}
+            commits={displayCommits}
+            searchMatches={searchMatches}
+            searchFocus={searchFocus}
+            workingStatus={workingStatus}
+            onWorkingStatusChange={setWorkingStatus}
+            conflicts={mergeState?.conflicts ?? []}
+            onMarkResolved={(file) => void markResolved(file)}
+            onOpenConflict={(file) => openResolver(file)}
+            onConflictsChanged={conflictsChanged}
+            commitMessage={commitMessage}
+            onCommitMessageChange={setCommitMessage}
+            generatingMessage={generatingFor.has(repoPath)}
+            onGenerateMessage={() => void generateCommitMessage()}
+            loadingMore={loadingMore}
+            onLoadMore={() => void loadMore()}
+            onCommitted={reload}
+            closeDiffToken={closeDiffToken}
+            stashedStatus={stashedStatus}
+            onCheckout={(branch, remote) => void checkout(branch, remote)}
+            creatingBranch={creatingBranch}
+            onCreateBranch={(name) => void createBranch(name)}
+            onCancelCreateBranch={() => setCreatingBranch(false)}
+            onMergeBranch={(source, target) => void mergeBranch(source, target)}
+            onRebaseBranch={(source, target) => void rebaseBranch(source, target)}
+            onFastForward={(source, target) => void fastForward(source, target)}
+            onCherryPick={(hash) => void cherryPick(hash)}
+            onCherryPickSelection={(hashes) => void openCherryPick(hashes)}
+            onRevert={(hash) => void revert(hash)}
+            onRebaseOnto={(hash) => void rebaseOnto(hash)}
+            onInteractiveRebase={(hash) => void openInteractiveRebase(hash)}
+            onCheckoutCommit={(hash) => void checkoutCommit(hash)}
+            onReset={(hash, mode) => void resetTo(hash, mode)}
+            onResetPreview={resetPreview}
+            onPushBranch={pushBranch}
+            onRenameBranch={(oldName, newName) => void renameBranch(oldName, newName)}
+            onDeleteBranch={(branch) => void deleteBranch(branch)}
+            onDeleteRemoteBranch={(remote, branch) => void deleteRemoteBranch(remote, branch)}
+            taggingAt={taggingAt}
+            onStartTag={startTag}
+            onStartTagAtBranch={startTagAtBranch}
+            onCreateTag={(hash, name) => void createTag(hash, name)}
+            onCreateAnnotatedTag={(hash, name, message) => void createAnnotatedTag(hash, name, message)}
+            onCancelTag={() => setTaggingAt(null)}
+            onAnnotateTag={(name, message) => void annotateTag(name, message)}
+            tagRemote={tagRemote}
+            pushedTags={pushedTags}
+            onPushTag={(name, remote) => void pushTag(name, remote)}
+            onDeleteRemoteTag={(name, remote) => void deleteRemoteTag(name, remote)}
+            onDeleteTag={(name) => void deleteTag(name)}
+            onStashApply={(index) => void stashApply(index)}
+            onStashPop={(index) => void stashPop(index)}
+            onStashDrop={(index) => void stashDrop(index)}
+            onStash={stashPush}
+            onWorktreeAdded={reload}
+            onWorktreeRemove={worktreeRemove}
+            onWorktreeLock={(path, lock, reason) => void worktreeLock(path, lock, reason)}
+            onOpenWorktreeHere={openWorktreeHere}
+            onOpenWorktreeInNewTab={openWorktreeInNewTab}
+            onSubmoduleAdded={reload}
+            onSubmoduleInit={(path) => void submoduleInit(path)}
+            onSubmoduleUpdate={(path) => void submoduleUpdate(path)}
+            onSubmoduleUpdateRemote={(path) => void submoduleUpdateRemote(path)}
+            onSubmoduleSync={(path) => void submoduleSync(path)}
+            onSubmoduleDeinit={submoduleDeinit}
+            onSubmoduleRemove={(path) => void submoduleRemove(path)}
+            onRemoteMutate={remoteMutation}
+            onRemoteRemove={remoteRemove}
+            gitflowConfig={gitflowConfig}
+            onGitflowStart={(kind, name, source) => void gitflowStart(kind, name, source)}
+            onGitflowFinish={() => void gitflowFinish()}
+            onError={onError}
+            onOpenSettings={onOpenSettings}
+            onOpenRepoSettings={openRepoSettings}
+          />
+        </GraphFilterContext.Provider>
         {resolverOpen && mergeState && (
           <ConflictResolver
             repoPath={repoPath}

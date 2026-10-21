@@ -4,6 +4,7 @@ import type {
   ConflictFile,
   GitflowConfig,
   GitflowKind,
+  MergeState,
   RefsMutationResult,
   RepoRefs,
   ResetMode,
@@ -18,6 +19,7 @@ import type { SubmoduleDeinitOutcome } from './SubmoduleContextMenu';
 import { CommitList } from './CommitList';
 import { CommitPanel } from './CommitPanel';
 import { DiffView, type DiffTarget } from './DiffView';
+import { GraphFilterBar } from './GraphFilterBar';
 import { ResizeHandle } from './ResizeHandle';
 import { useResizableColumns } from './useResizableColumns';
 
@@ -44,6 +46,8 @@ interface RepoColumnsProps {
   onMarkResolved: (file: string | null) => void;
   /** Open the conflict resolver focused on a specific conflicted file. */
   onOpenConflict: (file: string) => void;
+  /** A conflict was resolved outside the resolver (the file menu): swap in the fresh merge state. */
+  onConflictsChanged: (merge: MergeState | null) => void;
   /** The shared commit message (mirrored between the working row and the panel). */
   commitMessage: string;
   /** Update the shared commit message. */
@@ -205,6 +209,7 @@ export function RepoColumns({
   conflicts,
   onMarkResolved,
   onOpenConflict,
+  onConflictsChanged,
   commitMessage,
   onCommitMessageChange,
   generatingMessage,
@@ -498,67 +503,71 @@ export function RepoColumns({
         <ResizeHandle side="left" aria-label="Resize sidebar" onPointerDown={startResize('left')} />
       )}
 
-      <div
-        className="repo-column repo-column-center"
-        onScroll={diffTarget ? undefined : handleScroll}
-      >
-        {diffTarget ? (
-          <DiffView
-            repoPath={repoPath}
-            target={diffTarget}
-            onClose={() => setDiffTarget(null)}
-            onWorkingStatusChange={onWorkingStatusChange}
-            onError={onError}
-            onRetarget={setDiffTarget}
-            onSelectCommit={(hash) => {
-              // Close explicitly: selecting the already-selected commit
-              // wouldn't trip the stale-diff effect above.
-              setDiffTarget(null);
-              selectSingle(hash);
-            }}
-          />
-        ) : (
-          <CommitList
-            commits={commits}
-            selectedHash={selectedHash}
-            selectedHashes={selectedHashes}
-            searchMatches={searchMatches}
-            currentBranch={branch}
-            remotes={refs?.remotes}
-            workingStatus={workingStatus}
-            commitMessage={commitMessage}
-            onCommitMessageChange={onCommitMessageChange}
-            loadingMore={loadingMore}
-            onSelect={selectCommit}
-            onCheckout={onCheckout}
-            creatingBranch={creatingBranch}
-            onCreateBranch={onCreateBranch}
-            onCancelCreateBranch={onCancelCreateBranch}
-            taggingAt={taggingAt}
-            onStartTag={onStartTag}
-            onCreateTag={onCreateTag}
-            onCreateAnnotatedTag={onCreateAnnotatedTag}
-            onCancelTag={onCancelTag}
-            tagRemote={tagRemote}
-            pushedTags={pushedTags}
-            onAnnotateTag={onAnnotateTag}
-            onPushTag={onPushTag}
-            onDeleteRemoteTag={onDeleteRemoteTag}
-            onDeleteTag={onDeleteTag}
-            onMergeBranch={onMergeBranch}
-            onRebaseBranch={onRebaseBranch}
-            onCherryPickSelection={onCherryPickSelection}
-            onRevert={onRevert}
-            onRebaseOnto={onRebaseOnto}
-            onInteractiveRebase={onInteractiveRebase}
-            onCheckoutCommit={onCheckoutCommit}
-            onReset={onReset}
-            onResetPreview={onResetPreview}
-            onRenameBranch={onRenameBranch}
-            onDeleteBranch={onDeleteBranch}
-            onDeleteRemoteBranch={onDeleteRemoteBranch}
-          />
-        )}
+      <div className="repo-column repo-column-center">
+        {/* Outside the scroller so it stays put above the sticky table header. */}
+        {!diffTarget && <GraphFilterBar refs={refs} />}
+        <div
+          className="repo-column-center-scroll"
+          onScroll={diffTarget ? undefined : handleScroll}
+        >
+          {diffTarget ? (
+            <DiffView
+              repoPath={repoPath}
+              target={diffTarget}
+              onClose={() => setDiffTarget(null)}
+              onWorkingStatusChange={onWorkingStatusChange}
+              onError={onError}
+              onRetarget={setDiffTarget}
+              onSelectCommit={(hash) => {
+                // Close explicitly: selecting the already-selected commit
+                // wouldn't trip the stale-diff effect above.
+                setDiffTarget(null);
+                selectSingle(hash);
+              }}
+            />
+          ) : (
+            <CommitList
+              commits={commits}
+              selectedHash={selectedHash}
+              selectedHashes={selectedHashes}
+              searchMatches={searchMatches}
+              currentBranch={branch}
+              remotes={refs?.remotes}
+              workingStatus={workingStatus}
+              commitMessage={commitMessage}
+              onCommitMessageChange={onCommitMessageChange}
+              loadingMore={loadingMore}
+              onSelect={selectCommit}
+              onCheckout={onCheckout}
+              creatingBranch={creatingBranch}
+              onCreateBranch={onCreateBranch}
+              onCancelCreateBranch={onCancelCreateBranch}
+              taggingAt={taggingAt}
+              onStartTag={onStartTag}
+              onCreateTag={onCreateTag}
+              onCreateAnnotatedTag={onCreateAnnotatedTag}
+              onCancelTag={onCancelTag}
+              tagRemote={tagRemote}
+              pushedTags={pushedTags}
+              onAnnotateTag={onAnnotateTag}
+              onPushTag={onPushTag}
+              onDeleteRemoteTag={onDeleteRemoteTag}
+              onDeleteTag={onDeleteTag}
+              onMergeBranch={onMergeBranch}
+              onRebaseBranch={onRebaseBranch}
+              onCherryPickSelection={onCherryPickSelection}
+              onRevert={onRevert}
+              onRebaseOnto={onRebaseOnto}
+              onInteractiveRebase={onInteractiveRebase}
+              onCheckoutCommit={onCheckoutCommit}
+              onReset={onReset}
+              onResetPreview={onResetPreview}
+              onRenameBranch={onRenameBranch}
+              onDeleteBranch={onDeleteBranch}
+              onDeleteRemoteBranch={onDeleteRemoteBranch}
+            />
+          )}
+        </div>
       </div>
 
       <ResizeHandle side="right" aria-label="Resize commit panel" onPointerDown={startResize('right')} />
@@ -574,6 +583,7 @@ export function RepoColumns({
           conflicts={conflicts}
           onMarkResolved={onMarkResolved}
           onOpenConflict={onOpenConflict}
+          onConflictsChanged={onConflictsChanged}
           commitMessage={commitMessage}
           onCommitMessageChange={onCommitMessageChange}
           generatingMessage={generatingMessage}

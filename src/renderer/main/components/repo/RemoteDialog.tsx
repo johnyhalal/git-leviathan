@@ -196,6 +196,7 @@ export function RemoteDialog({
           <label className="form-check">
             <input
               type="checkbox"
+              className="checkbox"
               checked={separatePush}
               onChange={(event) => setSeparatePush(event.target.checked)}
             />
@@ -225,6 +226,7 @@ export function RemoteDialog({
             <label className="form-check">
               <input
                 type="checkbox"
+                className="checkbox"
                 checked={fetchAfterAdd}
                 onChange={(event) => setFetchAfterAdd(event.target.checked)}
               />

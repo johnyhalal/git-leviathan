@@ -84,6 +84,16 @@ export const OpenChannels = {
   reveal: 'open:reveal',
   /** Renderer -> main (invoke): open a file with the OS default app for its type. */
   withDefaultApp: 'open:with-default-app',
+  /** Renderer -> main (invoke): installed external diff/merge tools and the chosen ones. */
+  externalTools: 'open:external-tools',
+  /** Renderer -> main (invoke): persist the external diff or merge tool pick (see `ExternalToolsState`). */
+  setExternalTool: 'open:set-external-tool',
+  /** Renderer -> main (invoke): show a file's change in the external diff tool. */
+  externalDiff: 'open:external-diff',
+  /** Renderer -> main (invoke): resolve a conflicted file in the external merge tool. */
+  externalMerge: 'open:external-merge',
+  /** Renderer -> main (invoke): stop waiting for the external merge tool running in a repo. */
+  cancelExternalMerge: 'open:cancel-external-merge',
 } as const;
 
 /** An installed editor or terminal the user can pick. */
@@ -108,6 +118,54 @@ export interface OpenToolsState {
 }
 
 export type OpenResult = { status: 'ok' } | { status: 'error'; message: string };
+
+/** Which external tool a setting or launch is about: `git difftool` or `git mergetool`. */
+export type ExternalToolKind = 'diff' | 'merge';
+
+/** External tool pick: off, so no "Open in …" action is offered anywhere. The default. */
+export const EXTERNAL_TOOL_NONE = 'none';
+/** External tool pick: git's own `diff.tool` / `merge.tool`, else the first tool found. */
+export const EXTERNAL_TOOL_AUTO = 'auto';
+
+/**
+ * The external diff/merge tools git can drive on this machine and the user's
+ * picks: `EXTERNAL_TOOL_NONE`, `EXTERNAL_TOOL_AUTO` or a detected tool id.
+ */
+export interface ExternalToolsState {
+  diffTools: ToolOption[];
+  mergeTools: ToolOption[];
+  diffTool: string;
+  mergeTool: string;
+  /**
+   * Display name of the tool a launch would use now; null when the pick is none
+   * or no tool is available. The "Open in …" actions show only when it's set.
+   */
+  diffToolName: string | null;
+  mergeToolName: string | null;
+  /**
+   * What finishes a merge in that tool, shown while the app waits for it —
+   * FileMerge only hands control back once the whole app is quit.
+   */
+  mergeToolFinishHint: string | null;
+}
+
+/**
+ * How an external merge ended: resolved and staged (`ok`); closed with the file
+ * unsaved (`unchanged`) or saved with conflict markers left (`unresolved`) —
+ * either way still conflicted, with whatever was saved kept; stopped from the
+ * app (`cancelled`); or failed to run (`error`).
+ */
+export type ExternalMergeStatus =
+  | OpenResult
+  | { status: 'unchanged' }
+  | { status: 'unresolved' }
+  | { status: 'cancelled' };
+
+/** Outcome of an external merge: how the launch went, then the fresh merge state. */
+export interface ExternalMergeResult {
+  result: ExternalMergeStatus;
+  merge: MergeState | null;
+}
 
 export const MenuChannels = {
   /** Main -> renderer (send): a native menu item (or its accelerator) was chosen. */
@@ -734,6 +792,21 @@ export interface CommitRefDecoration {
 }
 
 /** One commit in the history, with the parent links the graph is drawn from. */
+/**
+ * Which branches the commit graph walks, persisted per repository. Refs are full
+ * names (`refs/heads/main`, `refs/remotes/origin/main`). HEAD is always walked,
+ * so the checked-out branch and the working-tree row never drop out.
+ */
+export interface GraphFilter {
+  /** Branches left out of the graph (their unique commits and their labels). */
+  hidden: string[];
+  /** When non-empty, the graph shows only these branches' history; `hidden` is then ignored. */
+  solo: string[];
+}
+
+/** The unfiltered graph: every branch, tag and remote. */
+export const EMPTY_GRAPH_FILTER: GraphFilter = { hidden: [], solo: [] };
+
 /** Result of a {@link RepoChannels.search} over the whole commit history. */
 export interface CommitSearchResult {
   /** Matching commit hashes, in graph (`--date-order`) order, newest first. */
@@ -765,6 +838,13 @@ export interface CommitLogEntry {
   authorAvatarUrl: string;
   /** ISO 8601 author date. */
   date: string;
+  /**
+   * Graph and file-history logs only: people credited via `Co-authored-by:`
+   * trailers (deduped, author excluded), and the committer when a different
+   * person from the author. Shown after the author as names and avatars.
+   */
+  coAuthors?: CommitPerson[];
+  committer?: CommitPerson;
   /** First line of the commit message. */
   subject: string;
   /**
@@ -865,6 +945,20 @@ export interface CommitDetailData {
   message: string;
   /** GPG signature status from `%G?`. */
   signature: string;
+  /**
+   * Who applied/rewrote the commit (e.g. GitHub on a squash merge), with the ISO
+   * 8601 committer date. `null` when it's the same person as the author.
+   */
+  committer: (CommitPerson & { date: string }) | null;
+  /** People credited via `Co-authored-by:` trailers, deduped, author excluded. */
+  coAuthors: CommitPerson[];
+}
+
+/** A named identity on a commit (committer or co-author) with its avatar. */
+export interface CommitPerson {
+  name: string;
+  email: string;
+  avatarUrl: string;
 }
 
 /** The working tree split into staged (index) and unstaged changes. */
@@ -966,6 +1060,9 @@ export interface BlameLine {
   date: string;
   /** First line of that commit's message. */
   summary: string;
+  /** The commit's co-authors and differing committer, as on a log entry. */
+  coAuthors?: CommitPerson[];
+  committer?: CommitPerson;
   /**
    * True for a line not yet committed (git's all-zero blame hash) — an uncommitted
    * working-tree edit. Such lines are shown uncolored and unlinked.
@@ -1123,6 +1220,10 @@ export const RepoChannels = {
   log: 'repo:log',
   /** Renderer -> main (invoke): search the whole history by message, author or hash prefix. */
   search: 'repo:search',
+  /** Renderer -> main (invoke): read which branches the commit graph hides / solos. */
+  getGraphFilter: 'repo:get-graph-filter',
+  /** Renderer -> main (invoke): replace the graph's hidden / solo branches; returns what was stored. */
+  setGraphFilter: 'repo:set-graph-filter',
   /** Renderer -> main (invoke): read the files changed by a single commit. */
   commitFiles: 'repo:commit-files',
   /** Renderer -> main (invoke): list every file in a commit's tree snapshot. */
@@ -1651,6 +1752,12 @@ export interface ClaudeStatus {
   version?: string;
   /** The model Claude features (commit messages, conflict resolution) run on. */
   model: ClaudeModel;
+  /**
+   * Whether generated commit messages end with a "Co-Authored-By: Claude …"
+   * trailer. Off by default; any attribution the model adds on its own is
+   * always stripped, and this app appends its own when on.
+   */
+  coAuthorTrailer: boolean;
   /** Message from the most recent failed connect attempt. */
   error?: string;
 }
@@ -1700,6 +1807,8 @@ export const ClaudeChannels = {
   disconnect: 'claude:disconnect',
   /** Renderer -> main (invoke): choose the model Claude features run on. */
   setModel: 'claude:set-model',
+  /** Renderer -> main (invoke): turn the generated message's co-author trailer on/off. */
+  setCoAuthorTrailer: 'claude:set-co-author-trailer',
   /** Renderer -> main (invoke): list the models the local `claude` CLI offers. */
   listModels: 'claude:list-models',
   /** Renderer -> main (invoke): generate a commit message from the staged diff. */
@@ -1832,6 +1941,15 @@ export interface OpenApi {
   inTerminal(repoPath: string): Promise<OpenResult>;
   reveal(repoPath: string, relPath?: string): Promise<OpenResult>;
   withDefaultApp(repoPath: string, relPath: string): Promise<OpenResult>;
+  /** Pass `refresh` to re-probe what's installed (Settings does). */
+  externalTools(refresh?: boolean): Promise<ExternalToolsState>;
+  setExternalTool(kind: ExternalToolKind, id: string): Promise<ExternalToolsState>;
+  /** Resolves once the tool is up (or failed to start); git keeps it running. */
+  externalDiff(repoPath: string, source: DiffSource, file: string): Promise<OpenResult>;
+  /** Resolves when the merge tool closes, with the repo's merge state after it. */
+  externalMerge(repoPath: string, file: string): Promise<ExternalMergeResult>;
+  /** Stop waiting for the merge tool running in `repoPath`; its `externalMerge` resolves `cancelled`. */
+  cancelExternalMerge(repoPath: string): Promise<void>;
 }
 
 export interface MenuApi {
@@ -1863,6 +1981,13 @@ export interface RepoApi {
    * hash prefixes. Resolves with no matches for an empty query or a non-repo.
    */
   search(path: string, query: string): Promise<CommitSearchResult>;
+  /** Read the repository's graph filter (empty lists when unfiltered). */
+  getGraphFilter(path: string): Promise<GraphFilter>;
+  /**
+   * Replace the repository's graph filter and persist it. Resolves with the
+   * filter as stored (invalid refs dropped); `log` and `search` then honor it.
+   */
+  setGraphFilter(path: string, filter: GraphFilter): Promise<GraphFilter>;
   /** Read the files changed by the commit `hash` (vs its first parent). */
   commitFiles(path: string, hash: string): Promise<FileChange[]>;
   /**
@@ -2620,6 +2745,8 @@ export interface ClaudeApi {
   disconnect(): Promise<ClaudeStatus>;
   /** Choose the model Claude features (commit messages, conflict resolution) run on. */
   setModel(model: ClaudeModel): Promise<ClaudeStatus>;
+  /** Whether generated commit messages carry a "Co-Authored-By: Claude …" trailer. */
+  setCoAuthorTrailer(enabled: boolean): Promise<ClaudeStatus>;
   /**
    * The models the connected `claude` CLI offers (asked once per binary and
    * cached); falls back to the plain aliases when the CLI can't be asked.
