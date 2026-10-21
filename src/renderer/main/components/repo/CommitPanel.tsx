@@ -1362,6 +1362,11 @@ function WorkingChanges({
   const unstagedSource: DiffSource = { kind: 'unstaged' };
   const activePathFor = (source: DiffSource) =>
     activeDiff && sameSource(activeDiff.source, source) ? activeDiff.path : null;
+  // Clicking a row opens its diff; clicking the already-open row closes it.
+  const toggleDiff = (source: DiffSource, file: DisplayFile) => {
+    if (activePathFor(source) === file.path) onCloseDiff();
+    else onOpenDiff({ source, path: file.path, status: file.status ?? 'modified' });
+  };
 
   const stage = useCallback(
     async (file: string | null) => onStatusChange(await window.api.repo.stage(repoPath, file)),
@@ -1849,13 +1854,7 @@ function WorkingChanges({
                     variant: 'green',
                     onClick: () => void stageFile(file),
                   })}
-                  onOpenFile={(file) =>
-                    onOpenDiff({
-                      source: unstagedSource,
-                      path: file.path,
-                      status: file.status ?? 'modified',
-                    })
-                  }
+                  onOpenFile={(file) => toggleDiff(unstagedSource, file)}
                   activePath={activePathFor(unstagedSource)}
                   onContextMenuFile={(file, event) => {
                     event.preventDefault();
@@ -1900,13 +1899,7 @@ function WorkingChanges({
                 variant: 'red',
                 onClick: () => void unstage(file.path),
               })}
-              onOpenFile={(file) =>
-                onOpenDiff({
-                  source: stagedSource,
-                  path: file.path,
-                  status: file.status ?? 'modified',
-                })
-              }
+              onOpenFile={(file) => toggleDiff(stagedSource, file)}
               activePath={activePathFor(stagedSource)}
               onContextMenuFile={(file, event) => {
                 event.preventDefault();
