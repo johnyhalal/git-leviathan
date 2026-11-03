@@ -376,7 +376,7 @@ function primaryModelId(modelUsage: ClaudeJsonResult['modelUsage']): string | un
 /** Read the model's answer and token usage out of a `--output-format json` envelope. */
 function readEnvelope(
   stdout: string,
-): { text: string; usage?: TokenUsage; modelId?: string } | null {
+): { text: string; isError: boolean; usage?: TokenUsage; modelId?: string } | null {
   let parsed: ClaudeJsonResult;
   try {
     parsed = JSON.parse(stdout.trim()) as ClaudeJsonResult;
@@ -387,6 +387,7 @@ function readEnvelope(
   const u = parsed.usage ?? {};
   return {
     text: parsed.result,
+    isError: parsed.is_error === true,
     usage: {
       inputTokens: u.input_tokens ?? 0,
       outputTokens: u.output_tokens ?? 0,
@@ -779,8 +780,13 @@ async function runOneShot(
     );
     run = await runClaude(bin, legacyArgs(model, system), cwd, stdin, timeoutMs);
   }
-  if (run.code === 0) return run.out;
-  const detail = run.err.trim() || run.out.trim();
+  // A failed run (e.g. "Not logged in · Please run /login") still prints the
+  // JSON envelope, sometimes with a zero exit; surface its `result` text rather
+  // than the raw JSON, whose message is buried past the length cap.
+  const envelope = readEnvelope(run.out);
+  if (run.code === 0 && !envelope?.isError) return run.out;
+  const detail =
+    (envelope?.isError ? envelope.text.trim() : '') || run.err.trim() || run.out.trim();
   throw new Error(detail || `Claude exited with code ${run.code}.`);
 }
 
